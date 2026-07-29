@@ -42,28 +42,27 @@ export const RECOMMENDED_VLM_MODELS: RecommendedModel[] = [
  *
  * 日本語タグ名 (`name_ja`) をそのまま投入するため、多言語対応が必須条件。
  * `nomic-embed-text` は実質英語専用のため候補に含めない。
+ *
+ * **ここには実測したモデルだけを載せる。** 埋め込みモデルは名前や次元数からは
+ * 概念の分離能力が判断できず、実際に類似度分布を測るまで良し悪しが分からない
+ * （実測: bge-m3 は sd 0.132、qwen3-embedding:8b は sd 0.196。同じ猫の写真を
+ * 基準にしても前者は猫を取り逃がした）。計測手順は
+ * `cargo test --release measure_real_library -- --ignored --nocapture`。
  */
 export const RECOMMENDED_EMBEDDING_MODELS: RecommendedModel[] = [
-  {
-    name: 'qwen3-embedding:0.6b',
-    badge: 'Lightweight',
-    badgeJa: '軽量',
-    size: '~640 MB',
-    description: '低VRAMで動作する多言語埋め込みモデル (1024次元)',
-  },
   {
     name: 'bge-m3',
     badge: 'Standard',
     badgeJa: '標準',
-    size: '~1.2 GB',
-    description: '日本語を含む多言語に強い標準の埋め込みモデル (1024次元)',
+    size: '~570 MB',
+    description: '軽量で導入しやすい多言語モデル (1024次元)。まずはこれで十分',
   },
   {
     name: 'qwen3-embedding:8b',
     badge: 'High Performance',
     badgeJa: '高精度',
     size: '~5.5 GB',
-    description: '概念の分離能力が最も高い大規模埋め込みモデル (4096次元)',
+    description: '概念の分離能力が明確に高い (4096次元)。VRAMに余裕があるならこちら',
   },
 ];
 
