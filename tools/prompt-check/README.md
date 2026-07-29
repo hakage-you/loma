@@ -57,14 +57,14 @@ JS 側にミラーを置いている。Rust 側の変更を検知できるよう
 ## 使い方
 
 ```bash
-# 既定: 現行 LIGHT と「Output 3 to 5 tags」案を比較
-node tools/prompt-check/run.mjs
+# 現行 LIGHT の実力を測る（改修候補が無いときのベースライン取得）
+node tools/prompt-check/run.mjs --variants light --repeat 3 --sample 12
 
-# 試行回数と画像を増やして精度を上げる
-node tools/prompt-check/run.mjs --variants light,light_count,light_count_schema --repeat 3 --sample 12
+# 改修案と比較する（候補を candidateVariants() に足してから）
+node tools/prompt-check/run.mjs --variants light,my_candidate --repeat 3 --sample 12
 
 # format:"json" の on/off を比較する
-node tools/prompt-check/run.mjs --variants light_count --format-json both
+node tools/prompt-check/run.mjs --variants light --format-json both
 
 # DETAILED 側の粒度を比較する
 node tools/prompt-check/run.mjs --variants detailed_atomic,detailed_balanced,detailed_descriptive --model qwen3-vl:30b
@@ -76,7 +76,7 @@ node tools/prompt-check/run.mjs --variants detailed_atomic,detailed_balanced,det
 |---|---|---|
 | `--model` | `qwen3-vl:4b` | 使用する VLM |
 | `--url` | `http://localhost:11434` | Ollama のエンドポイント |
-| `--variants` | `light,light_count` | 比較するプロンプト（カンマ区切り） |
+| `--variants` | `light` | 比較するプロンプト（カンマ区切り） |
 | `--format-json` | `off` | `off` / `on` / `both` |
 | `--repeat` | `1` | 同一画像あたりの試行回数 |
 | `--sample` | `5` | `test_assets/100files` から拾う枚数 |
@@ -88,11 +88,10 @@ node tools/prompt-check/run.mjs --variants detailed_atomic,detailed_balanced,det
 |---|---|
 | `light` | mod.rs の実物 |
 | `detailed_atomic` / `detailed_balanced` / `detailed_descriptive` | mod.rs の実物（粒度別） |
-| `light_count` | **候補**: LIGHT + `Output 3 to 5 tags.` |
-| `light_count_schema` | **候補**: LIGHT + 本数指示 + en/ja 必須 |
 
-候補は `prompts.mjs` の `candidateVariants()` に定義する。
+候補は `prompts.mjs` の `candidateVariants()` に定義すると自動で variant 一覧に並ぶ。
 **採用して Rust に取り込んだら、対応する候補エントリは削除すること**（本物と候補の二重管理を避ける）。
+現在、未採用の候補は無い（Phase 0 の2案は検証を終えて mod.rs に取り込み済み）。
 
 ## 検証用画像
 

@@ -141,7 +141,24 @@
     "granularity_descriptive": "Lv3: 記述重視",
     "granularity_disabled_light": "現在のモデルは軽量プロンプト(LIGHT)で動作するため、タグ粒度設定は適用されません。下部の「詳細設定」を開き、「高精度プロンプトモード (DETAILED) を強制適用する」を有効にすると使用できます。",
     "granularity_changed_notice": "タグ粒度を変更しました。新しい粒度はこれから解析するメディアにのみ適用されます。既存メディアのタグを揃えるには、フォルダ管理から再解析してください。",
-    "granularity_try": "粒度を試す（画像を選択）"
+    "granularity_try": "粒度を試す（画像を選択）",
+    "spectrum_section": "似ているメディアの検索（タグのベクトル化）",
+    "spectrum_help": "タグの意味をベクトル化し、タグが完全一致しなくても意味的に近いメディアを探せるようにします。ベクトル化は手動で実行する必要があり、スキャン処理には影響しません。",
+    "spectrum_embedded": "ベクトル化済みタグ",
+    "spectrum_missing": "未生成",
+    "spectrum_eligible": "検索対象メディア",
+    "spectrum_excluded": "タグ",
+    "spectrum_excluded_suffix": "個未満で対象外",
+    "spectrum_model_missing": "このモデルは Ollama に導入されていません。上のカードから取得してください。",
+    "spectrum_generate": "未生成のタグをベクトル化",
+    "spectrum_diagnostics": "類似度分布を計測",
+    "spectrum_centering": "ハブ化対策 (centering) を有効にする",
+    "spectrum_centering_help": "OFFにすると、タグ本数の多いメディアが何とでも似ていると判定されやすくなります。",
+    "spectrum_descriptive": "記述的タグも類似度計算に含める",
+    "spectrum_descriptive_help": "ONにすると、高精度モデルで解析したメディア同士が優先的に似ていると判定される場合があります。",
+    "spectrum_hub_corr": "タグ本数と平均類似度の相関",
+    "spectrum_group_sep": "記述的タグ 群内/群間",
+    "spectrum_sample": "標本"
   },
   "logs": {
     "title": "処理ログ",
@@ -155,5 +172,22 @@
     "author": "作成者",
     "copyright": "コピーライト",
     "links": "リンク"
+  },
+  "spectrum": {
+    "title": "似ているメディア",
+    "trigger": "似ているメディアを探す",
+    "base": "基準",
+    "loading": "類似度を計算しています...",
+    "legend_low": "似ていない",
+    "legend_high": "似ている",
+    "zone_similar": "タグの類似度が高い",
+    "candidates": "比較対象",
+    "excluded": "タグ不足で対象外",
+    "model_hint": "類似度の算出に使ったモデル",
+    "open_settings": "設定を開く",
+    "notice_no_embeddings": "タグのベクトルがまだ生成されていません。設定画面から生成してください。",
+    "notice_base_not_eligible": "このメディアはタグが少ないため対象外です。タグを手動で追加するか、再解析してください。",
+    "notice_not_enough": "比較できるメディアがまだ足りません。解析済みのメディアを増やしてください。",
+    "notice_degraded": "候補が少ないため、類似上位のみを表示しています。"
   }
 }

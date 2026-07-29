@@ -1,7 +1,7 @@
 import React from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem } from '../types';
-import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag } from 'lucide-react';
+import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 
 interface GalleryGridProps {
@@ -10,6 +10,7 @@ interface GalleryGridProps {
   gridColumns: number; // 2 ~ 8
   onSelectItem: (item: MediaItem) => void;
   onSelectTagFilter?: (tagName: string) => void;
+  onFindSimilar?: (item: MediaItem) => void;
 }
 
 const CATEGORY_NAME_JA: Record<string, string> = {
@@ -33,6 +34,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
   gridColumns,
   onSelectItem,
   onSelectTagFilter,
+  onFindSimilar,
 }) => {
   const { t, language } = useTranslation();
   if (loading && items.length === 0) {
@@ -123,10 +125,24 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                 </div>
 
                 {/* Hover Overlay */}
-                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center z-10">
+                <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 transition-opacity flex items-center justify-center gap-2 z-10">
                   <div className="p-2 bg-white/20 backdrop-blur-md rounded-full text-white">
                     <ExternalLink className="w-5 h-5" />
                   </div>
+                  {onFindSimilar && item.analysis_status === 'completed' && (
+                    <button
+                      type="button"
+                      onClick={(e) => {
+                        // カード全体のクリック（詳細を開く）に伝播させない
+                        e.stopPropagation();
+                        onFindSimilar(item);
+                      }}
+                      title={t('spectrum.trigger', '似ているメディアを探す')}
+                      className="p-2 bg-white/20 hover:bg-indigo-500/70 backdrop-blur-md rounded-full text-white transition"
+                    >
+                      <Radar className="w-5 h-5" />
+                    </button>
+                  )}
                 </div>
               </div>
 

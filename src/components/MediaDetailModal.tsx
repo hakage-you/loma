@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useRef, useEffect } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem, TagItem } from '../types';
-import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2 } from 'lucide-react';
+import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 
 interface MediaDetailModalProps {
@@ -18,6 +18,7 @@ interface MediaDetailModalProps {
   onSelectTagFilter?: (tagName: string) => void;
   onAddTagToMedia?: (mediaId: number, tagName: string, tagNameJa?: string) => Promise<void>;
   onRemoveTagFromMedia?: (mediaId: number, tagId: number) => Promise<void>;
+  onFindSimilar?: (item: MediaItem) => void;
 }
 
 export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
@@ -34,6 +35,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onSelectTagFilter,
   onAddTagToMedia,
   onRemoveTagFromMedia,
+  onFindSimilar,
 }) => {
   const { t, language } = useTranslation();
   const [videoError, setVideoError] = React.useState(false);
@@ -436,6 +438,15 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               </button>
             )}
             <div className="flex items-center gap-2 ml-auto">
+              {onFindSimilar && item.analysis_status === 'completed' && (
+                <button
+                  onClick={() => onFindSimilar(item)}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10"
+                >
+                  <Radar className="w-3.5 h-3.5 text-indigo-400" />
+                  {t('spectrum.trigger', '似ているメディアを探す')}
+                </button>
+              )}
               <button
                 onClick={() => onOpenFolder(item.file_path)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10"

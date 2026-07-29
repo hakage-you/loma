@@ -37,6 +37,35 @@ export const RECOMMENDED_VLM_MODELS: RecommendedModel[] = [
   },
 ];
 
+/**
+ * 概念スペクトラム検索のタグベクトル化に使う埋め込みモデル。
+ *
+ * 日本語タグ名 (`name_ja`) をそのまま投入するため、多言語対応が必須条件。
+ * `nomic-embed-text` は実質英語専用のため候補に含めない。
+ *
+ * **ここには実測したモデルだけを載せる。** 埋め込みモデルは名前や次元数からは
+ * 概念の分離能力が判断できず、実際に自分のライブラリで類似度分布を測るまで
+ * 良し悪しが分からない（実測: 類似度の sd は bge-m3 が 0.132、
+ * qwen3-embedding:8b が 0.198 で 1.5 倍の開きがあった）。
+ * 計測手順は tools/embedding-check/README.md。
+ */
+export const RECOMMENDED_EMBEDDING_MODELS: RecommendedModel[] = [
+  {
+    name: 'bge-m3',
+    badge: 'Standard',
+    badgeJa: '標準',
+    size: '~570 MB',
+    description: '軽量で導入しやすい多言語モデル (1024次元)。まずはこれで十分',
+  },
+  {
+    name: 'qwen3-embedding:8b',
+    badge: 'High Performance',
+    badgeJa: '高精度',
+    size: '~5.5 GB',
+    description: '概念の分離能力が明確に高い (4096次元)。VRAMに余裕があるならこちら',
+  },
+];
+
 export const RECOMMENDED_TEXT_MODELS: RecommendedModel[] = [
   {
     name: 'qwen2.5:3b',

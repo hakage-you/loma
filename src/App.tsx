@@ -18,6 +18,7 @@ import { Sparkles, FolderPlus, RefreshCw, Tags, HardDrive, Settings, Play, Pause
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
 import { AboutModal } from './components/AboutModal';
 import { SearchModal } from './components/SearchModal';
+import { SpectrumModal } from './components/SpectrumModal';
 
 function AppContent() {
   const { t } = useTranslation();
@@ -61,6 +62,8 @@ function AppContent() {
   } = useMedia();
 
   const [globalDownloadProgress, setGlobalDownloadProgress] = useState<OllamaPullProgressPayload | null>(null);
+  /** 概念スペクトラム探索の起点。null で閉じる */
+  const [spectrumBase, setSpectrumBase] = useState<MediaItem | null>(null);
 
   useEffect(() => {
     const unlistenPromise = listen<OllamaPullProgressPayload>('ollama-pull-progress', (event) => {
@@ -457,6 +460,7 @@ function AppContent() {
             gridColumns={gridColumns}
             onSelectItem={(item) => setSelectedMedia(item)}
             onSelectTagFilter={handleAddTag}
+            onFindSimilar={(item) => setSpectrumBase(item)}
           />
         </div>
       </div>
@@ -484,6 +488,21 @@ function AppContent() {
         onRetry={async (id) => retryMedia([id])}
         onSelectTagFilter={handleAddTag}
         isScanning={scanning}
+        onFindSimilar={(item) => {
+          // 探索モーダルは詳細モーダルの上に重ねず、詳細を閉じてから開く
+          setSelectedMedia(null);
+          setSpectrumBase(item);
+        }}
+      />
+
+      {/* 概念スペクトラム探索 */}
+      <SpectrumModal
+        base={spectrumBase}
+        onClose={() => setSpectrumBase(null)}
+        onOpenSettings={() => {
+          setSpectrumBase(null);
+          setIsSettingsOpen(true);
+        }}
       />
 
       {/* Folder Manager Modal */}

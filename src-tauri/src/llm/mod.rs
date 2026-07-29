@@ -98,8 +98,17 @@ Respond ONLY with a valid JSON object matching this exact structure:
 }"#;
 
 /// 軽量・小型モデル（qwen3-vl:4b等）向けの高速・安定化プロンプト定義
+///
+/// **`Output 3 to 5 tags.` の行を削らないこと。** これが無いと小型モデルは直前の例示
+/// （タグ1個）に引きずられ、実測で**タグ3個未満が82%**（qwen3-vl:4b / n=57 / 2026-07-29）になる。
+/// 低情報量の画像では 100% が3個未満で、`"tags": []` すら返る。
+/// `en`/`ja` 必須の明示は、本数指示のみの案に対しタグの再現性を上げる
+/// （反復間 Jaccard 0.549 対 0.399、生成語彙は15%少ない）。
+/// 経緯と実測値: docs/vlm-notes.md / 検証方法: tools/prompt-check/README.md
 pub const VLM_ANALYSIS_PROMPT_LIGHT: &str = r#"Analyze this image and return metadata in JSON matching structure:
 {"categories": ["animal"], "tags": [{"en": "cat", "ja": "猫"}]}
+
+Output 3 to 5 tags. Each tag MUST have both "en" and "ja".
 
 Categories options: ["screenshot", "document", "landscape", "food", "character", "animal", "person", "item_product", "art_illustration", "text_heavy", "tech", "other"]"#;
 
@@ -374,6 +383,17 @@ mod tests {
         let (kind, prompt) = get_vlm_prompt_info("Ollama", "qwen3-vl:4b", &cfg);
         assert_eq!(kind, VlmPromptType::Light);
         assert_eq!(prompt, VLM_ANALYSIS_PROMPT_LIGHT);
+    }
+
+    #[test]
+    fn light_prompt_instructs_tag_count_and_bilingual_pairs() {
+        // この指示が無いと小型モデルは例示のタグ1個に引きずられ、
+        // 実測でタグ3個未満が82%になる（qwen3-vl:4b / n=57 / 2026-07-29）。
+        // 概念スペクトラム検索は basic タグ3個以上を参加条件にしているため、
+        // ここが欠けると解析済みメディアが大量に対象外へ落ちる。
+        // 経緯: docs/vlm-notes.md
+        assert!(VLM_ANALYSIS_PROMPT_LIGHT.contains("Output 3 to 5 tags."));
+        assert!(VLM_ANALYSIS_PROMPT_LIGHT.contains(r#"MUST have both "en" and "ja""#));
     }
 
     #[test]

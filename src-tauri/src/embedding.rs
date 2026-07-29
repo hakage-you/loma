@@ -1,0 +1,1294 @@
+//! 概念スペクトラム検索: タグ埋め込みとメディア重心の算出。
+//!
+//! 設計の要点（詳細は _plan/20260729_semantic_spectrum_search_implementation_plan.md）:
+//!
+//! - タグのベクトルだけを永続化し、**メディアの重心はキャッシュしない**。
+//!   メディアはタグより桁違いに多く、タグ編集・マージのたびに大量再計算が必要になるため。
+//! - 重心に入れるのは `basic` タグとカテゴリのみ。`descriptive` は既定で除外する。
+//!   `media` テーブルは解析に使ったモデル・粒度を記録していないため、descriptive を入れると
+//!   「意味が似ている」ではなく「同じ設定で解析された」でクラスタリングされる恐れがある。
+//! - 埋め込みに投入するのは英語名ではなく `name_ja`。`normalize_tag_en` が
+//!   機械的な単数形化で語を壊すため（`lens` → `len` 等。docs/vlm-notes.md 参照）。
+
+use anyhow::{anyhow, Result};
+use rayon::prelude::*;
+use reqwest::Client;
+use serde::{Deserialize, Serialize};
+use sqlx::{Pool, Sqlite};
+use std::collections::{HashMap, HashSet};
+use tauri::{AppHandle, Emitter, State};
+
+use crate::commands::{cmd_err, try_acquire_task_lock, ScanState};
+use crate::db::DbState;
+
+/// 候補集合に入るために必要な `basic` タグの数。
+///
+/// 1〜2個の重心は実質「そのタグ1個での検索」でしかなく、通しても価値が出ない。
+/// LIGHT プロンプトはこの下限を満たすために `Output 3 to 5 tags.` を指示している。
+pub const MIN_BASIC_TAGS: usize = 3;
+
+/// これ未満の候補数では機能自体を無効化する。
+pub const MIN_CANDIDATES: usize = 5;
+
+/// これ未満では3ゾーン分割を行わず、類似上位のみの縮退モードにする。
+pub const FULL_SPECTRUM_MIN: usize = 20;
+
+/// `/api/embed` に一度に投げるタグ数。
+const EMBED_BATCH_SIZE: usize = 32;
+
+/// 診断で総当り類似度を取るときの標本上限。全件は O(N^2) で現実的でない。
+const DIAGNOSTICS_SAMPLE_CAP: usize = 400;
+
+// ---------------------------------------------------------------------------
+// 設定
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct SpectrumConfig {
+    pub ollama_url: String,
+    pub model: String,
+    pub include_descriptive: bool,
+    pub centering: bool,
+}
+
+async fn setting(pool: &Pool<Sqlite>, key: &str, default: &str) -> String {
+    sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+        .bind(key)
+        .fetch_optional(pool)
+        .await
+        .unwrap_or(None)
+        .unwrap_or_else(|| default.to_string())
+}
+
+pub async fn load_spectrum_config(pool: &Pool<Sqlite>) -> SpectrumConfig {
+    SpectrumConfig {
+        ollama_url: setting(pool, "ollama_url", "http://localhost:11434").await,
+        model: setting(pool, "spectrum_embedding_model", "bge-m3").await,
+        include_descriptive: setting(pool, "spectrum_include_descriptive", "false").await == "true",
+        centering: setting(pool, "spectrum_centering", "true").await == "true",
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Ollama /api/embed
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+struct EmbedRequest<'a> {
+    model: &'a str,
+    input: &'a [String],
+}
+
+#[derive(Deserialize)]
+struct EmbedResponse {
+    embeddings: Vec<Vec<f32>>,
+}
+
+/// タグ文字列をまとめてベクトル化する。
+///
+/// `/api/embed`（複数入力）は比較的新しい API で、旧 `/api/embeddings`（単一入力・
+/// `prompt` / `embedding`）とは形が異なる。旧版しか持たない Ollama では 404 が返るため、
+/// 「Ollama を更新せよ」と読み取れるエラーに変換する。
+pub async fn fetch_embeddings(
+    client: &Client,
+    base_url: &str,
+    model: &str,
+    texts: &[String],
+) -> Result<Vec<Vec<f32>>> {
+    let res = client
+        .post(format!("{}/api/embed", base_url))
+        .json(&EmbedRequest { model, input: texts })
+        .send()
+        .await?;
+
+    let status = res.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(anyhow!(
+            "この Ollama には /api/embed がありません。Ollama を更新してください（埋め込み機能には比較的新しいバージョンが必要です）。"
+        ));
+    }
+    if !status.is_success() {
+        let body = res.text().await.unwrap_or_default();
+        return Err(anyhow!("Ollama API Error ({}): {}", status, body.trim()));
+    }
+
+    let parsed: EmbedResponse = res.json().await?;
+    if parsed.embeddings.len() != texts.len() {
+        return Err(anyhow!(
+            "埋め込みの件数が要求と一致しません (要求 {} / 応答 {})",
+            texts.len(),
+            parsed.embeddings.len()
+        ));
+    }
+    Ok(parsed.embeddings)
+}
+
+// ---------------------------------------------------------------------------
+// ベクトルのシリアライズと基本演算
+// ---------------------------------------------------------------------------
+
+fn to_blob(v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(v.len() * 4);
+    for x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
+}
+
+fn from_blob(bytes: &[u8]) -> Vec<f32> {
+    bytes
+        .chunks_exact(4)
+        .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+        .collect()
+}
+
+/// L2 正規化する。ノルムが 0 なら false を返し、値は変更しない。
+///
+/// 保存時に正規化しておくことで、モデルが出力ノルムを揃えていない場合でも
+/// たまたまノルムの大きいタグが重心を支配する事故を防げる。
+fn l2_normalize(v: &mut [f32]) -> bool {
+    let norm = v.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if !norm.is_finite() || norm <= f32::EPSILON {
+        return false;
+    }
+    for x in v.iter_mut() {
+        *x /= norm;
+    }
+    true
+}
+
+/// 正規化済みベクトル同士のコサイン類似度（= 内積）。
+fn dot(a: &[f32], b: &[f32]) -> f32 {
+    a.iter().zip(b).map(|(x, y)| x * y).sum()
+}
+
+/// 埋め込みに投入するテキストを決める。
+///
+/// `name_ja` を優先するのは、英語名 `name` が `normalize_tag_en` の機械的な単数形化で
+/// 壊れていることがあるため（`lens` → `len` / `canvas` → `canva`）。
+/// `name_ja` は `trim()` のみで無加工保存される。
+fn embedding_text(name: &str, name_ja: Option<&str>) -> String {
+    match name_ja {
+        Some(ja) if !ja.trim().is_empty() => ja.trim().to_string(),
+        _ => name.replace('_', " "),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ライブラリ（全メディアの重心）の構築
+// ---------------------------------------------------------------------------
+
+pub struct Library {
+    pub media_ids: Vec<i64>,
+    /// 正規化済み重心（centering 有効時は中心を引いた後に再正規化したもの）
+    pub centroids: Vec<Vec<f32>>,
+    /// 重心に寄与したタグ数（本数バイアスの診断に使う）
+    pub contributing_counts: Vec<usize>,
+    pub has_descriptive: Vec<bool>,
+    pub dim: usize,
+    /// `basic` タグ不足で候補集合から外れたメディア数
+    pub excluded_by_tag_count: usize,
+    /// タグはあるが、そのタグのベクトルが未生成で重心を作れなかったメディア数
+    pub excluded_by_missing_vectors: usize,
+    pub load_ms: u64,
+    pub centroid_ms: u64,
+}
+
+impl Library {
+    pub fn index_of(&self, media_id: i64) -> Option<usize> {
+        self.media_ids.iter().position(|&id| id == media_id)
+    }
+}
+
+/// 指定モデルの全タグベクトルを読み込む（正規化済みで返す）。
+async fn load_tag_vectors(pool: &Pool<Sqlite>, model: &str) -> Result<HashMap<i64, Vec<f32>>, String> {
+    let rows = sqlx::query_as::<_, (i64, Vec<u8>)>(
+        "SELECT tag_id, vector FROM tag_embeddings WHERE model = ?1",
+    )
+    .bind(model)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut map = HashMap::with_capacity(rows.len());
+    for (tag_id, blob) in rows {
+        let mut v = from_blob(&blob);
+        if l2_normalize(&mut v) {
+            map.insert(tag_id, v);
+        }
+    }
+    Ok(map)
+}
+
+/// 解析済みメディアのタグ構成を読み出し、重心を算出する。
+pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<Library, String> {
+    let t0 = std::time::Instant::now();
+
+    let vectors = load_tag_vectors(pool, &cfg.model).await?;
+
+    let rows = sqlx::query_as::<_, (i64, i64, i64, String)>(
+        r#"
+        SELECT mt.media_id, mt.tag_id, t.is_category, t.tag_kind
+        FROM media_tags mt
+        JOIN tags t ON t.id = mt.tag_id
+        JOIN media m ON m.id = mt.media_id
+        WHERE m.analysis_status = 'completed'
+        ORDER BY mt.media_id
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let load_ms = t0.elapsed().as_millis() as u64;
+    let t1 = std::time::Instant::now();
+
+    // メディアごとに (寄与タグ id 集合, basic 本数, descriptive 有無) を組み立てる
+    struct Pending {
+        tag_ids: Vec<i64>,
+        basic_count: usize,
+        has_descriptive: bool,
+    }
+    let mut per_media: HashMap<i64, Pending> = HashMap::new();
+
+    for (media_id, tag_id, is_category, kind) in rows {
+        let is_category = is_category != 0;
+        let entry = per_media.entry(media_id).or_insert_with(|| Pending {
+            tag_ids: Vec::new(),
+            basic_count: 0,
+            has_descriptive: false,
+        });
+
+        if kind == "descriptive" {
+            entry.has_descriptive = true;
+        }
+        // 参加条件はカテゴリを数えない。カテゴリは全メディアが必ず持つため、
+        // 数えると全員が下限を満たしてしまい閾値が意味を失う。
+        if !is_category && kind == "basic" {
+            entry.basic_count += 1;
+        }
+
+        let contributes = is_category || kind == "basic" || (cfg.include_descriptive && kind == "descriptive");
+        if contributes {
+            entry.tag_ids.push(tag_id);
+        }
+    }
+
+    // 候補集合の確定と df の集計を同じ母数で行う
+    let mut eligible: Vec<(i64, Pending)> = per_media
+        .into_iter()
+        .filter(|(_, p)| p.basic_count >= MIN_BASIC_TAGS)
+        .collect();
+    eligible.sort_by_key(|(id, _)| *id);
+
+    let n = eligible.len();
+    let mut df: HashMap<i64, usize> = HashMap::new();
+    for (_, p) in &eligible {
+        // 同一メディア内の重複は df を二重に数えないよう一意化する
+        let uniq: HashSet<i64> = p.tag_ids.iter().copied().collect();
+        for id in uniq {
+            *df.entry(id).or_insert(0) += 1;
+        }
+    }
+
+    let dim = vectors.values().next().map(|v| v.len()).unwrap_or(0);
+
+    // 重み付き重心を並列に算出する
+    let raw: Vec<Option<(i64, Vec<f32>, usize, bool)>> = eligible
+        .par_iter()
+        .map(|(media_id, p)| {
+            if dim == 0 {
+                return None;
+            }
+            let mut acc = vec![0f32; dim];
+            let mut fallback = vec![0f32; dim];
+            let mut used = 0usize;
+            let mut weight_sum = 0f32;
+
+            for tag_id in &p.tag_ids {
+                let Some(v) = vectors.get(tag_id) else { continue };
+                if v.len() != dim {
+                    continue;
+                }
+                used += 1;
+                // IDF: w = ln(N / df)。クリップ等の追加防御は入れない。
+                // df=1 が df=2 より重い倍率は N=1,000 で 1.11 倍にすぎず、実用規模では誤差。
+                let d = *df.get(tag_id).unwrap_or(&1) as f32;
+                let w = (n as f32 / d.max(1.0)).ln().max(0.0);
+                weight_sum += w;
+                for (a, x) in acc.iter_mut().zip(v) {
+                    *a += w * x;
+                }
+                for (f, x) in fallback.iter_mut().zip(v) {
+                    *f += x;
+                }
+            }
+
+            if used == 0 {
+                return None;
+            }
+            // 全タグが df = N の場合 w が全て 0 になり方向が未定義になる。
+            // その場合は重み無しの単純平均へ落とす。
+            let mut centroid = if weight_sum > f32::EPSILON && l2_normalize(&mut acc) {
+                acc
+            } else if l2_normalize(&mut fallback) {
+                fallback
+            } else {
+                return None;
+            };
+            let _ = l2_normalize(&mut centroid);
+            Some((*media_id, centroid, used, p.has_descriptive))
+        })
+        .collect();
+
+    let mut media_ids = Vec::with_capacity(n);
+    let mut centroids = Vec::with_capacity(n);
+    let mut contributing_counts = Vec::with_capacity(n);
+    let mut has_descriptive = Vec::with_capacity(n);
+    let mut excluded_by_missing_vectors = 0usize;
+
+    for item in raw {
+        match item {
+            Some((id, c, used, desc)) => {
+                media_ids.push(id);
+                centroids.push(c);
+                contributing_counts.push(used);
+                has_descriptive.push(desc);
+            }
+            None => excluded_by_missing_vectors += 1,
+        }
+    }
+
+    // centering: 全重心の平均（= ライブラリの中心）を引いてから再正規化する。
+    // これが無いとタグ本数の多いメディアほど中心に寄り、誰とでも似ている「ハブ」になる。
+    if cfg.centering && !centroids.is_empty() && dim > 0 {
+        let mut mean = vec![0f32; dim];
+        for c in &centroids {
+            for (m, x) in mean.iter_mut().zip(c) {
+                *m += x;
+            }
+        }
+        let inv = 1.0 / centroids.len() as f32;
+        for m in mean.iter_mut() {
+            *m *= inv;
+        }
+
+        // 中心と一致した重心は引くと零ベクトルになる。方向が定義できないので落とす。
+        let kept: Vec<bool> = centroids
+            .par_iter_mut()
+            .map(|c| {
+                for (x, m) in c.iter_mut().zip(&mean) {
+                    *x -= m;
+                }
+                l2_normalize(c)
+            })
+            .collect();
+
+        if kept.iter().any(|k| !k) {
+            excluded_by_missing_vectors += kept.iter().filter(|k| !**k).count();
+            let mut it = kept.iter();
+            media_ids.retain(|_| *it.next().unwrap_or(&true));
+            let mut it = kept.iter();
+            centroids.retain(|_| *it.next().unwrap_or(&true));
+            let mut it = kept.iter();
+            contributing_counts.retain(|_| *it.next().unwrap_or(&true));
+            let mut it = kept.iter();
+            has_descriptive.retain(|_| *it.next().unwrap_or(&true));
+        }
+    }
+
+    // 解析済みメディアのうち、basic タグ不足で候補集合に入れなかった数
+    let completed: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE analysis_status = 'completed'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+    let excluded_by_tag_count = (completed as usize).saturating_sub(n);
+
+    Ok(Library {
+        media_ids,
+        centroids,
+        contributing_counts,
+        has_descriptive,
+        dim,
+        excluded_by_tag_count,
+        excluded_by_missing_vectors,
+        load_ms,
+        centroid_ms: t1.elapsed().as_millis() as u64,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// コマンド: 状態取得
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct EmbeddingStatus {
+    pub model: String,
+    pub model_available: bool,
+    pub available_models: Vec<String>,
+    pub total_tags: i64,
+    pub embedded_tags: i64,
+    pub missing_tags: i64,
+    pub eligible_media: i64,
+    pub excluded_media: i64,
+    pub completed_media: i64,
+    pub min_basic_tags: usize,
+    pub min_candidates: usize,
+    pub full_spectrum_min: usize,
+    pub include_descriptive: bool,
+    pub centering: bool,
+}
+
+#[tauri::command]
+pub async fn get_embedding_status(db_state: State<'_, DbState>) -> Result<EmbeddingStatus, String> {
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+
+    let total_tags: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+        .fetch_one(pool)
+        .await
+        .map_err(|e| cmd_err("get_embedding_status", e))?;
+
+    let embedded_tags: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM tag_embeddings WHERE model = ?1")
+            .bind(&cfg.model)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+
+    let completed_media: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM media WHERE analysis_status = 'completed'")
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+
+    // basic タグが下限を満たすメディア数。カテゴリは数えない（全メディアが持つため）。
+    let eligible_media: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*) FROM (
+            SELECT mt.media_id
+            FROM media_tags mt
+            JOIN tags t ON t.id = mt.tag_id
+            JOIN media m ON m.id = mt.media_id
+            WHERE m.analysis_status = 'completed'
+              AND t.is_category = 0
+              AND t.tag_kind = 'basic'
+            GROUP BY mt.media_id
+            HAVING COUNT(DISTINCT mt.tag_id) >= ?1
+        )
+        "#,
+    )
+    .bind(MIN_BASIC_TAGS as i64)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let available_models = crate::batch::fetch_ollama_models(&cfg.ollama_url)
+        .await
+        .unwrap_or_default();
+    // Ollama はタグ名を `name:tag` で持つため、`:latest` 省略表記も一致させる
+    let model_available = available_models
+        .iter()
+        .any(|m| m == &cfg.model || m.trim_end_matches(":latest") == cfg.model);
+
+    Ok(EmbeddingStatus {
+        model: cfg.model,
+        model_available,
+        available_models,
+        total_tags,
+        embedded_tags,
+        missing_tags: (total_tags - embedded_tags).max(0),
+        eligible_media,
+        excluded_media: (completed_media - eligible_media).max(0),
+        completed_media,
+        min_basic_tags: MIN_BASIC_TAGS,
+        min_candidates: MIN_CANDIDATES,
+        full_spectrum_min: FULL_SPECTRUM_MIN,
+        include_descriptive: cfg.include_descriptive,
+        centering: cfg.centering,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// コマンド: ベクトル生成
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Serialize)]
+pub struct EmbeddingProgress {
+    pub total: usize,
+    pub current: usize,
+    pub status: String,
+}
+
+#[derive(Serialize)]
+pub struct GenerateResult {
+    pub model: String,
+    pub generated: usize,
+    pub dim: usize,
+    pub elapsed_ms: u64,
+}
+
+/// 未ベクトル化タグを一括生成する。
+///
+/// スキャン・タグマージ提案と同じグローバルロックを取るため、同時実行は自動的に排他される。
+#[tauri::command]
+pub async fn generate_tag_embeddings(
+    app_handle: AppHandle,
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<GenerateResult, String> {
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+    let started = std::time::Instant::now();
+
+    let pending = sqlx::query_as::<_, (i64, String, Option<String>)>(
+        r#"
+        SELECT t.id, t.name, t.name_ja
+        FROM tags t
+        LEFT JOIN tag_embeddings e ON e.tag_id = t.id AND e.model = ?1
+        WHERE e.tag_id IS NULL
+        ORDER BY t.id
+        "#,
+    )
+    .bind(&cfg.model)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| cmd_err("generate_tag_embeddings", e))?;
+
+    let total = pending.len();
+    if total == 0 {
+        return Ok(GenerateResult {
+            model: cfg.model,
+            generated: 0,
+            dim: 0,
+            elapsed_ms: 0,
+        });
+    }
+
+    // 埋め込みは1件あたりは速いが、初回はモデルのロードで数十秒かかることがある
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()
+        .map_err(|e| cmd_err("generate_tag_embeddings", e))?;
+
+    let mut generated = 0usize;
+    let mut dim = 0usize;
+
+    for chunk in pending.chunks(EMBED_BATCH_SIZE) {
+        let _ = app_handle.emit(
+            "embedding_progress",
+            EmbeddingProgress {
+                total,
+                current: generated,
+                status: "running".to_string(),
+            },
+        );
+
+        let texts: Vec<String> = chunk
+            .iter()
+            .map(|(_, name, name_ja)| embedding_text(name, name_ja.as_deref()))
+            .collect();
+
+        let vectors = match fetch_embeddings(&client, &cfg.ollama_url, &cfg.model, &texts).await {
+            Ok(v) => v,
+            Err(e) => {
+                let _ = app_handle.emit(
+                    "embedding_progress",
+                    EmbeddingProgress {
+                        total,
+                        current: generated,
+                        status: "error".to_string(),
+                    },
+                );
+                let _ = crate::batch::unload_ollama_model(&cfg.ollama_url, &cfg.model).await;
+                return Err(cmd_err("generate_tag_embeddings", e));
+            }
+        };
+
+        for ((tag_id, _, _), mut v) in chunk.iter().zip(vectors) {
+            // 保存前に正規化しておく。ノルムが 0 のベクトルは保存しても使えないので捨てる。
+            if !l2_normalize(&mut v) {
+                continue;
+            }
+            dim = v.len();
+            let res = sqlx::query(
+                "INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(tag_id, model) DO UPDATE SET dim = ?3, vector = ?4",
+            )
+            .bind(tag_id)
+            .bind(&cfg.model)
+            .bind(v.len() as i64)
+            .bind(to_blob(&v))
+            .execute(pool)
+            .await;
+            if res.is_ok() {
+                generated += 1;
+            }
+        }
+    }
+
+    // 生成後は VRAM を解放する（タグマージ提案と同じ後始末）
+    let _ = crate::batch::unload_ollama_model(&cfg.ollama_url, &cfg.model).await;
+
+    let _ = app_handle.emit(
+        "embedding_progress",
+        EmbeddingProgress {
+            total,
+            current: generated,
+            status: "done".to_string(),
+        },
+    );
+
+    Ok(GenerateResult {
+        model: cfg.model,
+        generated,
+        dim,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// コマンド: 類似メディア検索
+// ---------------------------------------------------------------------------
+
+/// 類似メディア1件。
+///
+/// `file_path` / `thumbnail_path` まで返すのは、類似メディアが現在のフィルタ結果に
+/// 含まれているとは限らず、画面側が id からサムネイルを解決できないため。
+#[derive(Serialize)]
+pub struct SimilarItem {
+    pub media_id: i64,
+    pub similarity: f32,
+    pub file_path: String,
+    pub thumbnail_path: String,
+}
+
+#[derive(Serialize)]
+pub struct SpectrumResult {
+    /// `ok` / `degraded` / `not_enough_candidates` / `base_not_eligible` / `no_embeddings`
+    pub status: String,
+    pub base_media_id: i64,
+    pub model: String,
+    pub items: Vec<SimilarItem>,
+    /// 基準メディアから見た全候補の実測レンジ。0〜1固定軸の凡例に線分として描く。
+    pub range_min: f32,
+    pub range_mean: f32,
+    pub range_max: f32,
+    pub candidate_count: usize,
+    pub excluded_media: usize,
+    pub centering: bool,
+    pub include_descriptive: bool,
+    pub elapsed_ms: u64,
+}
+
+fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Option<&Library>) -> SpectrumResult {
+    SpectrumResult {
+        status: status.to_string(),
+        base_media_id,
+        model: cfg.model.clone(),
+        items: Vec::new(),
+        range_min: 0.0,
+        range_mean: 0.0,
+        range_max: 0.0,
+        candidate_count: lib.map(|l| l.media_ids.len()).unwrap_or(0),
+        excluded_media: lib
+            .map(|l| l.excluded_by_tag_count + l.excluded_by_missing_vectors)
+            .unwrap_or(0),
+        centering: cfg.centering,
+        include_descriptive: cfg.include_descriptive,
+        elapsed_ms: 0,
+    }
+}
+
+/// 基準メディアに対する類似度を全候補について算出し、上位 `limit` 件を返す。
+///
+/// Phase 1 では「似ている順」1列のみを返す。3ゾーン分割は実測後（Phase 2）に載せる。
+#[tauri::command]
+pub async fn find_similar_media(
+    base_media_id: i64,
+    limit: Option<usize>,
+    db_state: State<'_, DbState>,
+) -> Result<SpectrumResult, String> {
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+    let started = std::time::Instant::now();
+
+    let lib = build_library(pool, &cfg).await?;
+
+    if lib.dim == 0 || lib.centroids.is_empty() {
+        return Ok(empty_result("no_embeddings", base_media_id, &cfg, Some(&lib)));
+    }
+
+    let Some(base_idx) = lib.index_of(base_media_id) else {
+        return Ok(empty_result("base_not_eligible", base_media_id, &cfg, Some(&lib)));
+    };
+
+    // 候補は基準メディア自身を除いた数で数える
+    let candidate_count = lib.media_ids.len() - 1;
+    if candidate_count < MIN_CANDIDATES {
+        let mut r = empty_result("not_enough_candidates", base_media_id, &cfg, Some(&lib));
+        r.candidate_count = candidate_count;
+        return Ok(r);
+    }
+
+    let base = &lib.centroids[base_idx];
+    let mut scored: Vec<(i64, f32)> = lib
+        .centroids
+        .par_iter()
+        .enumerate()
+        .filter(|(i, _)| *i != base_idx)
+        .map(|(i, c)| (lib.media_ids[i], dot(base, c)))
+        .collect();
+
+    // レンジ凡例は上位だけでなく**全候補**から取る。これが分布の広がりそのものになる。
+    let sum: f32 = scored.iter().map(|s| s.1).sum();
+    let range_mean = sum / scored.len() as f32;
+    let range_min = scored.iter().map(|s| s.1).fold(f32::INFINITY, f32::min);
+    let range_max = scored.iter().map(|s| s.1).fold(f32::NEG_INFINITY, f32::max);
+
+    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    scored.truncate(limit.unwrap_or(12));
+
+    // 表示に必要なパスだけを上位N件についてまとめて引く
+    let ids: Vec<String> = scored.iter().map(|(id, _)| id.to_string()).collect();
+    let paths: HashMap<i64, (String, String)> = if ids.is_empty() {
+        HashMap::new()
+    } else {
+        sqlx::query_as::<_, (i64, String, String)>(&format!(
+            "SELECT id, file_path, thumbnail_path FROM media WHERE id IN ({})",
+            ids.join(",")
+        ))
+        .fetch_all(pool)
+        .await
+        .map_err(|e| cmd_err("find_similar_media", e))?
+        .into_iter()
+        .map(|(id, f, t)| (id, (f, t)))
+        .collect()
+    };
+
+    let items: Vec<SimilarItem> = scored
+        .into_iter()
+        .map(|(media_id, similarity)| {
+            let (file_path, thumbnail_path) = paths.get(&media_id).cloned().unwrap_or_default();
+            SimilarItem { media_id, similarity, file_path, thumbnail_path }
+        })
+        .collect();
+
+    Ok(SpectrumResult {
+        status: if candidate_count < FULL_SPECTRUM_MIN { "degraded" } else { "ok" }.to_string(),
+        base_media_id,
+        model: cfg.model.clone(),
+        items,
+        range_min,
+        range_mean,
+        range_max,
+        candidate_count,
+        excluded_media: lib.excluded_by_tag_count + lib.excluded_by_missing_vectors,
+        centering: cfg.centering,
+        include_descriptive: cfg.include_descriptive,
+        elapsed_ms: started.elapsed().as_millis() as u64,
+    })
+}
+
+// ---------------------------------------------------------------------------
+// コマンド: 診断（Phase 2 の設計値を確定するための実測）
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct HistogramBin {
+    pub lower: f32,
+    pub upper: f32,
+    pub count: usize,
+}
+
+#[derive(Serialize)]
+pub struct EmbeddingDiagnostics {
+    pub model: String,
+    pub dim: usize,
+    pub centering: bool,
+    pub include_descriptive: bool,
+    pub eligible_media: usize,
+    pub excluded_by_tag_count: usize,
+    pub excluded_by_missing_vectors: usize,
+    pub sample_size: usize,
+    pub pair_count: usize,
+    pub sim_min: f32,
+    pub sim_mean: f32,
+    pub sim_max: f32,
+    pub sim_stddev: f32,
+    /// 固定軸 [-1, 1] を 0.1 刻みで 20 分割。モデル間で直接比較できるよう軸は動かさない。
+    pub histogram: Vec<HistogramBin>,
+    /// タグ本数と平均類似度のピアソン相関。ハブ化が起きているかの直接指標。
+    pub tagcount_similarity_corr: f32,
+    /// descriptive 保有群 / 非保有群の群内・群間平均類似度。群分離の直接指標。
+    pub desc_group_size: usize,
+    pub nondesc_group_size: usize,
+    pub desc_intra_mean: Option<f32>,
+    pub nondesc_intra_mean: Option<f32>,
+    pub inter_group_mean: Option<f32>,
+    pub load_ms: u64,
+    pub centroid_ms: u64,
+    pub pairwise_ms: u64,
+}
+
+fn pearson(xs: &[f32], ys: &[f32]) -> f32 {
+    let n = xs.len();
+    if n < 2 {
+        return 0.0;
+    }
+    let mx = xs.iter().sum::<f32>() / n as f32;
+    let my = ys.iter().sum::<f32>() / n as f32;
+    let mut num = 0f32;
+    let mut dx = 0f32;
+    let mut dy = 0f32;
+    for (x, y) in xs.iter().zip(ys) {
+        let a = x - mx;
+        let b = y - my;
+        num += a * b;
+        dx += a * a;
+        dy += b * b;
+    }
+    let den = (dx * dy).sqrt();
+    if den <= f32::EPSILON {
+        0.0
+    } else {
+        num / den
+    }
+}
+
+/// 類似度分布・ハブ化・群分離を実測する。Phase 2 の帯域設計と各対策の要否を決めるための計測。
+#[tauri::command]
+pub async fn get_embedding_diagnostics(
+    db_state: State<'_, DbState>,
+) -> Result<EmbeddingDiagnostics, String> {
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+    let lib = build_library(pool, &cfg).await?;
+    compute_diagnostics(&lib, &cfg)
+}
+
+/// 診断の実体。コマンドから切り離してあるのは、計測（`#[ignore]` テスト）が
+/// **本番と同じコード**を通れるようにするため。
+pub fn compute_diagnostics(lib: &Library, cfg: &SpectrumConfig) -> Result<EmbeddingDiagnostics, String> {
+    let n = lib.centroids.len();
+    if n < 2 || lib.dim == 0 {
+        return Err(
+            "診断に必要な件数のメディアがありません。タグのベクトル化を先に実行してください。".to_string(),
+        );
+    }
+
+    // 総当りは O(N^2) なので等間隔サンプリングで上限を掛ける。
+    // 等間隔にするのは、実行のたびに標本が変わって結果がぶれるのを避けるため。
+    let step = ((n + DIAGNOSTICS_SAMPLE_CAP - 1) / DIAGNOSTICS_SAMPLE_CAP).max(1);
+    let idx: Vec<usize> = (0..n).step_by(step).collect();
+    let m = idx.len();
+
+    let t = std::time::Instant::now();
+    // 各標本について、他の全標本との類似度を出す
+    let rows: Vec<Vec<f32>> = idx
+        .par_iter()
+        .map(|&i| {
+            idx.iter()
+                .filter(|&&j| j != i)
+                .map(|&j| dot(&lib.centroids[i], &lib.centroids[j]))
+                .collect()
+        })
+        .collect();
+    let pairwise_ms = t.elapsed().as_millis() as u64;
+
+    let mut all: Vec<f32> = Vec::with_capacity(m * m);
+    for r in &rows {
+        all.extend_from_slice(r);
+    }
+    let pair_count = all.len() / 2; // 各ペアが2回現れる
+
+    let sim_mean = all.iter().sum::<f32>() / all.len() as f32;
+    let sim_min = all.iter().copied().fold(f32::INFINITY, f32::min);
+    let sim_max = all.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let var = all.iter().map(|x| (x - sim_mean).powi(2)).sum::<f32>() / all.len() as f32;
+
+    let mut histogram: Vec<HistogramBin> = (0..20)
+        .map(|b| HistogramBin {
+            lower: -1.0 + b as f32 * 0.1,
+            upper: -1.0 + (b + 1) as f32 * 0.1,
+            count: 0,
+        })
+        .collect();
+    for x in &all {
+        let b = (((x + 1.0) / 0.1).floor() as isize).clamp(0, 19) as usize;
+        histogram[b].count += 1;
+    }
+
+    // ハブ化: タグ本数 vs その標本の平均類似度
+    let tag_counts: Vec<f32> = idx.iter().map(|&i| lib.contributing_counts[i] as f32).collect();
+    let mean_sims: Vec<f32> = rows.iter().map(|r| r.iter().sum::<f32>() / r.len() as f32).collect();
+    let tagcount_similarity_corr = pearson(&tag_counts, &mean_sims);
+
+    // 群分離: descriptive 保有 / 非保有
+    let mut desc_intra = (0f32, 0usize);
+    let mut nondesc_intra = (0f32, 0usize);
+    let mut inter = (0f32, 0usize);
+    for (a, &i) in idx.iter().enumerate() {
+        for &j in idx.iter().skip(a + 1) {
+            let s = dot(&lib.centroids[i], &lib.centroids[j]);
+            match (lib.has_descriptive[i], lib.has_descriptive[j]) {
+                (true, true) => {
+                    desc_intra.0 += s;
+                    desc_intra.1 += 1;
+                }
+                (false, false) => {
+                    nondesc_intra.0 += s;
+                    nondesc_intra.1 += 1;
+                }
+                _ => {
+                    inter.0 += s;
+                    inter.1 += 1;
+                }
+            }
+        }
+    }
+    let avg = |(sum, cnt): (f32, usize)| if cnt == 0 { None } else { Some(sum / cnt as f32) };
+
+    Ok(EmbeddingDiagnostics {
+        model: cfg.model.clone(),
+        dim: lib.dim,
+        centering: cfg.centering,
+        include_descriptive: cfg.include_descriptive,
+        eligible_media: n,
+        excluded_by_tag_count: lib.excluded_by_tag_count,
+        excluded_by_missing_vectors: lib.excluded_by_missing_vectors,
+        sample_size: m,
+        pair_count,
+        sim_min,
+        sim_mean,
+        sim_max,
+        sim_stddev: var.sqrt(),
+        histogram,
+        tagcount_similarity_corr,
+        desc_group_size: idx.iter().filter(|&&i| lib.has_descriptive[i]).count(),
+        nondesc_group_size: idx.iter().filter(|&&i| !lib.has_descriptive[i]).count(),
+        desc_intra_mean: avg(desc_intra),
+        nondesc_intra_mean: avg(nondesc_intra),
+        inter_group_mean: avg(inter),
+        load_ms: lib.load_ms,
+        centroid_ms: lib.centroid_ms,
+        pairwise_ms,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn blob_roundtrip_preserves_values() {
+        let v = vec![0.0f32, 1.0, -0.5, 3.4028235e38, f32::MIN_POSITIVE];
+        assert_eq!(from_blob(&to_blob(&v)), v);
+    }
+
+    #[test]
+    fn l2_normalize_makes_unit_vector() {
+        let mut v = vec![3.0f32, 4.0];
+        assert!(l2_normalize(&mut v));
+        assert!((v.iter().map(|x| x * x).sum::<f32>() - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn l2_normalize_rejects_zero_vector() {
+        // 零ベクトルは方向が未定義。正規化して NaN を撒くのではなく拒否する。
+        let mut v = vec![0.0f32; 8];
+        assert!(!l2_normalize(&mut v));
+        assert_eq!(v, vec![0.0f32; 8]);
+    }
+
+    #[test]
+    fn dot_of_identical_unit_vectors_is_one() {
+        let mut a = vec![1.0f32, 2.0, 3.0];
+        l2_normalize(&mut a);
+        assert!((dot(&a, &a) - 1.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn embedding_text_prefers_japanese_name() {
+        // 英語名は normalize_tag_en が壊していることがある（lens -> len）ので
+        // name_ja があるときは必ずそちらを使う
+        assert_eq!(embedding_text("len", Some("レンズ")), "レンズ");
+        assert_eq!(embedding_text("len", Some("  レンズ  ")), "レンズ");
+    }
+
+    #[test]
+    fn embedding_text_falls_back_to_english_with_underscores_expanded() {
+        assert_eq!(embedding_text("rain_soaked_tree", None), "rain soaked tree");
+        assert_eq!(embedding_text("cat", Some("")), "cat");
+        assert_eq!(embedding_text("cat", Some("   ")), "cat");
+    }
+
+    #[test]
+    fn pearson_detects_perfect_correlation() {
+        let xs = vec![1.0f32, 2.0, 3.0, 4.0];
+        assert!((pearson(&xs, &[2.0, 4.0, 6.0, 8.0]) - 1.0).abs() < 1e-5);
+        assert!((pearson(&xs, &[8.0, 6.0, 4.0, 2.0]) + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn pearson_returns_zero_for_constant_input() {
+        // 分散 0 で 0 除算になる経路。NaN を返してはならない。
+        let r = pearson(&[1.0, 1.0, 1.0], &[1.0, 2.0, 3.0]);
+        assert!(r.is_finite());
+        assert_eq!(r, 0.0);
+    }
+
+    /// 計測用テストの共通前処理。
+    ///
+    /// スナップショットは計測のたびに作り直されるため、ベクトルは毎回未生成の状態から始まる。
+    /// `measure_real_library` と `similar_examples` のどちらを単独で走らせても成立するよう、
+    /// 生成処理はここに置いて両方から呼ぶ。本番の `generate_tag_embeddings` と同じ手順。
+    async fn ensure_embeddings(pool: &Pool<Sqlite>, model: &str, url: &str) -> usize {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tag_embeddings (
+                tag_id INTEGER NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+                vector BLOB NOT NULL, created_at INTEGER DEFAULT (strftime('%s','now')),
+                PRIMARY KEY (tag_id, model))",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let pending = sqlx::query_as::<_, (i64, String, Option<String>)>(
+            "SELECT t.id, t.name, t.name_ja FROM tags t
+             LEFT JOIN tag_embeddings e ON e.tag_id = t.id AND e.model = ?1
+             WHERE e.tag_id IS NULL ORDER BY t.id",
+        )
+        .bind(model)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        if pending.is_empty() {
+            return 0;
+        }
+
+        println!("未生成タグ {} 件をベクトル化します ({})", pending.len(), model);
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        for chunk in pending.chunks(EMBED_BATCH_SIZE) {
+            let texts: Vec<String> = chunk
+                .iter()
+                .map(|(_, n, ja)| embedding_text(n, ja.as_deref()))
+                .collect();
+            let vecs = fetch_embeddings(&client, url, model, &texts).await.unwrap();
+            for ((id, _, _), mut v) in chunk.iter().zip(vecs) {
+                if !l2_normalize(&mut v) {
+                    continue;
+                }
+                sqlx::query(
+                    "INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1,?2,?3,?4)
+                     ON CONFLICT(tag_id, model) DO UPDATE SET dim=?3, vector=?4",
+                )
+                .bind(id)
+                .bind(model)
+                .bind(v.len() as i64)
+                .bind(to_blob(&v))
+                .execute(pool)
+                .await
+                .unwrap();
+            }
+        }
+        let secs = started.elapsed().as_secs_f32();
+        println!(
+            "ベクトル化 {} 件 / {:.1} 秒 ({:.1} 件/秒)",
+            pending.len(),
+            secs,
+            pending.len() as f32 / secs.max(0.001)
+        );
+        pending.len()
+    }
+
+    /// 実DBに対する定性確認。分布の数値が良くても結果が無意味ということはあり得るため、
+    /// 上位・中位・下位に実際にどのメディアが並ぶかをタグ名付きで目視する。
+    ///
+    /// ```text
+    /// LOMA_MEASURE_DB=... LOMA_MEASURE_MODEL=... \
+    ///   cargo test --release similar_examples -- --ignored --nocapture
+    /// ```
+    #[test]
+    #[ignore]
+    fn similar_examples() {
+        let Ok(db_path) = std::env::var("LOMA_MEASURE_DB") else {
+            eprintln!("LOMA_MEASURE_DB が未設定のためスキップ");
+            return;
+        };
+        let model = std::env::var("LOMA_MEASURE_MODEL").unwrap_or_else(|_| "bge-m3".to_string());
+        let url = std::env::var("LOMA_MEASURE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+        let centering = std::env::var("LOMA_MEASURE_CENTERING").unwrap_or_else(|_| "true".into()) == "true";
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(4)
+                .connect(&format!("sqlite:{}", db_path))
+                .await
+                .expect("DB を開けません");
+
+            ensure_embeddings(&pool, &model, &url).await;
+
+            let cfg = SpectrumConfig {
+                ollama_url: url.clone(),
+                model: model.clone(),
+                include_descriptive: false,
+                centering,
+            };
+            let lib = build_library(&pool, &cfg).await.unwrap();
+            println!("\n=== {} / centering={} / 対象 {} 件 ===", model, centering, lib.media_ids.len());
+
+            // basic タグ名を引く（重心に入っているのと同じ集合）
+            async fn tags_of(pool: &Pool<Sqlite>, id: i64) -> String {
+                sqlx::query_as::<_, (String,)>(
+                    "SELECT COALESCE(t.name_ja, t.name) FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+                     WHERE mt.media_id = ?1 AND t.is_category = 0 AND t.tag_kind = 'basic'",
+                )
+                .bind(id)
+                .fetch_all(pool)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .map(|(s,)| s)
+                .collect::<Vec<_>>()
+                .join(", ")
+            }
+            async fn name_of(pool: &Pool<Sqlite>, id: i64) -> String {
+                sqlx::query_as::<_, (String,)>("SELECT file_path FROM media WHERE id = ?1")
+                    .bind(id)
+                    .fetch_one(pool)
+                    .await
+                    .map(|(p,)| p.rsplit(['/', '\\']).next().unwrap_or("").to_string())
+                    .unwrap_or_default()
+            }
+
+            // 等間隔に3件を基準として選ぶ
+            let n = lib.media_ids.len();
+            for base_idx in [0, n / 3, (n * 2) / 3] {
+                let base_id = lib.media_ids[base_idx];
+                println!("\n■ 基準: {} [{}]", name_of(&pool, base_id).await, tags_of(&pool, base_id).await);
+
+                let mut scored: Vec<(i64, f32)> = (0..n)
+                    .filter(|&i| i != base_idx)
+                    .map(|i| (lib.media_ids[i], dot(&lib.centroids[base_idx], &lib.centroids[i])))
+                    .collect();
+                scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+
+                for (label, slice) in [
+                    ("最も似ている", &scored[0..3]),
+                    ("まんなか", &scored[scored.len() / 2..scored.len() / 2 + 3]),
+                    ("最も似ていない", &scored[scored.len() - 3..]),
+                ] {
+                    println!("  [{}]", label);
+                    for (id, s) in slice {
+                        println!("    {:+.3}  {}  [{}]", s, name_of(&pool, *id).await, tags_of(&pool, *id).await);
+                    }
+                }
+            }
+        });
+    }
+
+    /// 実DBに対する計測。Phase 1 の目的（§8.3 の未検証前提を潰す）そのもの。
+    ///
+    /// 通常の `cargo test` では走らない。実行例:
+    /// ```text
+    /// LOMA_MEASURE_DB=/path/to/copy-of/loma.db \
+    /// LOMA_MEASURE_MODEL=qwen3-embedding:8b \
+    ///   cargo test --release measure_real_library -- --ignored --nocapture
+    /// ```
+    ///
+    /// **必ず DB のコピーを指すこと。** このテストは `tag_embeddings` に行を書き込む。
+    #[test]
+    #[ignore]
+    fn measure_real_library() {
+        let Ok(db_path) = std::env::var("LOMA_MEASURE_DB") else {
+            eprintln!("LOMA_MEASURE_DB が未設定のためスキップ");
+            return;
+        };
+        let model = std::env::var("LOMA_MEASURE_MODEL").unwrap_or_else(|_| "bge-m3".to_string());
+        let url = std::env::var("LOMA_MEASURE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
+
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .max_connections(4)
+                .connect(&format!("sqlite:{}", db_path))
+                .await
+                .expect("DB を開けません");
+
+            println!("\n=== model: {} ===", model);
+            ensure_embeddings(&pool, &model, &url).await;
+
+            // centering × descriptive の4条件を実測する
+            for centering in [true, false] {
+                for include_descriptive in [false, true] {
+                    let cfg = SpectrumConfig {
+                        ollama_url: url.clone(),
+                        model: model.clone(),
+                        include_descriptive,
+                        centering,
+                    };
+                    let lib = build_library(&pool, &cfg).await.unwrap();
+                    let d = match compute_diagnostics(&lib, &cfg) {
+                        Ok(d) => d,
+                        Err(e) => {
+                            println!("centering={} desc={} -> {}", centering, include_descriptive, e);
+                            continue;
+                        }
+                    };
+                    println!(
+                        "\n--- centering={} / descriptive={} ---",
+                        centering, include_descriptive
+                    );
+                    println!(
+                        "対象 {} 件 (タグ不足で除外 {} / ベクトル無しで除外 {}) / {}次元",
+                        d.eligible_media, d.excluded_by_tag_count, d.excluded_by_missing_vectors, d.dim
+                    );
+                    println!(
+                        "類似度  min {:.4} / mean {:.4} / max {:.4} / sd {:.4}  (標本 {} / ペア {})",
+                        d.sim_min, d.sim_mean, d.sim_max, d.sim_stddev, d.sample_size, d.pair_count
+                    );
+                    println!("ハブ化  タグ本数×平均類似度の相関 r = {:+.4}", d.tagcount_similarity_corr);
+                    println!(
+                        "群分離  desc群内 {:?} / 非desc群内 {:?} / 群間 {:?}  (群サイズ {} / {})",
+                        d.desc_intra_mean.map(|v| (v * 1000.0).round() / 1000.0),
+                        d.nondesc_intra_mean.map(|v| (v * 1000.0).round() / 1000.0),
+                        d.inter_group_mean.map(|v| (v * 1000.0).round() / 1000.0),
+                        d.desc_group_size,
+                        d.nondesc_group_size
+                    );
+                    println!(
+                        "所要    読込 {}ms + 重心 {}ms + 総当り {}ms",
+                        d.load_ms, d.centroid_ms, d.pairwise_ms
+                    );
+                    let total: usize = d.histogram.iter().map(|b| b.count).sum();
+                    let bars: Vec<String> = d
+                        .histogram
+                        .iter()
+                        .filter(|b| b.count > 0)
+                        .map(|b| {
+                            format!(
+                                "{:+.1}..{:+.1} {:>5.1}% {}",
+                                b.lower,
+                                b.upper,
+                                b.count as f32 * 100.0 / total as f32,
+                                "#".repeat(((b.count * 40) / total.max(1)).max(1))
+                            )
+                        })
+                        .collect();
+                    println!("分布:\n  {}", bars.join("\n  "));
+                }
+            }
+        });
+    }
+}

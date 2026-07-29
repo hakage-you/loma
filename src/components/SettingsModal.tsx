@@ -1,10 +1,22 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HelpCircle, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown } from 'lucide-react';
+import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HelpCircle, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
-import { RECOMMENDED_VLM_MODELS, RECOMMENDED_TEXT_MODELS, RecommendedModel } from '../constants/recommendedModels';
-import { OllamaPullProgressPayload, TagGranularity, GranularityComparisonItem } from '../types';
+import {
+  RECOMMENDED_VLM_MODELS,
+  RECOMMENDED_TEXT_MODELS,
+  RECOMMENDED_EMBEDDING_MODELS,
+  RecommendedModel,
+} from '../constants/recommendedModels';
+import {
+  OllamaPullProgressPayload,
+  TagGranularity,
+  GranularityComparisonItem,
+  EmbeddingStatus,
+  EmbeddingProgressPayload,
+  EmbeddingDiagnostics,
+} from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 
 interface SettingsModalProps {
@@ -130,6 +142,27 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [compareImagePath, setCompareImagePath] = useState<string | null>(null);
   const [compareImageEnlarged, setCompareImageEnlarged] = useState(false);
 
+  // 概念スペクトラム検索（タグ埋め込み）
+  const [embeddingModel, setEmbeddingModel] = useState(settings.spectrum_embedding_model || 'bge-m3');
+  const [spectrumIncludeDescriptive, setSpectrumIncludeDescriptive] = useState<boolean>(
+    settings.spectrum_include_descriptive === 'true',
+  );
+  const [spectrumCentering, setSpectrumCentering] = useState<boolean>(settings.spectrum_centering !== 'false');
+  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
+  const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgressPayload | null>(null);
+  const [isGeneratingEmbeddings, setIsGeneratingEmbeddings] = useState(false);
+  const [embeddingError, setEmbeddingError] = useState<string | null>(null);
+  const [diagnostics, setDiagnostics] = useState<EmbeddingDiagnostics | null>(null);
+  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+
+  const refreshEmbeddingStatus = async () => {
+    try {
+      setEmbeddingStatus(await invoke<EmbeddingStatus>('get_embedding_status'));
+    } catch (e) {
+      setEmbeddingError(String(e));
+    }
+  };
+
   // System VRAM
   const [vramGb, setVramGb] = useState<number | null>(null);
 
@@ -139,13 +172,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       invoke<number>('get_system_vram_gb')
         .then((gb: number) => setVramGb(gb))
         .catch(() => setVramGb(0.0));
+      refreshEmbeddingStatus();
     }
   }, [open]);
 
   // Ollama Model Download State
   const [confirmDownloadModal, setConfirmDownloadModal] = useState<{
     model: RecommendedModel;
-    targetType: 'vlm' | 'text';
+    targetType: 'vlm' | 'text' | 'embedding';
   } | null>(null);
   const [downloadProgress, setDownloadProgress] = useState<OllamaPullProgressPayload | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
@@ -191,6 +225,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (settings.llm_debug_logging !== undefined) setLlmDebugLogging(settings.llm_debug_logging === 'true');
     if (settings.force_detailed_prompt !== undefined) setForceDetailedPrompt(settings.force_detailed_prompt === 'true');
     if (settings.tag_granularity) setTagGranularity(settings.tag_granularity as TagGranularity);
+
+    if (settings.spectrum_embedding_model) setEmbeddingModel(settings.spectrum_embedding_model);
+    if (settings.spectrum_include_descriptive !== undefined)
+      setSpectrumIncludeDescriptive(settings.spectrum_include_descriptive === 'true');
+    if (settings.spectrum_centering !== undefined) setSpectrumCentering(settings.spectrum_centering !== 'false');
 
     if (settings.gemini_model) setGeminiModel(settings.gemini_model);
     if (settings.gemini_text_model) setGeminiTextModel(settings.gemini_text_model);
@@ -321,6 +360,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       await onUpdateSetting('ui_language', uiLanguage);
       await onUpdateSetting('ffmpeg_notice_enabled', ffmpegNoticeEnabled ? 'true' : 'false');
 
+      await onUpdateSetting('spectrum_embedding_model', embeddingModel);
+      await onUpdateSetting('spectrum_include_descriptive', spectrumIncludeDescriptive ? 'true' : 'false');
+      await onUpdateSetting('spectrum_centering', spectrumCentering ? 'true' : 'false');
+
       // Save API keys to OS Secure Store
       await invoke('save_provider_api_key', { provider: 'gemini', apiKey: geminiApiKey });
       await invoke('save_provider_api_key', { provider: 'openai', apiKey: openaiApiKey });
@@ -346,16 +389,53 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  const handleSelectPreset = async (item: RecommendedModel, targetType: 'vlm' | 'text') => {
+  const handleSelectPreset = async (item: RecommendedModel, targetType: 'vlm' | 'text' | 'embedding') => {
     const installedModelName = availableModels.find((m) => isModelInstalled(item.name, [m]));
     if (installedModelName) {
       if (targetType === 'vlm') {
         setSelectedVlmModel(installedModelName);
-      } else {
+      } else if (targetType === 'text') {
         setSelectedTextModel(installedModelName);
+      } else {
+        setEmbeddingModel(installedModelName);
       }
     } else {
       setConfirmDownloadModal({ model: item, targetType });
+    }
+  };
+
+  /**
+   * 未ベクトル化タグを一括生成する。
+   * スキャン・タグマージと同じグローバルロックを共有するため、実行中は他の処理が弾かれる。
+   */
+  const handleGenerateEmbeddings = async () => {
+    setEmbeddingError(null);
+    setIsGeneratingEmbeddings(true);
+    setEmbeddingProgress({ total: 0, current: 0, status: 'running' });
+    const unlistenPromise = listen<EmbeddingProgressPayload>('embedding_progress', (event) => {
+      setEmbeddingProgress(event.payload);
+    });
+    try {
+      await invoke('generate_tag_embeddings');
+      await refreshEmbeddingStatus();
+    } catch (e) {
+      setEmbeddingError(String(e));
+    } finally {
+      setIsGeneratingEmbeddings(false);
+      unlistenPromise.then((unlisten) => unlisten());
+    }
+  };
+
+  const handleRunDiagnostics = async () => {
+    setDiagnosticsLoading(true);
+    setEmbeddingError(null);
+    try {
+      setDiagnostics(await invoke<EmbeddingDiagnostics>('get_embedding_diagnostics'));
+    } catch (e) {
+      setEmbeddingError(String(e));
+      setDiagnostics(null);
+    } finally {
+      setDiagnosticsLoading(false);
     }
   };
 
@@ -384,8 +464,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           await onFetchModels();
           if (targetType === 'vlm') {
             setSelectedVlmModel(targetModel.name);
-          } else {
+          } else if (targetType === 'text') {
             setSelectedTextModel(targetModel.name);
+          } else {
+            setEmbeddingModel(targetModel.name);
           }
         }
       }
@@ -1013,6 +1095,219 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </button>
                   </div>
                 )}
+                {/* 概念スペクトラム検索（タグ埋め込み） */}
+                <div className="pt-3 border-t border-white/5">
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Radar className="w-3.5 h-3.5 text-indigo-400" />
+                    <label className="text-xs font-semibold text-slate-300">
+                      {t('settings.spectrum_section', '似ているメディアの検索（タグのベクトル化）')}
+                    </label>
+                    <TooltipHelp
+                      text={t(
+                        'settings.spectrum_help',
+                        'タグの意味をベクトル化し、タグが完全一致しなくても意味的に近いメディアを探せるようにします。ベクトル化は手動で実行する必要があり、スキャン処理には影響しません。',
+                      )}
+                    />
+                  </div>
+
+                  <select
+                    value={embeddingModel}
+                    onChange={(e) => setEmbeddingModel(e.target.value)}
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
+                  >
+                    {availableModels.length === 0 ? (
+                      <option value={embeddingModel}>{embeddingModel} (Current)</option>
+                    ) : (
+                      [...new Set([embeddingModel, ...availableModels])].map((m) => (
+                        <option key={m} value={m}>
+                          {m}
+                        </option>
+                      ))
+                    )}
+                  </select>
+
+                  {/* 推奨埋め込みモデル */}
+                  <div className="grid grid-cols-3 gap-2 mt-2">
+                    {RECOMMENDED_EMBEDDING_MODELS.map((item) => {
+                      const isInstalled = isModelInstalled(item.name, availableModels);
+                      const isSelected = isModelSelected(item.name, embeddingModel);
+                      return (
+                        <div
+                          key={item.name}
+                          onClick={() => handleSelectPreset(item, 'embedding')}
+                          className={`p-2 rounded-xl border cursor-pointer transition ${
+                            isSelected
+                              ? 'bg-indigo-950/60 border-indigo-500/60'
+                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className="text-[9px] font-bold text-slate-400">{item.badgeJa}</span>
+                            <span className="text-[10px] text-slate-500 font-mono">{item.size}</span>
+                          </div>
+                          <div className="text-[11px] font-bold text-white font-mono truncate mt-0.5">{item.name}</div>
+                          <div className="mt-1 text-[10px]">
+                            {isInstalled ? (
+                              <span className="text-emerald-400 flex items-center gap-1">
+                                <Check className="w-3 h-3" /> 導入済
+                              </span>
+                            ) : (
+                              <span className="text-indigo-400 flex items-center gap-1">
+                                <Download className="w-3 h-3" /> 要DL
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+
+                  {/* 現在の状態 */}
+                  {embeddingStatus && (
+                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1">
+                      <div className="flex flex-wrap gap-x-4 gap-y-1">
+                        <span>
+                          {t('settings.spectrum_embedded', 'ベクトル化済みタグ')}: {embeddingStatus.embedded_tags} /{' '}
+                          {embeddingStatus.total_tags}
+                        </span>
+                        <span className={embeddingStatus.missing_tags > 0 ? 'text-amber-300' : ''}>
+                          {t('settings.spectrum_missing', '未生成')}: {embeddingStatus.missing_tags}
+                        </span>
+                      </div>
+                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-400">
+                        <span>
+                          {t('settings.spectrum_eligible', '検索対象メディア')}: {embeddingStatus.eligible_media}
+                        </span>
+                        {/* タグ不足で対象外になるメディアを黙って隠さない */}
+                        <span>
+                          {t('settings.spectrum_excluded', 'タグ')}
+                          {embeddingStatus.min_basic_tags}
+                          {t('settings.spectrum_excluded_suffix', '個未満で対象外')}: {embeddingStatus.excluded_media}
+                        </span>
+                      </div>
+                      {!embeddingStatus.model_available && (
+                        <div className="text-amber-300 flex items-start gap-1.5 pt-1">
+                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
+                          <span>
+                            {t(
+                              'settings.spectrum_model_missing',
+                              'このモデルは Ollama に導入されていません。上のカードから取得してください。',
+                            )}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  )}
+
+                  {/* 生成 */}
+                  <div className="mt-2 flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={handleGenerateEmbeddings}
+                      disabled={isGeneratingEmbeddings || !embeddingStatus || embeddingStatus.missing_tags === 0}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-[11px] font-semibold transition cursor-pointer"
+                    >
+                      {isGeneratingEmbeddings ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Sparkles className="w-3.5 h-3.5" />
+                      )}
+                      {t('settings.spectrum_generate', '未生成のタグをベクトル化')}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={handleRunDiagnostics}
+                      disabled={diagnosticsLoading || isGeneratingEmbeddings}
+                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
+                    >
+                      {diagnosticsLoading ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <FlaskConical className="w-3.5 h-3.5 text-indigo-400" />
+                      )}
+                      {t('settings.spectrum_diagnostics', '類似度分布を計測')}
+                    </button>
+                    {isGeneratingEmbeddings && embeddingProgress && embeddingProgress.total > 0 && (
+                      <span className="text-[11px] text-slate-400 tabular-nums">
+                        {embeddingProgress.current} / {embeddingProgress.total}
+                      </span>
+                    )}
+                  </div>
+
+                  {embeddingError && (
+                    <div className="mt-2 p-2 rounded-lg bg-red-950/40 border border-red-500/30 text-[11px] text-red-200">
+                      {embeddingError}
+                    </div>
+                  )}
+
+                  {/* 実験用トグル（Phase 1 の実測比較用） */}
+                  <div className="mt-3 space-y-2">
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={spectrumCentering}
+                        onChange={(e) => setSpectrumCentering(e.target.checked)}
+                        className="mt-0.5 accent-indigo-500"
+                      />
+                      <span className="text-[11px] text-slate-300">
+                        {t('settings.spectrum_centering', 'ハブ化対策 (centering) を有効にする')}
+                        <span className="block text-[10px] text-slate-500">
+                          {t(
+                            'settings.spectrum_centering_help',
+                            'OFFにすると、タグ本数の多いメディアが何とでも似ていると判定されやすくなります。',
+                          )}
+                        </span>
+                      </span>
+                    </label>
+                    <label className="flex items-start gap-2 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={spectrumIncludeDescriptive}
+                        onChange={(e) => setSpectrumIncludeDescriptive(e.target.checked)}
+                        className="mt-0.5 accent-indigo-500"
+                      />
+                      <span className="text-[11px] text-slate-300">
+                        {t('settings.spectrum_descriptive', '記述的タグも類似度計算に含める')}
+                        <span className="block text-[10px] text-slate-500">
+                          {t(
+                            'settings.spectrum_descriptive_help',
+                            'ONにすると、高精度モデルで解析したメディア同士が優先的に似ていると判定される場合があります。',
+                          )}
+                        </span>
+                      </span>
+                    </label>
+                  </div>
+
+                  {/* 計測結果 */}
+                  {diagnostics && (
+                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1.5">
+                      <div className="text-slate-400">
+                        {diagnostics.model} / {diagnostics.dim}次元 / centering{' '}
+                        {diagnostics.centering ? 'ON' : 'OFF'} / descriptive{' '}
+                        {diagnostics.include_descriptive ? 'ON' : 'OFF'}
+                      </div>
+                      <div className="tabular-nums">
+                        min {diagnostics.sim_min.toFixed(3)} / mean {diagnostics.sim_mean.toFixed(3)} / max{' '}
+                        {diagnostics.sim_max.toFixed(3)} / sd {diagnostics.sim_stddev.toFixed(3)}
+                      </div>
+                      <div className="tabular-nums text-slate-400">
+                        {t('settings.spectrum_hub_corr', 'タグ本数と平均類似度の相関')}:{' '}
+                        {diagnostics.tagcount_similarity_corr.toFixed(3)}
+                      </div>
+                      {diagnostics.desc_intra_mean !== null && diagnostics.inter_group_mean !== null && (
+                        <div className="tabular-nums text-slate-400">
+                          {t('settings.spectrum_group_sep', '記述的タグ 群内/群間')}:{' '}
+                          {diagnostics.desc_intra_mean.toFixed(3)} / {diagnostics.inter_group_mean.toFixed(3)}
+                        </div>
+                      )}
+                      <div className="text-slate-500">
+                        {t('settings.spectrum_sample', '標本')} {diagnostics.sample_size} /{' '}
+                        {diagnostics.eligible_media} · {diagnostics.load_ms + diagnostics.centroid_ms}ms +{' '}
+                        {diagnostics.pairwise_ms}ms
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             )}
           </div>
