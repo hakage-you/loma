@@ -1332,6 +1332,83 @@ mod tests {
         assert_eq!(r, 0.0);
     }
 
+    /// インメモリDBを1つ用意する（Tauri の State を経由せず純粋なSQLとして検証する）
+    async fn storage_test_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE tag_embeddings (tag_id INTEGER NOT NULL, model TEXT NOT NULL,
+             dim INTEGER NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (tag_id, model))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (tag_id, model, bytes) in [(1i64, "in-use", 8usize), (2, "in-use", 8), (3, "old", 16)] {
+            sqlx::query("INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1,?2,?3,?4)")
+                .bind(tag_id)
+                .bind(model)
+                .bind(bytes as i64 / 4)
+                .bind(vec![0u8; bytes])
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_models_not_in_use() {
+        // 「モデルを戻せば復元される」と案内している以上、使用中のモデルを
+        // 巻き込んで消してはならない
+        let pool = storage_test_pool().await;
+        let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model != ?1")
+            .bind("in-use")
+            .execute(&pool)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(deleted, 1);
+
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT model FROM tag_embeddings")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec!["in-use".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn reclaimable_bytes_counts_only_unused_models() {
+        // GC ボタンに実数で出す値なので、使用中の分を含めてはならない
+        let pool = storage_test_pool().await;
+        let reclaimable: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model != ?1",
+        )
+        .bind("in-use")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reclaimable, 16);
+    }
+
+    #[tokio::test]
+    async fn storage_rollup_groups_by_model() {
+        let pool = storage_test_pool().await;
+        let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT model, COUNT(*), COALESCE(MAX(dim), 0), COALESCE(SUM(LENGTH(vector)), 0)
+             FROM tag_embeddings GROUP BY model ORDER BY model",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("in-use".to_string(), 2, 2, 16));
+        assert_eq!(rows[1], ("old".to_string(), 1, 4, 16));
+    }
+
     /// 計測用テストの共通前処理。
     ///
     /// スナップショットは計測のたびに作り直されるため、ベクトルは毎回未生成の状態から始まる。

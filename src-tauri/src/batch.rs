@@ -238,7 +238,13 @@ pub async fn check_ollama(base_url: &str, model_name: &str) -> Result<()> {
 
 // Ollamaモデル一覧取得
 pub async fn fetch_ollama_models(base_url: &str) -> Result<Vec<String>> {
-    let client = Client::new();
+    // タイムアウトは必須。設定画面を開くたびに同期的に呼ばれるため、
+    // Ollama が起動していない・URL が誤っている場合に OS の TCP タイムアウトまで
+    // 待たされ、画面が固まったように見える。一覧取得は本来ミリ秒で返る。
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let res = client.get(format!("{}/api/tags", base_url)).send().await?;
     let tags_res: OllamaTagsResponse = res.json().await?;
     Ok(tags_res.models.into_iter().map(|m| m.name).collect())

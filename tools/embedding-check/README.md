@@ -116,3 +116,37 @@ r が **−0.097 → +0.035** と符号ごと動いた。標本は等間隔サ�
 - **基準メディアを指定したい** → `similar_examples` は現在、等間隔に3件を機械的に選んでいる。
   環境変数で media_id を渡せるようにするのが素直。
 - **別アプリのDBを測りたい** → `--db` で任意のパスを渡せる。
+
+## 対照群を人工的に作る
+
+「解析設定の混在」がライブラリに存在しないと、群分離（`desc群内` / `群間`）は測れない。
+実ライブラリは全メディアが descriptive を保有していることが多く、そのままでは対照群が無い。
+
+`make-control-group.mjs` はスナップショットの一部から **descriptive タグの紐付けだけを外し**、
+「descriptive 無しで解析されたメディア」を人工的に作る。
+
+```bash
+# ベクトル生成済みのスナップショットから作れば再生成が要らない
+node tools/embedding-check/make-control-group.mjs --from tools/embedding-check/results/snapshot-bge-m3.db
+node tools/embedding-check/run.mjs --db tools/embedding-check/results/control-group.db --models bge-m3 --only dist
+```
+
+**必ず `include_descriptive` の ON / OFF を両方見ること。** OFF が帰無条件になる。
+OFF でも群が分かれて見えるなら、測っているのは descriptive ではなく別の何かである。
+
+実測例（2026-07-30 / 506 対 502 / centering ON）:
+
+| `include_descriptive` | desc 群内 | 非desc 群内 | 群間 | 差 |
+|---|---|---|---|---|
+| OFF（帰無条件） | −0.002 | 0.000 | −0.001 | 0.000 |
+| ON | +0.025 | +0.026 | −0.028 | **0.053（0.38σ）** |
+
+**これは模擬であって実データではない。** 紐付けを外したメディアの basic タグは
+元の解析（DETAILED）由来のままなので、答えているのは
+「descriptive の有無**だけ**で群が分かれるか」という一点に限られる。
+
+### 分布が広いことは、それ自体では良い知らせではない
+
+上の条件で descriptive を ON にすると sd は 0.132 → 0.141 と**広がる**。
+しかしその広がりの中身は群分離そのものであり、意味的な分離ではない。
+**sd だけを見てモデルや設定を選ぶと、この種の交絡を見落とす。** 群分離の指標と併せて読むこと。
