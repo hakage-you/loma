@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { 
   Filter, Folder, Tag, CheckSquare, Square, Layers, Dog, User, ShoppingBag, Palette, 
   Monitor, FileText, Mountain, Utensils, Smile, Cpu, HelpCircle, Film, Image as ImageIcon,
-  ChevronDown, ChevronRight, FileCode, CheckCircle, Clock, AlertTriangle, FolderGit2
+  ChevronDown, ChevronRight, FileCode, CheckCircle, Clock, AlertTriangle, FolderGit2, Radar
 } from 'lucide-react';
 import { TagItem, ScanFolderItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
+import { STATUS_TAG_INSUFFICIENT } from '../constants/spectrum';
 
 interface SidebarProps {
   tags: TagItem[];
@@ -283,6 +284,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { id: 'completed', label: t('sidebar.status_completed', '解析完了'), icon: <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> },
               { id: 'pending', label: t('sidebar.status_pending', '未解析'), icon: <Clock className="w-3.5 h-3.5 text-amber-400" /> },
               { id: 'failed', label: t('sidebar.status_failed', '解析失敗'), icon: <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> },
+              // 類似検索の対象外。タグを手で足せば対象に入るので、辿れるようにしておく
+              { id: STATUS_TAG_INSUFFICIENT, label: t('sidebar.status_tag_insufficient', 'タグ不足（類似検索の対象外）'), icon: <Radar className="w-3.5 h-3.5 text-slate-400" /> },
             ].map((st) => (
               <button
                 key={st.id}

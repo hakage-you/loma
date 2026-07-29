@@ -145,11 +145,25 @@ export type SpectrumStatus =
   | 'base_not_eligible'
   | 'no_embeddings';
 
+export type ZoneKey = 'similar' | 'middle' | 'distant';
+
+/**
+ * スペクトラムの1ゾーン。
+ * `band_size` が `items.length` と等しいとき、引き直しても同じ顔ぶれしか出ない。
+ */
+export interface Zone {
+  key: ZoneKey;
+  band_size: number;
+  items: SimilarItem[];
+}
+
 export interface SpectrumResult {
   status: SpectrumStatus;
   base_media_id: number;
   model: string;
-  items: SimilarItem[];
+  zones: Zone[];
+  /** このレスポンスを生成したシード */
+  seed: number;
   /** 基準メディアから見た全候補の実測レンジ。0〜1固定軸の凡例に線分として描く */
   range_min: number;
   range_mean: number;

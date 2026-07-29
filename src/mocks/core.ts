@@ -10,6 +10,7 @@ import {
 } from './data';
 import { MediaItem, TagItem } from '../types';
 import { isMockScanRunning } from './scanSimulator';
+import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 
 // 開発中のスクリーンショット撮影用モック(`vite --mode mock` 時のみ有効)。
 // 実際の @tauri-apps/api/core の invoke / convertFileSrc を置き換える。
@@ -101,10 +102,10 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     total_tags: tagState.length,
     embedded_tags: tagState.length,
     missing_tags: 0,
-    eligible_media: mediaState.length,
-    excluded_media: 0,
+    eligible_media: mediaState.filter((m) => !isTagInsufficient(m)).length,
+    excluded_media: mediaState.filter(isTagInsufficient).length,
     completed_media: mediaState.length,
-    min_basic_tags: 3,
+    min_basic_tags: MIN_BASIC_TAGS,
     min_candidates: 5,
     full_spectrum_min: 20,
     include_descriptive: false,
@@ -112,24 +113,38 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   }),
   generate_tag_embeddings: () => ({ model: 'bge-m3', generated: 0, dim: 1024, elapsed_ms: 0 }),
   find_similar_media: (args) => {
-    // 実測値らしく見える降順の類似度を割り当てる（モックは分布を再現しない）
+    // 実データの分布（centering 有効時は 0 中心で min が負）に形だけ寄せる。
+    // モックは実際の意味的近さを再現しないので、順位と数値の見た目だけを揃える。
     const others = mediaState.filter((m) => m.id !== args.baseMediaId);
-    const items = others.slice(0, 12).map((m, i) => ({
+    const degraded = others.length < 20;
+    const toItem = (m: MediaItem, similarity: number) => ({
       media_id: m.id,
-      similarity: 0.82 - i * 0.05,
+      similarity,
       file_path: m.file_path,
       thumbnail_path: m.thumbnail_path,
-    }));
+    });
+    const take = (from: number, sim: (i: number) => number) =>
+      others.slice(from, from + 4).map((m, i) => toItem(m, sim(i)));
+
+    const zones = degraded
+      ? [{ key: 'similar', band_size: Math.min(4, others.length), items: take(0, (i) => 0.72 - i * 0.06) }]
+      : [
+          { key: 'similar', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(0, (i) => 0.72 - i * 0.06) },
+          { key: 'middle', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(4, (i) => 0.02 - i * 0.01) },
+          { key: 'distant', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(8, (i) => -0.24 - i * 0.02) },
+        ];
+
     return {
-      status: others.length >= 20 ? 'ok' : 'degraded',
+      status: degraded ? 'degraded' : 'ok',
       base_media_id: args.baseMediaId,
       model: 'bge-m3',
-      items,
-      range_min: items.length ? items[items.length - 1].similarity : 0,
-      range_mean: 0.55,
-      range_max: items.length ? items[0].similarity : 0,
+      zones,
+      seed: args.seed ?? 0,
+      range_min: -0.31,
+      range_mean: -0.002,
+      range_max: 0.78,
       candidate_count: others.length,
-      excluded_media: 0,
+      excluded_media: mediaState.filter(isTagInsufficient).length,
       centering: true,
       include_descriptive: false,
       elapsed_ms: 12,
