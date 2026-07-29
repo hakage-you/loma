@@ -94,6 +94,23 @@ async fn create_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_media_tags_tag_id ON media_tags(tag_id);
+
+        -- 概念スペクトラム検索用のタグ埋め込みベクトル。
+        -- model を主キーに含めることで複数モデルのベクトルが共存でき、
+        -- モデルを切り替えて戻しても再生成が不要になる。
+        -- vector は f32 リトルエンディアンの連続列（追加クレート不要）。
+        -- PRAGMA foreign_keys = ON のため、タグ削除でベクトルも自動的に消える。
+        CREATE TABLE IF NOT EXISTS tag_embeddings (
+            tag_id INTEGER NOT NULL,
+            model TEXT NOT NULL,
+            dim INTEGER NOT NULL,
+            vector BLOB NOT NULL,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            PRIMARY KEY (tag_id, model),
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tag_embeddings_model ON tag_embeddings(model);
         "#,
     )
     .execute(pool)
@@ -141,6 +158,16 @@ async fn seed_initial_data(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         ("ollama_max_image_edge", "1536"),
         // LLMリクエストの詳細診断ログ（開発・障害調査用）
         ("llm_debug_logging", "false"),
+        // --- 概念スペクトラム検索 ---
+        // タグのベクトル化に使う埋め込みモデル。未導入なら設定画面から取得できる。
+        ("spectrum_embedding_model", "bge-m3"),
+        // 重心に descriptive タグを含めるか。既定OFF。
+        // descriptive は複合語で df が小さく IDF 重みが大きいため、
+        // 「意味が似ている」ではなく「同じ設定で解析された」でクラスタリングされる恐れがある。
+        ("spectrum_include_descriptive", "false"),
+        // 全重心の平均を引くか（anisotropy 対策）。既定ON。
+        // これが無いとタグ本数の多いメディアが誰とでも似ている「ハブ」になる。
+        ("spectrum_centering", "true"),
     ];
 
     for (key, val) in default_settings {

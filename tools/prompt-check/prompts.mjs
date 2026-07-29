@@ -94,6 +94,8 @@ export function loadRustPrompts(repoRoot) {
  * （残すと本物と候補の二重管理になる）。
  */
 export function candidateVariants(rust) {
+  /** LIGHT の Categories options 行の直前に1行差し込む。改修案を試すときの定石。 */
+  // eslint-disable-next-line no-unused-vars
   const insertBeforeCategories = (base, extraLine) => {
     const anchor = '\n\nCategories options:';
     const i = base.indexOf(anchor);
@@ -101,14 +103,10 @@ export function candidateVariants(rust) {
     return base.slice(0, i) + `\n\n${extraLine}` + base.slice(i);
   };
 
-  return {
-    // Phase 0 (2026-07-29) で採用判定した案
-    LIGHT_COUNT: insertBeforeCategories(rust.LIGHT, 'Output 3 to 5 tags.'),
-    LIGHT_COUNT_SCHEMA: insertBeforeCategories(
-      rust.LIGHT,
-      'Output 3 to 5 tags. Each tag MUST have both "en" and "ja".'
-    ),
-  };
+  // Phase 0 (2026-07-29) の LIGHT_COUNT / LIGHT_COUNT_SCHEMA は検証を終えて
+  // mod.rs に取り込んだため削除した（残すと本物と候補の二重管理になる）。
+  // 実測結果は docs/vlm-notes.md を参照。
+  return {};
 }
 
 export function allPrompts(repoRoot) {
@@ -121,9 +119,13 @@ export function allPrompts(repoRoot) {
     detailed_atomic: { prompt: rust.DETAILED_ATOMIC, label: 'DETAILED atomic (現行 / mod.rs 実物)', numCtx: c.atomic },
     detailed_balanced: { prompt: rust.DETAILED_BALANCED, label: 'DETAILED balanced', numCtx: c.balanced },
     detailed_descriptive: { prompt: rust.DETAILED_DESCRIPTIVE, label: 'DETAILED descriptive', numCtx: c.descriptive },
-    // 未採用の候補
-    light_count: { prompt: cand.LIGHT_COUNT, label: 'LIGHT + "Output 3 to 5 tags."', numCtx: c.light },
-    light_count_schema: { prompt: cand.LIGHT_COUNT_SCHEMA, label: 'LIGHT + 本数 + en/ja 必須', numCtx: c.light },
+    // 検証中の候補（candidateVariants に追加すると自動でここに並ぶ）
+    ...Object.fromEntries(
+      Object.entries(cand).map(([k, prompt]) => [
+        k.toLowerCase(),
+        { prompt, label: `候補: ${k}`, numCtx: c.light },
+      ])
+    ),
     _meta: { descriptiveFnHash: rust._descriptiveFnHash, numCtx: c },
   };
 }

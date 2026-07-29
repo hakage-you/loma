@@ -141,7 +141,24 @@
     "granularity_descriptive": "Lv3: Descriptive",
     "granularity_disabled_light": "The current model uses the LIGHT prompt, so tag granularity does not apply. Open \"Advanced settings\" below and enable \"Force Detailed Prompt\" to use this setting.",
     "granularity_changed_notice": "Tag granularity changed. The new setting only applies to media analyzed from now on. To align tags on existing media, re-analyze them from Folder Management.",
-    "granularity_try": "Try Granularity (Select Image)"
+    "granularity_try": "Try Granularity (Select Image)",
+    "spectrum_section": "Similar media search (tag vectorization)",
+    "spectrum_help": "Vectorizes tag meanings so you can find semantically related media even when tags do not match exactly. Vectorization is run manually and does not affect scanning.",
+    "spectrum_embedded": "Vectorized tags",
+    "spectrum_missing": "Missing",
+    "spectrum_eligible": "Searchable media",
+    "spectrum_excluded": "Excluded (fewer than ",
+    "spectrum_excluded_suffix": " tags)",
+    "spectrum_model_missing": "This model is not installed in Ollama. Install it from the cards above.",
+    "spectrum_generate": "Vectorize missing tags",
+    "spectrum_diagnostics": "Measure similarity distribution",
+    "spectrum_centering": "Enable hub correction (centering)",
+    "spectrum_centering_help": "When off, media with many tags tend to look similar to everything.",
+    "spectrum_descriptive": "Include descriptive tags in similarity",
+    "spectrum_descriptive_help": "When on, media analyzed with a high-accuracy model may preferentially match each other.",
+    "spectrum_hub_corr": "Correlation: tag count vs mean similarity",
+    "spectrum_group_sep": "Descriptive tags intra/inter group",
+    "spectrum_sample": "Sample"
   },
   "logs": {
     "title": "Process Logs",
@@ -155,5 +172,22 @@
     "author": "Author",
     "copyright": "Copyright",
     "links": "Links"
+  },
+  "spectrum": {
+    "title": "Similar media",
+    "trigger": "Find similar media",
+    "base": "Base",
+    "loading": "Calculating similarity...",
+    "legend_low": "Least similar",
+    "legend_high": "Most similar",
+    "zone_similar": "Most similar tags",
+    "candidates": "Compared",
+    "excluded": "Excluded (too few tags)",
+    "model_hint": "Model used to compute similarity",
+    "open_settings": "Open settings",
+    "notice_no_embeddings": "Tag vectors have not been generated yet. Generate them from the settings screen.",
+    "notice_base_not_eligible": "This media has too few tags to compare. Add tags manually or re-analyze it.",
+    "notice_not_enough": "Not enough analyzed media to compare against yet.",
+    "notice_degraded": "Only the most similar results are shown because there are few candidates."
   }
 }

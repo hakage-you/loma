@@ -95,3 +95,102 @@ export interface GranularityComparisonItem {
   error?: string;
 }
 
+// --- 概念スペクトラム検索用の型定義 ---
+
+export interface EmbeddingStatus {
+  model: string;
+  model_available: boolean;
+  available_models: string[];
+  total_tags: number;
+  embedded_tags: number;
+  missing_tags: number;
+  eligible_media: number;
+  excluded_media: number;
+  completed_media: number;
+  min_basic_tags: number;
+  min_candidates: number;
+  full_spectrum_min: number;
+  include_descriptive: boolean;
+  centering: boolean;
+}
+
+export interface EmbeddingProgressPayload {
+  total: number;
+  current: number;
+  status: 'running' | 'done' | 'error';
+}
+
+export interface EmbeddingGenerateResult {
+  model: string;
+  generated: number;
+  dim: number;
+  elapsed_ms: number;
+}
+
+export interface SimilarItem {
+  media_id: number;
+  similarity: number;
+  file_path: string;
+  thumbnail_path: string;
+}
+
+/**
+ * `find_similar_media` の結果。
+ * `degraded` は候補が `full_spectrum_min` 未満で、Phase 2 の3ゾーン分割に足りない状態。
+ */
+export type SpectrumStatus =
+  | 'ok'
+  | 'degraded'
+  | 'not_enough_candidates'
+  | 'base_not_eligible'
+  | 'no_embeddings';
+
+export interface SpectrumResult {
+  status: SpectrumStatus;
+  base_media_id: number;
+  model: string;
+  items: SimilarItem[];
+  /** 基準メディアから見た全候補の実測レンジ。0〜1固定軸の凡例に線分として描く */
+  range_min: number;
+  range_mean: number;
+  range_max: number;
+  candidate_count: number;
+  excluded_media: number;
+  centering: boolean;
+  include_descriptive: boolean;
+  elapsed_ms: number;
+}
+
+export interface HistogramBin {
+  lower: number;
+  upper: number;
+  count: number;
+}
+
+export interface EmbeddingDiagnostics {
+  model: string;
+  dim: number;
+  centering: boolean;
+  include_descriptive: boolean;
+  eligible_media: number;
+  excluded_by_tag_count: number;
+  excluded_by_missing_vectors: number;
+  sample_size: number;
+  pair_count: number;
+  sim_min: number;
+  sim_mean: number;
+  sim_max: number;
+  sim_stddev: number;
+  histogram: HistogramBin[];
+  /** タグ本数と平均類似度の相関。0から離れるほどハブ化している */
+  tagcount_similarity_corr: number;
+  desc_group_size: number;
+  nondesc_group_size: number;
+  desc_intra_mean: number | null;
+  nondesc_intra_mean: number | null;
+  inter_group_mean: number | null;
+  load_ms: number;
+  centroid_ms: number;
+  pairwise_ms: number;
+}
+

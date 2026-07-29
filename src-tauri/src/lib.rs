@@ -2,6 +2,7 @@ mod batch;
 mod commands;
 mod credentials;
 mod db;
+mod embedding;
 mod llm;
 mod logger;
 
@@ -84,6 +85,10 @@ pub fn run() {
             commands::get_system_vram_gb,
             commands::get_effective_prompt_type,
             commands::compare_granularity_levels,
+            embedding::get_embedding_status,
+            embedding::generate_tag_embeddings,
+            embedding::find_similar_media,
+            embedding::get_embedding_diagnostics,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -35,7 +35,7 @@ const has = (name) => argv.includes(`--${name}`);
 const OLLAMA_URL = arg('url', 'http://localhost:11434');
 const MODEL = arg('model', 'qwen3-vl:4b');
 const REPEAT = parseInt(arg('repeat', '1'), 10);
-const VARIANTS = arg('variants', 'light,light_count').split(',').map((s) => s.trim());
+const VARIANTS = arg('variants', 'light').split(',').map((s) => s.trim());
 const FORMAT_MODE = arg('format-json', 'off'); // off | on | both
 const LIMIT = parseInt(arg('limit', '0'), 10);
 const SAMPLE = parseInt(arg('sample', '5'), 10); // test_assets/100files から拾う枚数

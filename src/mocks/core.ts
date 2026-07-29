@@ -93,6 +93,48 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     const paramSize = match ? parseFloat(match[1]) : null;
     return paramSize !== null && paramSize >= 10 ? 'DETAILED' : 'LIGHT';
   },
+  // --- 概念スペクトラム検索 ---
+  get_embedding_status: () => ({
+    model: 'bge-m3',
+    model_available: true,
+    available_models: MOCK_AVAILABLE_MODELS,
+    total_tags: tagState.length,
+    embedded_tags: tagState.length,
+    missing_tags: 0,
+    eligible_media: mediaState.length,
+    excluded_media: 0,
+    completed_media: mediaState.length,
+    min_basic_tags: 3,
+    min_candidates: 5,
+    full_spectrum_min: 20,
+    include_descriptive: false,
+    centering: true,
+  }),
+  generate_tag_embeddings: () => ({ model: 'bge-m3', generated: 0, dim: 1024, elapsed_ms: 0 }),
+  find_similar_media: (args) => {
+    // 実測値らしく見える降順の類似度を割り当てる（モックは分布を再現しない）
+    const others = mediaState.filter((m) => m.id !== args.baseMediaId);
+    const items = others.slice(0, 12).map((m, i) => ({
+      media_id: m.id,
+      similarity: 0.82 - i * 0.05,
+      file_path: m.file_path,
+      thumbnail_path: m.thumbnail_path,
+    }));
+    return {
+      status: others.length >= 20 ? 'ok' : 'degraded',
+      base_media_id: args.baseMediaId,
+      model: 'bge-m3',
+      items,
+      range_min: items.length ? items[items.length - 1].similarity : 0,
+      range_mean: 0.55,
+      range_max: items.length ? items[0].similarity : 0,
+      candidate_count: others.length,
+      excluded_media: 0,
+      centering: true,
+      include_descriptive: false,
+      elapsed_ms: 12,
+    };
+  },
   compare_granularity_levels: () => [
     {
       granularity: 'atomic',
