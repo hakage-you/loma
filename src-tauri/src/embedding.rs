@@ -39,6 +39,73 @@ const EMBED_BATCH_SIZE: usize = 32;
 /// 診断で総当り類似度を取るときの標本上限。全件は O(N^2) で現実的でない。
 const DIAGNOSTICS_SAMPLE_CAP: usize = 400;
 
+/// 各ゾーンに表示する件数。
+pub const ZONE_SIZE: usize = 4;
+
+/// 帯の幅（候補数に対する比率）。下限は `ZONE_SIZE`。
+///
+/// 帯から `ZONE_SIZE` 件を無作為抽出するので、ライブラリが育つほど帯が広がり
+/// 引き直しの多様性が自然に増える。N=20 では帯 = 4 件で決定的になる。
+const ZONE_BAND_RATIO: f32 = 0.10;
+
+// ---------------------------------------------------------------------------
+// 乱択（帯域サンプリング用）
+// ---------------------------------------------------------------------------
+
+/// SplitMix64。`rand` クレートを足さないための最小実装。
+///
+/// シードを呼び出し側から受け取る決定的な設計にしてある。こうすると
+/// 「🎲 引き直し」= 新しいシードで呼び直す、と定義でき、同じシードなら同じ結果になるので
+/// テストも再現調査もできる。内部で時刻を拾うと、どちらもできなくなる。
+struct SplitMix64(u64);
+
+impl SplitMix64 {
+    fn next_u64(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        if n == 0 {
+            0
+        } else {
+            (self.next_u64() % n as u64) as usize
+        }
+    }
+}
+
+/// `len` 個から `k` 個の添字を重複なく選ぶ（部分 Fisher-Yates）。
+fn sample_indices(len: usize, k: usize, rng: &mut SplitMix64) -> Vec<usize> {
+    let k = k.min(len);
+    let mut pool: Vec<usize> = (0..len).collect();
+    for i in 0..k {
+        let j = i + rng.below(len - i);
+        pool.swap(i, j);
+    }
+    pool.truncate(k);
+    pool
+}
+
+/// 類似度降順に並んだ `n` 件を3つの帯に切る。返すのは `[start, end)` の範囲。
+///
+/// 絶対的なコサイン閾値ではなく**順位**で切るのは、実測で分布が
+/// centering 無しでは 0.61〜0.99 に圧縮され、有りでも 0 中心に集まるため
+/// （閾値では Zone2・Zone3 が空になる）。順位ベースは分布とモデルに依存しない。
+fn zone_bands(n: usize) -> [(usize, usize); 3] {
+    let band = ((n as f32 * ZONE_BAND_RATIO).ceil() as usize)
+        .max(ZONE_SIZE)
+        .min(n);
+    let mid_start = (n / 2).saturating_sub(band / 2).min(n - band);
+    [
+        (0, band),
+        (mid_start, mid_start + band),
+        (n - band, n),
+    ]
+}
+
 // ---------------------------------------------------------------------------
 // 設定
 // ---------------------------------------------------------------------------
@@ -665,13 +732,27 @@ pub struct SimilarItem {
     pub thumbnail_path: String,
 }
 
+/// スペクトラムの1ゾーン。
+///
+/// `band_size` を返すのは、引き直し（🎲）に意味があるかを画面側が判断できるようにするため。
+/// 帯が `items` と同じ大きさなら、引き直しても同じ顔ぶれしか出ない。
+#[derive(Serialize)]
+pub struct Zone {
+    /// `similar` / `middle` / `distant`
+    pub key: String,
+    pub band_size: usize,
+    pub items: Vec<SimilarItem>,
+}
+
 #[derive(Serialize)]
 pub struct SpectrumResult {
     /// `ok` / `degraded` / `not_enough_candidates` / `base_not_eligible` / `no_embeddings`
     pub status: String,
     pub base_media_id: i64,
     pub model: String,
-    pub items: Vec<SimilarItem>,
+    pub zones: Vec<Zone>,
+    /// このレスポンスを生成したシード。引き直し前の状態を再現したいときに使う。
+    pub seed: u64,
     /// 基準メディアから見た全候補の実測レンジ。0〜1固定軸の凡例に線分として描く。
     pub range_min: f32,
     pub range_mean: f32,
@@ -688,7 +769,8 @@ fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Opt
         status: status.to_string(),
         base_media_id,
         model: cfg.model.clone(),
-        items: Vec::new(),
+        zones: Vec::new(),
+        seed: 0,
         range_min: 0.0,
         range_mean: 0.0,
         range_max: 0.0,
@@ -702,13 +784,13 @@ fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Opt
     }
 }
 
-/// 基準メディアに対する類似度を全候補について算出し、上位 `limit` 件を返す。
+/// 基準メディアに対する類似度を全候補について算出し、3ゾーンに切って返す。
 ///
-/// Phase 1 では「似ている順」1列のみを返す。3ゾーン分割は実測後（Phase 2）に載せる。
+/// `seed` を渡すと抽出が決定的になる。「🎲 引き直し」は新しいシードで呼び直すこと。
 #[tauri::command]
 pub async fn find_similar_media(
     base_media_id: i64,
-    limit: Option<usize>,
+    seed: Option<u64>,
     db_state: State<'_, DbState>,
 ) -> Result<SpectrumResult, String> {
     let pool = &db_state.pool;
@@ -749,10 +831,42 @@ pub async fn find_similar_media(
     let range_max = scored.iter().map(|s| s.1).fold(f32::NEG_INFINITY, f32::max);
 
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
-    scored.truncate(limit.unwrap_or(12));
 
-    // 表示に必要なパスだけを上位N件についてまとめて引く
-    let ids: Vec<String> = scored.iter().map(|(id, _)| id.to_string()).collect();
+    // 候補が少ないうちは3ゾーンに切らず、類似上位のみの縮退モードにする。
+    // 帯を無理に3つ取ると中位・下位がほぼ同じ顔ぶれになり、分かれている風に見えて実質嘘になる。
+    let degraded = candidate_count < FULL_SPECTRUM_MIN;
+    let bands: Vec<(&str, (usize, usize))> = if degraded {
+        vec![("similar", (0, ZONE_SIZE.min(candidate_count)))]
+    } else {
+        let b = zone_bands(candidate_count);
+        vec![("similar", b[0]), ("middle", b[1]), ("distant", b[2])]
+    };
+
+    let seed = seed.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos() as u64)
+            .unwrap_or(0)
+    });
+    let mut rng = SplitMix64(seed);
+
+    // 帯から ZONE_SIZE 件を無作為抽出し、帯内は類似度降順で並べる
+    let picked: Vec<(&str, usize, Vec<(i64, f32)>)> = bands
+        .iter()
+        .map(|(key, (start, end))| {
+            let slice = &scored[*start..*end];
+            let mut idx = sample_indices(slice.len(), ZONE_SIZE, &mut rng);
+            idx.sort_unstable();
+            let items: Vec<(i64, f32)> = idx.into_iter().map(|i| slice[i]).collect();
+            (*key, slice.len(), items)
+        })
+        .collect();
+
+    // 表示に必要なパスだけを、選ばれた分についてまとめて引く
+    let ids: Vec<String> = picked
+        .iter()
+        .flat_map(|(_, _, items)| items.iter().map(|(id, _)| id.to_string()))
+        .collect();
     let paths: HashMap<i64, (String, String)> = if ids.is_empty() {
         HashMap::new()
     } else {
@@ -768,19 +882,27 @@ pub async fn find_similar_media(
         .collect()
     };
 
-    let items: Vec<SimilarItem> = scored
+    let zones: Vec<Zone> = picked
         .into_iter()
-        .map(|(media_id, similarity)| {
-            let (file_path, thumbnail_path) = paths.get(&media_id).cloned().unwrap_or_default();
-            SimilarItem { media_id, similarity, file_path, thumbnail_path }
+        .map(|(key, band_size, items)| Zone {
+            key: key.to_string(),
+            band_size,
+            items: items
+                .into_iter()
+                .map(|(media_id, similarity)| {
+                    let (file_path, thumbnail_path) = paths.get(&media_id).cloned().unwrap_or_default();
+                    SimilarItem { media_id, similarity, file_path, thumbnail_path }
+                })
+                .collect(),
         })
         .collect();
 
     Ok(SpectrumResult {
-        status: if candidate_count < FULL_SPECTRUM_MIN { "degraded" } else { "ok" }.to_string(),
+        status: if degraded { "degraded" } else { "ok" }.to_string(),
         base_media_id,
         model: cfg.model.clone(),
-        items,
+        zones,
+        seed,
         range_min,
         range_mean,
         range_max,
@@ -1030,6 +1152,66 @@ mod tests {
         let xs = vec![1.0f32, 2.0, 3.0, 4.0];
         assert!((pearson(&xs, &[2.0, 4.0, 6.0, 8.0]) - 1.0).abs() < 1e-5);
         assert!((pearson(&xs, &[8.0, 6.0, 4.0, 2.0]) + 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn zone_bands_never_overlap_at_the_activation_threshold() {
+        // N=20 は3ゾーン表示に切り替わる最小値。ここで帯が重なると
+        // 同じメディアが「似ている」と「似ていない」の両方に出る。
+        let [a, b, c] = zone_bands(FULL_SPECTRUM_MIN);
+        assert!(a.1 <= b.0, "Zone1 {:?} と Zone2 {:?} が重なっている", a, b);
+        assert!(b.1 <= c.0, "Zone2 {:?} と Zone3 {:?} が重なっている", b, c);
+    }
+
+    #[test]
+    fn zone_bands_stay_in_range_and_keep_full_width() {
+        for n in FULL_SPECTRUM_MIN..600 {
+            let bands = zone_bands(n);
+            for (start, end) in bands {
+                assert!(start < end, "n={} で空の帯 {:?}", n, (start, end));
+                assert!(end <= n, "n={} で範囲外の帯 {:?}", n, (start, end));
+                // 帯が ZONE_SIZE を下回ると、抽出しても常に同じ顔ぶれになり
+                // 引き直しが機能しなくなる
+                assert!(end - start >= ZONE_SIZE, "n={} で帯が狭すぎる {:?}", n, (start, end));
+            }
+            assert_eq!(bands[2].1, n, "n={} で最下位が帯に入っていない", n);
+        }
+    }
+
+    #[test]
+    fn zone_bands_widen_as_the_library_grows() {
+        // ライブラリが育つほど帯が広がり、引き直しの多様性が自然に増える
+        let width = |n: usize| { let b = zone_bands(n); b[0].1 - b[0].0 };
+        assert_eq!(width(20), ZONE_SIZE);
+        assert_eq!(width(100), 10);
+        assert_eq!(width(1000), 100);
+    }
+
+    #[test]
+    fn sampling_is_deterministic_for_a_given_seed() {
+        // シードを引数で受ける設計の要。同じシードで同じ結果にならないと
+        // 「引き直し前に戻す」も再現調査もできない。
+        let pick = |seed: u64| sample_indices(50, ZONE_SIZE, &mut SplitMix64(seed));
+        assert_eq!(pick(42), pick(42));
+        assert_ne!(pick(42), pick(43));
+    }
+
+    #[test]
+    fn sampling_returns_distinct_indices_within_range() {
+        for seed in 0..64u64 {
+            let picked = sample_indices(10, ZONE_SIZE, &mut SplitMix64(seed));
+            assert_eq!(picked.len(), ZONE_SIZE);
+            assert!(picked.iter().all(|&i| i < 10));
+            let uniq: HashSet<usize> = picked.iter().copied().collect();
+            assert_eq!(uniq.len(), picked.len(), "重複した添字: {:?}", picked);
+        }
+    }
+
+    #[test]
+    fn sampling_caps_at_the_pool_size() {
+        // 帯が ZONE_SIZE より小さいときに落ちたり水増ししたりしないこと
+        assert_eq!(sample_indices(2, ZONE_SIZE, &mut SplitMix64(1)).len(), 2);
+        assert_eq!(sample_indices(0, ZONE_SIZE, &mut SplitMix64(1)).len(), 0);
     }
 
     #[test]

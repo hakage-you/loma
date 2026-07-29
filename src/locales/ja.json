@@ -33,7 +33,8 @@
     "status_pending": "未解析",
     "status_completed": "解析完了",
     "status_failed": "解析失敗",
-    "video_no_ffmpeg": "FFmpegがインストールされていません。動画のフレーム抽出・解析にはFFmpegが必要です。"
+    "video_no_ffmpeg": "FFmpegがインストールされていません。動画のフレーム抽出・解析にはFFmpegが必要です。",
+    "status_tag_insufficient": "タグ不足（類似検索の対象外）"
   },
   "progress": {
     "processing": "解析処理中",
@@ -188,6 +189,13 @@
     "notice_no_embeddings": "タグのベクトルがまだ生成されていません。設定画面から生成してください。",
     "notice_base_not_eligible": "このメディアはタグが少ないため対象外です。タグを手動で追加するか、再解析してください。",
     "notice_not_enough": "比較できるメディアがまだ足りません。解析済みのメディアを増やしてください。",
-    "notice_degraded": "候補が少ないため、類似上位のみを表示しています。"
+    "notice_degraded": "候補が少ないため、類似上位のみを表示しています。",
+    "zone_middle": "類似度が中くらい",
+    "zone_distant": "タグの類似度が最も低い",
+    "reroll": "引き直す",
+    "reroll_help": "各ゾーンの帯から別のメディアを選び直します",
+    "band_of": "候補",
+    "band_pick": "件から抽出",
+    "badge_excluded": "タグが {n} 個未満のため、似ているメディアの検索の対象外です"
   }
 }

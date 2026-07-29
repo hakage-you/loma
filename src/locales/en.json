@@ -33,7 +33,8 @@
     "status_pending": "Pending",
     "status_completed": "Completed",
     "status_failed": "Failed",
-    "video_no_ffmpeg": "FFmpeg is not installed. FFmpeg is required for video frame extraction & analysis."
+    "video_no_ffmpeg": "FFmpeg is not installed. FFmpeg is required for video frame extraction & analysis.",
+    "status_tag_insufficient": "Too few tags (excluded from similarity)"
   },
   "progress": {
     "processing": "Processing",
@@ -188,6 +189,13 @@
     "notice_no_embeddings": "Tag vectors have not been generated yet. Generate them from the settings screen.",
     "notice_base_not_eligible": "This media has too few tags to compare. Add tags manually or re-analyze it.",
     "notice_not_enough": "Not enough analyzed media to compare against yet.",
-    "notice_degraded": "Only the most similar results are shown because there are few candidates."
+    "notice_degraded": "Only the most similar results are shown because there are few candidates.",
+    "zone_middle": "Moderately similar",
+    "zone_distant": "Least similar tags",
+    "reroll": "Re-roll",
+    "reroll_help": "Pick different media from each zone band",
+    "band_of": "sampled from",
+    "band_pick": "candidates",
+    "badge_excluded": "Excluded from similar-media search: fewer than {n} tags"
   }
 }

@@ -19,6 +19,7 @@ import { I18nProvider, useTranslation } from './contexts/I18nContext';
 import { AboutModal } from './components/AboutModal';
 import { SearchModal } from './components/SearchModal';
 import { SpectrumModal } from './components/SpectrumModal';
+import { STATUS_TAG_INSUFFICIENT } from './constants/spectrum';
 
 function AppContent() {
   const { t } = useTranslation();
@@ -502,6 +503,13 @@ function AppContent() {
         onOpenSettings={() => {
           setSpectrumBase(null);
           setIsSettingsOpen(true);
+        }}
+        onShowExcluded={() => {
+          // 対象外メディアをメイングリッドで絞り込んで見せる。
+          // 探索結果をグリッドに流し込むのではなく既存のフィルタ機構に載せるので、
+          // 状態モデルは壊れない
+          setSpectrumBase(null);
+          setSelectedStatus(STATUS_TAG_INSUFFICIENT);
         }}
       />
 

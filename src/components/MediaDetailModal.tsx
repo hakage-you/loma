@@ -3,6 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem, TagItem } from '../types';
 import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 
 interface MediaDetailModalProps {
   item: MediaItem | null;
@@ -124,6 +125,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
 
   const fileName = item.file_path.split(/[/\\]/).pop() || '';
   const fileSizeMB = (item.file_size / (1024 * 1024)).toFixed(2);
+  // basic タグが足りず、似ているメディアの検索の候補集合から外れている状態
+  const tagInsufficient = isTagInsufficient(item);
 
   const handleCustomAnalyzeCurrentTime = () => {
     if (!onCustomAnalyzeVideo) return;
@@ -207,6 +210,19 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                 {t('media_modal.tags_categories', 'タグ & カテゴリ')}
               </h3>
               <div className="space-y-2">
+                {/* 候補集合から外れている事実を黙って隠さない。
+                    ユーザーはこの画面でタグを足せるので、対処可能な情報として出す */}
+                {tagInsufficient && (
+                  <div className="flex items-start gap-1.5 px-2.5 py-2 rounded-xl bg-slate-800/60 border border-white/10 text-[11px] text-slate-300">
+                    <Radar className="w-3.5 h-3.5 shrink-0 mt-px text-slate-400" />
+                    <span>
+                      {t(
+                        'spectrum.badge_excluded',
+                        'タグが {n} 個未満のため、似ているメディアの検索の対象外です',
+                      ).replace('{n}', String(MIN_BASIC_TAGS))}
+                    </span>
+                  </div>
+                )}
                 <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-2 bg-slate-950/40 rounded-xl border border-white/5">
                   {/* Categories */}
                   {item.categories && item.categories.map((cat) => (
@@ -439,9 +455,20 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             )}
             <div className="flex items-center gap-2 ml-auto">
               {onFindSimilar && item.analysis_status === 'completed' && (
+                // タグ不足なら押せなくし、理由を示す。黙って無反応にすると
+                // 「壊れている」と読まれる
                 <button
-                  onClick={() => onFindSimilar(item)}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10"
+                  onClick={() => !tagInsufficient && onFindSimilar(item)}
+                  disabled={tagInsufficient}
+                  title={
+                    tagInsufficient
+                      ? t('spectrum.badge_excluded', 'タグが {n} 個未満のため、似ているメディアの検索の対象外です').replace(
+                          '{n}',
+                          String(MIN_BASIC_TAGS),
+                        )
+                      : undefined
+                  }
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-800"
                 >
                   <Radar className="w-3.5 h-3.5 text-indigo-400" />
                   {t('spectrum.trigger', '似ているメディアを探す')}

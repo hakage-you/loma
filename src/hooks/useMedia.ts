@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { MediaItem, TagItem, ScanFolderItem, ProgressPayload, MergeSuggestion, TagFilterNode } from '../types';
+import { STATUS_TAG_INSUFFICIENT, isTagInsufficient } from '../constants/spectrum';
 
 export interface FilterState {
   categories?: string[];
@@ -47,12 +48,23 @@ export function useMedia() {
         tagFilterTree: currentFilters.tagFilterTree ? JSON.stringify(currentFilters.tagFilterTree) : null,
         parentFolderFilter: currentFilters.parentFolder || null,
         scanFolderFilter: currentFilters.scanFolder || null,
-        statusFilter: currentFilters.status && currentFilters.status !== 'unanalyzed' ? currentFilters.status : null,
+        // 疑似ステータス（unanalyzed / tag_insufficient）はバックエンドの
+        // analysis_status に存在しないため送らず、下で結果から絞り込む
+        statusFilter:
+          currentFilters.status &&
+          currentFilters.status !== 'unanalyzed' &&
+          currentFilters.status !== STATUS_TAG_INSUFFICIENT
+            ? currentFilters.status
+            : null,
         mediaTypeFilter: currentFilters.mediaType && currentFilters.mediaType !== 'all' ? currentFilters.mediaType : null,
         extensionFilter: currentFilters.fileExtensions && currentFilters.fileExtensions.length > 0 ? currentFilters.fileExtensions : null,
       });
       if (currentFilters.status === 'unanalyzed') {
         setMedia(result.filter((item) => item.tags.length === 0 && item.categories.length === 0));
+      } else if (currentFilters.status === STATUS_TAG_INSUFFICIENT) {
+        // 類似検索の候補集合から外れているメディア。黙って除外せず、
+        // ユーザーがタグを手で足せるよう一覧できるようにする
+        setMedia(result.filter(isTagInsufficient));
       } else {
         setMedia(result);
       }
