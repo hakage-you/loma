@@ -95,7 +95,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   onSuggestMerges,
   onSelectTagFilter,
 }) => {
-  const { t, language } = useTranslation();
+  // タグ一覧の map では変数名 `t` がタグを指すため、翻訳関数に別名を用意しておく
+  const { t, t: translate, language } = useTranslation();
   const [activeTab, setActiveTab] = useState<'all' | 'suggestions'>('all');
   const [search, setSearch] = useState('');
   const [editingTagId, setEditingTagId] = useState<number | null>(null);
@@ -670,13 +671,27 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                           >
                             #{t.name}
                           </span>
-                          {t.name_ja && (
+                          {t.name_ja ? (
                             <span
                               onClick={() => handleTriggerSearchFilter(t.name_ja || t.name)}
                               className="text-xs text-slate-300 bg-slate-800 px-2 py-0.5 rounded-md border border-white/5 font-medium hover:text-white cursor-pointer hover:underline"
                               title="Click to search this tag in gallery"
                             >
                               {t.name_ja}
+                            </span>
+                          ) : (
+                            // 似ているメディアの検索は name_ja をベクトル化する。
+                            // 未設定だと英語名にフォールバックするが、英語名は
+                            // normalize_tag_en の単数形化で壊れていることがある
+                            // （lens -> len）。直せる場所で気付けるようにしておく。
+                            <span
+                              className="text-[10px] text-amber-300/90 bg-amber-950/30 px-1.5 py-0.5 rounded border border-amber-500/25 font-medium"
+                              title={translate(
+                                'tag_modal.no_name_ja_help',
+                                '日本語名が未設定です。似ているメディアの検索では英語名で代替されるため、精度が落ちることがあります。',
+                              )}
+                            >
+                              {translate('tag_modal.no_name_ja', '日本語名なし')}
                             </span>
                           )}
                           <span className="text-[11px] font-bold text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded border border-white/5">

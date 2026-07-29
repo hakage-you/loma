@@ -175,6 +175,29 @@ export interface SpectrumResult {
   elapsed_ms: number;
 }
 
+export interface EmbeddingModelStorage {
+  model: string;
+  tag_count: number;
+  dim: number;
+  bytes: number;
+  /** 現在の設定で使われているモデル。GC の対象外 */
+  in_use: boolean;
+}
+
+export interface EmbeddingStorageInfo {
+  current_model: string;
+  total_tags: number;
+  models: EmbeddingModelStorage[];
+  /** 使用中でないモデルを削除したときに解放される容量 */
+  reclaimable_bytes: number;
+}
+
+export interface EmbeddingCleanupResult {
+  deleted_rows: number;
+  freed_bytes: number;
+  vacuumed: boolean;
+}
+
 export interface HistogramBin {
   lower: number;
   upper: number;

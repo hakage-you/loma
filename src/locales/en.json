@@ -91,7 +91,9 @@
     "scan_warning": "Currently, image/media analysis is running in the background, so tag editing/merging is temporarily locked.",
     "kind_all": "All",
     "kind_basic": "Basic",
-    "kind_descriptive": "Descriptive"
+    "kind_descriptive": "Descriptive",
+    "no_name_ja": "no Japanese name",
+    "no_name_ja_help": "No Japanese name is set. Similar-media search falls back to the English name, which can reduce accuracy."
   },
   "folder_modal": {
     "title": "Manage Scan Folders",
@@ -159,7 +161,17 @@
     "spectrum_descriptive_help": "When on, media analyzed with a high-accuracy model may preferentially match each other.",
     "spectrum_hub_corr": "Correlation: tag count vs mean similarity",
     "spectrum_group_sep": "Descriptive tags intra/inter group",
-    "spectrum_sample": "Sample"
+    "spectrum_sample": "Sample",
+    "spectrum_storage": "Vector storage",
+    "spectrum_in_use": "in use",
+    "spectrum_gc": "Delete vectors for models not in use",
+    "spectrum_switch_title": "Switch embedding model",
+    "spectrum_switch_regen": "Tags needing re-vectorization",
+    "spectrum_switch_tags": "",
+    "spectrum_switch_scores": "All similarity numbers will change",
+    "spectrum_switch_kept": "Vectors for the previous model are kept — switching back restores them instantly",
+    "spectrum_switch_cancel": "Cancel",
+    "spectrum_switch_ok": "Switch and save"
   },
   "logs": {
     "title": "Process Logs",

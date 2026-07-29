@@ -91,7 +91,9 @@
     "scan_warning": "現在、画像・メディアの解析処理がバックエンドで進行中のため、タグの編集・マージ操作は一時的にロックされています。",
     "kind_all": "すべて",
     "kind_basic": "基本語",
-    "kind_descriptive": "修飾語"
+    "kind_descriptive": "修飾語",
+    "no_name_ja": "日本語名なし",
+    "no_name_ja_help": "日本語名が未設定です。似ているメディアの検索では英語名で代替されるため、精度が落ちることがあります。"
   },
   "folder_modal": {
     "title": "登録フォルダ管理",
@@ -159,7 +161,17 @@
     "spectrum_descriptive_help": "ONにすると、高精度モデルで解析したメディア同士が優先的に似ていると判定される場合があります。",
     "spectrum_hub_corr": "タグ本数と平均類似度の相関",
     "spectrum_group_sep": "記述的タグ 群内/群間",
-    "spectrum_sample": "標本"
+    "spectrum_sample": "標本",
+    "spectrum_storage": "ベクトルの保存量",
+    "spectrum_in_use": "使用中",
+    "spectrum_gc": "使用中以外のモデルのベクトルを削除",
+    "spectrum_switch_title": "埋め込みモデルの切り替え",
+    "spectrum_switch_regen": "再ベクトル化が必要です",
+    "spectrum_switch_tags": "件",
+    "spectrum_switch_scores": "表示される類似度の数値が変わります",
+    "spectrum_switch_kept": "以前のモデルのベクトルは保持され、モデルを戻せば即座に復元されます",
+    "spectrum_switch_cancel": "やめる",
+    "spectrum_switch_ok": "切り替えて保存"
   },
   "logs": {
     "title": "処理ログ",

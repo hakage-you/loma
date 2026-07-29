@@ -915,6 +915,116 @@ pub async fn find_similar_media(
 }
 
 // ---------------------------------------------------------------------------
+// コマンド: 保存領域の管理
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct EmbeddingModelStorage {
+    pub model: String,
+    pub tag_count: i64,
+    pub dim: i64,
+    pub bytes: i64,
+    /// 現在の設定で使われているモデルか。これだけは GC の対象外。
+    pub in_use: bool,
+}
+
+#[derive(Serialize)]
+pub struct EmbeddingStorageInfo {
+    pub current_model: String,
+    pub total_tags: i64,
+    pub models: Vec<EmbeddingModelStorage>,
+    /// 使用中でないモデルを削除したときに解放される容量
+    pub reclaimable_bytes: i64,
+}
+
+/// モデル別のベクトル保有状況を返す。
+#[tauri::command]
+pub async fn get_embedding_storage_info(
+    db_state: State<'_, DbState>,
+) -> Result<EmbeddingStorageInfo, String> {
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+
+    let total_tags: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+    let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT model, COUNT(*), COALESCE(MAX(dim), 0), COALESCE(SUM(LENGTH(vector)), 0)
+         FROM tag_embeddings GROUP BY model ORDER BY model",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| cmd_err("get_embedding_storage_info", e))?;
+
+    let models: Vec<EmbeddingModelStorage> = rows
+        .into_iter()
+        .map(|(model, tag_count, dim, bytes)| EmbeddingModelStorage {
+            in_use: model == cfg.model,
+            model,
+            tag_count,
+            dim,
+            bytes,
+        })
+        .collect();
+
+    let reclaimable_bytes = models.iter().filter(|m| !m.in_use).map(|m| m.bytes).sum();
+
+    Ok(EmbeddingStorageInfo {
+        current_model: cfg.model,
+        total_tags,
+        models,
+        reclaimable_bytes,
+    })
+}
+
+#[derive(Serialize)]
+pub struct CleanupResult {
+    pub deleted_rows: u64,
+    pub freed_bytes: i64,
+    pub vacuumed: bool,
+}
+
+/// 使用中でないモデルのベクトルを削除する。
+///
+/// **自動 GC は実装しない。** 「モデルを戻せば以前の類似度が復元される」と学習した直後に
+/// 黙って消えるとユーザーの期待を裏切るため、削除は常に明示操作とする。
+#[tauri::command]
+pub async fn cleanup_unused_embeddings(
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<CleanupResult, String> {
+    // 削除中に重心算出やベクトル生成が走らないよう、他の処理と同じロックを取る
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+
+    let freed_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model != ?1",
+    )
+    .bind(&cfg.model)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model != ?1")
+        .bind(&cfg.model)
+        .execute(pool)
+        .await
+        .map_err(|e| cmd_err("cleanup_unused_embeddings", e))?
+        .rows_affected();
+
+    // DELETE だけではファイルは縮まない。数十MB単位の BLOB を消す操作なので、
+    // 「解放された」と表示する以上は実際にディスクを返す。
+    // 明示操作のときしか走らないため、VACUUM の重さは許容できる。
+    let vacuumed = deleted > 0
+        && sqlx::query("VACUUM;").execute(pool).await.is_ok();
+
+    Ok(CleanupResult { deleted_rows: deleted, freed_bytes, vacuumed })
+}
+
+// ---------------------------------------------------------------------------
 // コマンド: 診断（Phase 2 の設計値を確定するための実測）
 // ---------------------------------------------------------------------------
 

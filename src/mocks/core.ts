@@ -102,9 +102,10 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     total_tags: tagState.length,
     embedded_tags: tagState.length,
     missing_tags: 0,
-    eligible_media: mediaState.filter((m) => !isTagInsufficient(m)).length,
+    // 母数は解析済みのみ。未解析・失敗は候補集合の話に入らない
+    eligible_media: mediaState.filter((m) => m.analysis_status === 'completed' && !isTagInsufficient(m)).length,
     excluded_media: mediaState.filter(isTagInsufficient).length,
-    completed_media: mediaState.length,
+    completed_media: mediaState.filter((m) => m.analysis_status === 'completed').length,
     min_basic_tags: MIN_BASIC_TAGS,
     min_candidates: 5,
     full_spectrum_min: 20,
@@ -112,10 +113,25 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     centering: true,
   }),
   generate_tag_embeddings: () => ({ model: 'bge-m3', generated: 0, dim: 1024, elapsed_ms: 0 }),
+  get_embedding_storage_info: () => ({
+    current_model: 'bge-m3',
+    total_tags: tagState.length,
+    // 旧モデルのベクトルが残っている状態を再現して GC ボタンを確認できるようにする
+    models: [
+      { model: 'bge-m3', tag_count: tagState.length, dim: 1024, bytes: tagState.length * 4096, in_use: true },
+      { model: 'qwen3-embedding:8b', tag_count: tagState.length, dim: 4096, bytes: tagState.length * 16384, in_use: false },
+    ],
+    reclaimable_bytes: tagState.length * 16384,
+  }),
+  cleanup_unused_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
   find_similar_media: (args) => {
     // 実データの分布（centering 有効時は 0 中心で min が負）に形だけ寄せる。
     // モックは実際の意味的近さを再現しないので、順位と数値の見た目だけを揃える。
-    const others = mediaState.filter((m) => m.id !== args.baseMediaId);
+    // 候補集合はバックエンドと同じ条件（解析済み かつ basic タグが足りている）で作る。
+    // ここを揃えないと、設定画面が出す「検索対象メディア」の件数と食い違う。
+    const others = mediaState.filter(
+      (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !isTagInsufficient(m),
+    );
     const degraded = others.length < 20;
     const toItem = (m: MediaItem, similarity: number) => ({
       media_id: m.id,

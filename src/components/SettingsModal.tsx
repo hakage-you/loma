@@ -16,6 +16,8 @@ import {
   EmbeddingStatus,
   EmbeddingProgressPayload,
   EmbeddingDiagnostics,
+  EmbeddingStorageInfo,
+  EmbeddingCleanupResult,
 } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 
@@ -154,12 +156,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [embeddingError, setEmbeddingError] = useState<string | null>(null);
   const [diagnostics, setDiagnostics] = useState<EmbeddingDiagnostics | null>(null);
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
+  const [storageInfo, setStorageInfo] = useState<EmbeddingStorageInfo | null>(null);
+  const [isCleaningUp, setIsCleaningUp] = useState(false);
+  /** 埋め込みモデルを切り替えて保存しようとしたときの確認 */
+  const [confirmModelSwitch, setConfirmModelSwitch] = useState<{ from: string; to: string } | null>(null);
 
   const refreshEmbeddingStatus = async () => {
     try {
       setEmbeddingStatus(await invoke<EmbeddingStatus>('get_embedding_status'));
     } catch (e) {
       setEmbeddingError(String(e));
+    }
+    try {
+      setStorageInfo(await invoke<EmbeddingStorageInfo>('get_embedding_storage_info'));
+    } catch {
+      // 保存領域の情報は補助的なので、取れなくても他の表示は続ける
+      setStorageInfo(null);
     }
   };
 
@@ -328,7 +340,24 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setLoadingModels(false);
   };
 
+  /**
+   * 保存の入口。埋め込みモデルを切り替えるときだけ、先に影響を説明して同意を取る。
+   *
+   * 切り替えると類似度の数値がすべて変わり、再ベクトル化も必要になる。
+   * 他の設定と違って「保存したら結果が別物になる」ため、黙って通さない。
+   */
   const handleSave = async () => {
+    const savedModel = settings.spectrum_embedding_model || 'bge-m3';
+    const hasVectors = (storageInfo?.models.length ?? 0) > 0;
+    if (embeddingModel !== savedModel && hasVectors) {
+      setConfirmModelSwitch({ from: savedModel, to: embeddingModel });
+      return;
+    }
+    await doSave();
+  };
+
+  const doSave = async () => {
+    setConfirmModelSwitch(null);
     setIsSaving(true);
     try {
       await onUpdateSetting('llm_provider', provider);
@@ -423,6 +452,20 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     } finally {
       setIsGeneratingEmbeddings(false);
       unlistenPromise.then((unlisten) => unlisten());
+    }
+  };
+
+  /** 使用中でないモデルのベクトルを削除する。自動では走らない（明示操作のみ） */
+  const handleCleanupEmbeddings = async () => {
+    setIsCleaningUp(true);
+    setEmbeddingError(null);
+    try {
+      await invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings');
+      await refreshEmbeddingStatus();
+    } catch (e) {
+      setEmbeddingError(String(e));
+    } finally {
+      setIsCleaningUp(false);
     }
   };
 
@@ -1278,6 +1321,45 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </label>
                   </div>
 
+                  {/* 保存領域とGC */}
+                  {storageInfo && storageInfo.models.length > 0 && (
+                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] space-y-1.5">
+                      <div className="text-slate-400">{t('settings.spectrum_storage', 'ベクトルの保存量')}</div>
+                      {storageInfo.models.map((m) => (
+                        <div key={m.model} className="flex items-center gap-2 text-slate-300">
+                          <span className="font-mono truncate flex-1">{m.model}</span>
+                          {m.in_use && (
+                            <span className="px-1.5 py-0.5 rounded bg-indigo-600/40 text-indigo-200 text-[9px] font-bold shrink-0">
+                              {t('settings.spectrum_in_use', '使用中')}
+                            </span>
+                          )}
+                          <span className="tabular-nums text-slate-400 shrink-0">
+                            {m.tag_count} / {storageInfo.total_tags}
+                          </span>
+                          <span className="tabular-nums text-slate-400 shrink-0 w-16 text-right">
+                            {(m.bytes / 1e6).toFixed(1)} MB
+                          </span>
+                        </div>
+                      ))}
+                      {storageInfo.reclaimable_bytes > 0 && (
+                        <button
+                          type="button"
+                          onClick={handleCleanupEmbeddings}
+                          disabled={isCleaningUp || isGeneratingEmbeddings}
+                          className="mt-1 flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
+                        >
+                          {isCleaningUp ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : (
+                            <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+                          )}
+                          {t('settings.spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
+                          {(storageInfo.reclaimable_bytes / 1e6).toFixed(1)} MB)
+                        </button>
+                      )}
+                    </div>
+                  )}
+
                   {/* 計測結果 */}
                   {diagnostics && (
                     <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1.5">
@@ -1348,6 +1430,62 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 埋め込みモデル切り替えの確認 */}
+      {confirmModelSwitch && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-indigo-500/20 text-indigo-300 rounded-xl border border-indigo-500/30">
+                <Radar className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-base font-bold text-white">
+                  {t('settings.spectrum_switch_title', '埋め込みモデルの切り替え')}
+                </h4>
+                <p className="text-xs text-slate-300 font-mono truncate">
+                  {confirmModelSwitch.from} → {confirmModelSwitch.to}
+                </p>
+              </div>
+            </div>
+
+            <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
+              <li>
+                {t('settings.spectrum_switch_regen', '再ベクトル化が必要です')}:{' '}
+                {Math.max(
+                  0,
+                  (storageInfo?.total_tags ?? 0) -
+                    (storageInfo?.models.find((m) => m.model === confirmModelSwitch.to)?.tag_count ?? 0),
+                )}{' '}
+                {t('settings.spectrum_switch_tags', '件')}
+              </li>
+              <li>{t('settings.spectrum_switch_scores', '表示される類似度の数値が変わります')}</li>
+              {/* 「戻せば復元される」と伝えるので、GC は自動で走らせない */}
+              <li>
+                {t(
+                  'settings.spectrum_switch_kept',
+                  '以前のモデルのベクトルは保持され、モデルを戻せば即座に復元されます',
+                )}
+              </li>
+            </ul>
+
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
+              <button
+                onClick={() => setConfirmModelSwitch(null)}
+                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
+              >
+                {t('settings.spectrum_switch_cancel', 'やめる')}
+              </button>
+              <button
+                onClick={doSave}
+                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition cursor-pointer"
+              >
+                {t('settings.spectrum_switch_ok', '切り替えて保存')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Confirmation Modal for Downloading Ollama Model */}
       {confirmDownloadModal && (
