@@ -1040,6 +1040,75 @@ mod tests {
         assert_eq!(r, 0.0);
     }
 
+    /// 計測用テストの共通前処理。
+    ///
+    /// スナップショットは計測のたびに作り直されるため、ベクトルは毎回未生成の状態から始まる。
+    /// `measure_real_library` と `similar_examples` のどちらを単独で走らせても成立するよう、
+    /// 生成処理はここに置いて両方から呼ぶ。本番の `generate_tag_embeddings` と同じ手順。
+    async fn ensure_embeddings(pool: &Pool<Sqlite>, model: &str, url: &str) -> usize {
+        sqlx::query(
+            "CREATE TABLE IF NOT EXISTS tag_embeddings (
+                tag_id INTEGER NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
+                vector BLOB NOT NULL, created_at INTEGER DEFAULT (strftime('%s','now')),
+                PRIMARY KEY (tag_id, model))",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let pending = sqlx::query_as::<_, (i64, String, Option<String>)>(
+            "SELECT t.id, t.name, t.name_ja FROM tags t
+             LEFT JOIN tag_embeddings e ON e.tag_id = t.id AND e.model = ?1
+             WHERE e.tag_id IS NULL ORDER BY t.id",
+        )
+        .bind(model)
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        if pending.is_empty() {
+            return 0;
+        }
+
+        println!("未生成タグ {} 件をベクトル化します ({})", pending.len(), model);
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(600))
+            .build()
+            .unwrap();
+        let started = std::time::Instant::now();
+        for chunk in pending.chunks(EMBED_BATCH_SIZE) {
+            let texts: Vec<String> = chunk
+                .iter()
+                .map(|(_, n, ja)| embedding_text(n, ja.as_deref()))
+                .collect();
+            let vecs = fetch_embeddings(&client, url, model, &texts).await.unwrap();
+            for ((id, _, _), mut v) in chunk.iter().zip(vecs) {
+                if !l2_normalize(&mut v) {
+                    continue;
+                }
+                sqlx::query(
+                    "INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1,?2,?3,?4)
+                     ON CONFLICT(tag_id, model) DO UPDATE SET dim=?3, vector=?4",
+                )
+                .bind(id)
+                .bind(model)
+                .bind(v.len() as i64)
+                .bind(to_blob(&v))
+                .execute(pool)
+                .await
+                .unwrap();
+            }
+        }
+        let secs = started.elapsed().as_secs_f32();
+        println!(
+            "ベクトル化 {} 件 / {:.1} 秒 ({:.1} 件/秒)",
+            pending.len(),
+            secs,
+            pending.len() as f32 / secs.max(0.001)
+        );
+        pending.len()
+    }
+
     /// 実DBに対する定性確認。分布の数値が良くても結果が無意味ということはあり得るため、
     /// 上位・中位・下位に実際にどのメディアが並ぶかをタグ名付きで目視する。
     ///
@@ -1055,6 +1124,8 @@ mod tests {
             return;
         };
         let model = std::env::var("LOMA_MEASURE_MODEL").unwrap_or_else(|_| "bge-m3".to_string());
+        let url = std::env::var("LOMA_MEASURE_URL")
+            .unwrap_or_else(|_| "http://localhost:11434".to_string());
         let centering = std::env::var("LOMA_MEASURE_CENTERING").unwrap_or_else(|_| "true".into()) == "true";
 
         let rt = tokio::runtime::Runtime::new().unwrap();
@@ -1065,8 +1136,10 @@ mod tests {
                 .await
                 .expect("DB を開けません");
 
+            ensure_embeddings(&pool, &model, &url).await;
+
             let cfg = SpectrumConfig {
-                ollama_url: String::new(),
+                ollama_url: url.clone(),
                 model: model.clone(),
                 include_descriptive: false,
                 centering,
@@ -1153,66 +1226,10 @@ mod tests {
                 .await
                 .expect("DB を開けません");
 
-            sqlx::query(
-                "CREATE TABLE IF NOT EXISTS tag_embeddings (
-                    tag_id INTEGER NOT NULL, model TEXT NOT NULL, dim INTEGER NOT NULL,
-                    vector BLOB NOT NULL, created_at INTEGER DEFAULT (strftime('%s','now')),
-                    PRIMARY KEY (tag_id, model))",
-            )
-            .execute(&pool)
-            .await
-            .unwrap();
+            println!("\n=== model: {} ===", model);
+            ensure_embeddings(&pool, &model, &url).await;
 
-            // 1) 未生成タグのベクトル化（本番の generate_tag_embeddings と同じ手順）
-            let pending = sqlx::query_as::<_, (i64, String, Option<String>)>(
-                "SELECT t.id, t.name, t.name_ja FROM tags t
-                 LEFT JOIN tag_embeddings e ON e.tag_id = t.id AND e.model = ?1
-                 WHERE e.tag_id IS NULL ORDER BY t.id",
-            )
-            .bind(&model)
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-
-            println!("\n=== model: {} / 未生成タグ {} 件 ===", model, pending.len());
-            let client = Client::builder()
-                .timeout(std::time::Duration::from_secs(600))
-                .build()
-                .unwrap();
-            let embed_start = std::time::Instant::now();
-            for chunk in pending.chunks(EMBED_BATCH_SIZE) {
-                let texts: Vec<String> = chunk
-                    .iter()
-                    .map(|(_, n, ja)| embedding_text(n, ja.as_deref()))
-                    .collect();
-                let vecs = fetch_embeddings(&client, &url, &model, &texts).await.unwrap();
-                for ((id, _, _), mut v) in chunk.iter().zip(vecs) {
-                    if !l2_normalize(&mut v) {
-                        continue;
-                    }
-                    sqlx::query(
-                        "INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1,?2,?3,?4)
-                         ON CONFLICT(tag_id, model) DO UPDATE SET dim=?3, vector=?4",
-                    )
-                    .bind(id)
-                    .bind(&model)
-                    .bind(v.len() as i64)
-                    .bind(to_blob(&v))
-                    .execute(&pool)
-                    .await
-                    .unwrap();
-                }
-            }
-            if !pending.is_empty() {
-                println!(
-                    "ベクトル化 {} 件 / {:.1} 秒 ({:.1} 件/秒)",
-                    pending.len(),
-                    embed_start.elapsed().as_secs_f32(),
-                    pending.len() as f32 / embed_start.elapsed().as_secs_f32().max(0.001)
-                );
-            }
-
-            // 2) centering × descriptive の4条件を実測する
+            // centering × descriptive の4条件を実測する
             for centering in [true, false] {
                 for include_descriptive in [false, true] {
                     let cfg = SpectrumConfig {

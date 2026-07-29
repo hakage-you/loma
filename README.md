@@ -126,3 +126,13 @@ npm run test:e2e
 VLM 連携で踏んだ落とし穴と実測データは [VLM 連携の知見](docs/vlm-notes.md) にまとめてあります。
 解析プロンプトを変更する場合は、事前に目を通したうえで
 [`tools/prompt-check/`](tools/prompt-check/README.md) の回帰チェックを回してください。
+
+### 4.5 計測ハーネス
+
+LLM が絡む部分は「良くしたつもり」で静かに壊れるため、実データで測るツールを用意してあります。
+いずれも**本番と同じコード**を通すよう作ってあり、計測用の再実装は持ちません。
+
+| ツール | 用途 |
+|---|---|
+| [`tools/prompt-check/`](tools/prompt-check/README.md) | 解析プロンプトの回帰チェック（タグ本数・パース失敗率・空応答率） |
+| [`tools/embedding-check/`](tools/embedding-check/README.md) | 埋め込みモデルの比較（類似度分布・ハブ化・上位/中位/下位の実例） |

@@ -44,10 +44,10 @@ export const RECOMMENDED_VLM_MODELS: RecommendedModel[] = [
  * `nomic-embed-text` は実質英語専用のため候補に含めない。
  *
  * **ここには実測したモデルだけを載せる。** 埋め込みモデルは名前や次元数からは
- * 概念の分離能力が判断できず、実際に類似度分布を測るまで良し悪しが分からない
- * （実測: bge-m3 は sd 0.132、qwen3-embedding:8b は sd 0.196。同じ猫の写真を
- * 基準にしても前者は猫を取り逃がした）。計測手順は
- * `cargo test --release measure_real_library -- --ignored --nocapture`。
+ * 概念の分離能力が判断できず、実際に自分のライブラリで類似度分布を測るまで
+ * 良し悪しが分からない（実測: 類似度の sd は bge-m3 が 0.132、
+ * qwen3-embedding:8b が 0.198 で 1.5 倍の開きがあった）。
+ * 計測手順は tools/embedding-check/README.md。
  */
 export const RECOMMENDED_EMBEDDING_MODELS: RecommendedModel[] = [
   {
