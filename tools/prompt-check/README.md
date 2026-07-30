@@ -39,6 +39,43 @@ Loma の既定モデル（`qwen3-vl:*`, `gemma4:*`, `qwen3:14b`）はいずれ�
 
 将来 Ollama 側で改善される可能性はあるので、`--format-json both` で**推測ではなく実測で**再確認すること。
 
+## 動画マルチフレーム経路（`--frames 3`）
+
+**Loma には Ollama 呼び出しの実装が2つある。**
+
+| 経路 | 実装 | 温度 | num_ctx | num_ctx 拡張リトライ |
+|---|---|---|---|---|
+| 画像・動画サムネイルの通常解析 | `llm/ollama.rs` | 0.2 | `recommended_num_ctx` | **あり** |
+| 動画の「指定場面で解析」 | `batch.rs` `analyze_multi_frame_with_ollama` | 0.1 | 16384 | **なし** |
+
+`--frames 1`（既定）は前者、`--frames 2` 以上は後者を再現する。マルチフレーム時は
+連続する画像をひと組にして同時に送り、注記・温度・num_ctx を **`batch.rs` から抽出**する
+（`prompts.mjs` の `loadMultiFrameConfig`）。本番に無い num_ctx 拡張も意図的に無効化する。
+救済を効かせると欠陥が隠れるため。
+
+**この経路を覆っていなかったために、本流で 2026-07-29 に直した `format:"json"` の欠陥が
+`batch.rs` 側に残り続けた**（2026-07-30 修正）。Ollama 呼び出しを直すときは両方を測ること。
+
+### `num_predict` について
+
+**`num_predict` を指定してはいけない。** 生成トークンの上限だが、**thinking の消費分も
+同じ枠から引かれる**ため、答えを書く前に打ち切られる。
+
+実測（`qwen3-vl:4b` / サムネイル3枚 / 4試行）:
+
+| オプション | 空応答 | `done_reason` |
+|---|---|---|
+| `num_predict: 2048` | **3/4** | length（`eval_count` がちょうど 2048 で停止） |
+| 無指定 | 0/4 | stop |
+
+`--num-predict` は**この回帰を再現するためだけ**にある。既定値は `batch.rs` の実値
+（現在は無指定）なので、本番に `num_predict` が復活すれば計測側にも自動で現れる。
+
+```bash
+# 修正前の設定を再現する（空応答になる）
+node tools/prompt-check/run.mjs --frames 3 --sample 3 --repeat 2 --num-predict 2048
+```
+
 ## プロンプトの取得方法
 
 プロンプト本文は**このディレクトリにコピーしていない**。`prompts.mjs` が
@@ -68,6 +105,9 @@ node tools/prompt-check/run.mjs --variants light --format-json both
 
 # DETAILED 側の粒度を比較する
 node tools/prompt-check/run.mjs --variants detailed_atomic,detailed_balanced,detailed_descriptive --model qwen3-vl:30b
+
+# 動画の「指定場面で解析」の経路を測る（batch.rs / 画像3枚を同時に送る）
+node tools/prompt-check/run.mjs --frames 3 --sample 6 --repeat 2
 ```
 
 ### オプション
@@ -81,6 +121,8 @@ node tools/prompt-check/run.mjs --variants detailed_atomic,detailed_balanced,det
 | `--repeat` | `1` | 同一画像あたりの試行回数 |
 | `--sample` | `5` | `test_assets/100files` から拾う枚数 |
 | `--limit` | `0` | 画像総数の上限（動作確認用） |
+| `--frames` | `1` | `1` = 単画像経路（`llm/ollama.rs`）／`2` 以上 = 動画マルチフレーム経路（`batch.rs`） |
+| `--num-predict` | なし | `num_predict` を上書きする。**回帰の再現専用**（下記参照） |
 
 ### プロンプト variant
 

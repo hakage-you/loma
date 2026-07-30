@@ -16,7 +16,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { allPrompts } from './prompts.mjs';
+import { allPrompts, loadMultiFrameConfig } from './prompts.mjs';
 import { collectImages } from './images.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
@@ -39,6 +39,10 @@ const VARIANTS = arg('variants', 'light').split(',').map((s) => s.trim());
 const FORMAT_MODE = arg('format-json', 'off'); // off | on | both
 const LIMIT = parseInt(arg('limit', '0'), 10);
 const SAMPLE = parseInt(arg('sample', '5'), 10); // test_assets/100files から拾う枚数
+// 1 なら llm/ollama.rs の単画像経路、2 以上なら batch.rs の動画マルチフレーム経路を再現する
+const FRAMES = parseInt(arg('frames', '1'), 10);
+// batch.rs の値を上書きして num_predict の影響を測るためのもの（回帰の再現用）
+const NUM_PREDICT_OVERRIDE = arg('num-predict', null);
 
 if (has('help')) {
   console.log(fs.readFileSync(path.join(HERE, 'README.md'), 'utf8'));
@@ -96,14 +100,18 @@ function parseAnalysisResult(rawResponse) {
 
 // ---------------------------------------------------------------- Ollama
 
-async function callGenerate(prompt, imageB64, numCtx, useFormatJson) {
+async function callGenerate(prompt, imagesB64, numCtx, useFormatJson, extra = {}) {
   const body = {
     model: MODEL,
     prompt,
-    images: [imageB64],
+    images: imagesB64,
     stream: false,
-    options: { temperature: 0.2, num_ctx: numCtx },
+    options: { temperature: extra.temperature ?? 0.2, num_ctx: numCtx },
   };
+  // num_predict は既定で付けない。thinking の消費分も同じ枠から引かれるため、
+  // 上限を切ると答えを書く前に打ち切られる（batch.rs のコメント参照）。
+  // 回帰を再現したいときだけ --num-predict で明示する。
+  if (extra.numPredict != null) body.options.num_predict = extra.numPredict;
   // format:"json" は過去に空文字応答を起こした経緯があるため既定 off。
   // プロンプト次第で有効になりうるので、条件として切り替えて実測する。
   if (useFormatJson) body.format = 'json';
@@ -117,12 +125,18 @@ async function callGenerate(prompt, imageB64, numCtx, useFormatJson) {
   return res.json();
 }
 
-/** 本番の analyze_with_ctx_escalation と同じ num_ctx 拡張リトライ */
-async function analyzeWithEscalation(prompt, imageB64, baseNumCtx, useFormatJson) {
+/**
+ * 本番の analyze_with_ctx_escalation と同じ num_ctx 拡張リトライ。
+ *
+ * **マルチフレーム経路（batch.rs）はこの拡張を持たない。** 忠実に測るため、
+ * frames > 1 のときは 1 回だけ呼んで返す（本番に無い救済を効かせると欠陥が隠れる）。
+ */
+async function analyzeWithEscalation(prompt, imagesB64, baseNumCtx, useFormatJson, extra = {}) {
   let numCtx = baseNumCtx;
   let escalations = 0;
   for (;;) {
-    const resp = await callGenerate(prompt, imageB64, numCtx, useFormatJson);
+    const resp = await callGenerate(prompt, imagesB64, numCtx, useFormatJson, extra);
+    if (extra.noEscalation) return { resp, numCtx, escalations, exhausted: false };
     if (resp.done_reason === 'length' && !(resp.response ?? '').trim()) {
       const next = Math.min(numCtx * 2, NUM_CTX_HARD_CAP);
       if (next > numCtx) {
@@ -170,26 +184,54 @@ async function main() {
     process.exit(1);
   }
 
-  const cells = VARIANTS.length * formatModes.length * images.length * REPEAT;
+  // frames > 1 は動画マルチフレーム経路（batch.rs）の再現。連続する画像をひと組にして送る。
+  const multiFrame = FRAMES > 1 ? loadMultiFrameConfig(REPO_ROOT) : null;
+  const units = [];
+  for (let i = 0; i + FRAMES <= images.length; i += FRAMES) {
+    const set = images.slice(i, i + FRAMES);
+    units.push({ images: set, name: set.map((s) => s.name).join('+').slice(0, 26), group: set[0].group });
+  }
+  if (!units.length) {
+    console.error(`画像が ${images.length} 枚しかなく、frames=${FRAMES} の組を作れません。--sample を増やしてください。`);
+    process.exit(1);
+  }
+
+  const cells = VARIANTS.length * formatModes.length * units.length * REPEAT;
   console.log(`\n=== VLM プロンプト回帰チェック ===`);
   console.log(`model     : ${MODEL}`);
   console.log(`variants  : ${VARIANTS.join(', ')}`);
   console.log(`format    : ${formatModes.map((f) => (f ? 'json' : 'none')).join(', ')}`);
   console.log(`images    : ${images.length} 枚 (sparse ${images.filter((i) => i.group === 'sparse').length} 枚を含む)`);
   console.log(`repeat    : ${REPEAT}`);
+  if (multiFrame) {
+    console.log(`frames    : ${FRAMES} 枚/回 -> ${units.length} 組（batch.rs 経路: temperature ${multiFrame.temperature}, num_ctx ${multiFrame.numCtx}, num_ctx 拡張なし）`);
+    console.log(`num_predict: ${NUM_PREDICT_OVERRIDE ?? multiFrame.numPredict ?? '無指定'}`);
+  }
   console.log(`calls     : ${cells}\n`);
 
   const b64 = new Map();
   const results = [];
 
   for (const variant of VARIANTS) {
-    const { prompt, label, numCtx } = prompts[variant];
+    const p = prompts[variant];
+    const label = multiFrame ? `${p.label} + マルチフレーム注記` : p.label;
+    const prompt = multiFrame ? p.prompt + multiFrame.note : p.prompt;
+    const numCtx = multiFrame ? multiFrame.numCtx : p.numCtx;
+    const extra = multiFrame
+      ? {
+          temperature: multiFrame.temperature,
+          numPredict: NUM_PREDICT_OVERRIDE != null ? Number(NUM_PREDICT_OVERRIDE) : multiFrame.numPredict,
+          noEscalation: true,
+        }
+      : {};
     for (const useFormatJson of formatModes) {
-      const condId = `${variant}${useFormatJson ? '+fmt' : ''}`;
+      const condId = `${variant}${useFormatJson ? '+fmt' : ''}${multiFrame ? `+f${FRAMES}` : ''}`;
       console.log(`--- ${condId}: ${label}${useFormatJson ? ' [format:"json"]' : ''} (num_ctx ${numCtx}) ---`);
 
-      for (const img of images) {
-        if (!b64.has(img.path)) b64.set(img.path, fs.readFileSync(img.path).toString('base64'));
+      for (const img of units) {
+        for (const one of img.images) {
+          if (!b64.has(one.path)) b64.set(one.path, fs.readFileSync(one.path).toString('base64'));
+        }
         for (let rep = 0; rep < REPEAT; rep++) {
           const t0 = Date.now();
           const row = {
@@ -200,7 +242,13 @@ async function main() {
             numCtx, escalations: 0, doneReason: null, thinkingChars: 0, rawSample: null,
           };
           try {
-            const r = await analyzeWithEscalation(prompt, b64.get(img.path), numCtx, useFormatJson);
+            const r = await analyzeWithEscalation(
+              prompt,
+              img.images.map((one) => b64.get(one.path)),
+              numCtx,
+              useFormatJson,
+              extra
+            );
             row.elapsedMs = Date.now() - t0;
             row.numCtx = r.numCtx;
             row.escalations = r.escalations;
@@ -303,6 +351,7 @@ async function main() {
   const out = path.join(outDir, `${MODEL.replace(/[:\\/]/g, '_')}_${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
   fs.writeFileSync(out, JSON.stringify({
     model: MODEL, variants: VARIANTS, formatModes, repeat: REPEAT,
+    frames: FRAMES, multiFrame, numPredictOverride: NUM_PREDICT_OVERRIDE,
     promptMeta: prompts._meta, ranAt: new Date().toISOString(), results,
   }, null, 2));
   console.log(`\n生データ: ${path.relative(REPO_ROOT, out)}\n`);

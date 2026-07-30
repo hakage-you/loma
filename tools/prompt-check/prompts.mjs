@@ -44,6 +44,41 @@ function mirrorDescriptiveRulesSection(min, max) {
   );
 }
 
+/**
+ * 動画マルチフレーム解析（`batch.rs` の `analyze_multi_frame_with_ollama`）の条件を抽出する。
+ *
+ * この経路は `llm/ollama.rs` の本流とは**別実装**で、温度も num_ctx も違い、num_ctx の
+ * 拡張リトライも持たない。ここを覆っていなかったために `format:"json"` と `num_predict`
+ * の欠陥が本流の修正から取り残された（2026-07-30）。値は必ず batch.rs から抽出する。
+ */
+export function loadMultiFrameConfig(repoRoot) {
+  const src = fs.readFileSync(path.join(repoRoot, 'src-tauri/src/batch.rs'), 'utf8');
+
+  const fn = /async fn analyze_multi_frame_with_ollama[\s\S]*?\n\}/.exec(src)?.[0];
+  if (!fn) throw new Error('analyze_multi_frame_with_ollama を batch.rs から抽出できませんでした');
+
+  // format!("{}\n\n<note>", base_prompt) の <note> を取り出す。
+  // 通常の文字列リテラルなので \n はエスケープのまま入っている。実行時と同じ形に戻す。
+  const noteMatch = /format!\("\{\}((?:[^"\\]|\\.)*)",\s*base_prompt\)/.exec(fn);
+  if (!noteMatch) throw new Error('マルチフレームの注記を batch.rs から抽出できませんでした');
+  const note = noteMatch[1].replace(/\\n/g, '\n').replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+
+  const opts = /options:\s*OllamaOptions\s*\{([\s\S]*?)\}/.exec(fn)?.[1] ?? '';
+  const numOf = (key) => {
+    const m = new RegExp(`${key}:\\s*([\\d.]+)`).exec(opts);
+    return m ? Number(m[1]) : null;
+  };
+
+  return {
+    note,
+    temperature: numOf('temperature') ?? 0.1,
+    numCtx: numOf('num_ctx') ?? 16384,
+    // 本番に num_predict が復活したら計測側でも再現される（無指定なら null）
+    numPredict: numOf('num_predict'),
+    formatJson: /format:\s*"json"/.test(fn),
+  };
+}
+
 export function loadRustPrompts(repoRoot) {
   const modPath = path.join(repoRoot, 'src-tauri/src/llm/mod.rs');
   const src = fs.readFileSync(modPath, 'utf8');
