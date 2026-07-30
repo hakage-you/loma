@@ -50,11 +50,12 @@ test.describe('概念スペクトラム検索', () => {
   test('引き直しが無意味なときはボタンを出さない', async ({ page }) => {
     await openSpectrum(page);
     // モックの候補数は 20（3ゾーン表示の最小値）。このとき帯幅は
-    // max(4, ceil(20 * 0.1)) = 4 で表示件数と同じになり、引き直しても
+    // clamp(ceil(20 * 0.1), 4, 8) = 4 で表示件数と同じになり、引き直しても
     // 必ず同じ顔ぶれが出る。押しても何も変わらないボタンは出さない。
-    // 帯が広がるのは候補が 40 を超えてから（帯 = ceil(N * 0.1) > 4）。
+    // 帯が広がるのは候補が 40 を超えてから。80 件で上限 8 に達し、
+    // それ以上は広げない（広げると帯が覆う類似度の幅が裾で壊れる）。
     // 帯幅の増え方と抽出の変化は Rust 側のテストで担保している
-    // （zone_bands_widen_as_the_library_grows / sampling_is_deterministic_for_a_given_seed）。
+    // （zone_bands_widen_then_stop_widening / sampling_is_deterministic_for_a_given_seed）。
     await expect(page.getByRole('button', { name: '引き直す' })).toHaveCount(0);
   });
 

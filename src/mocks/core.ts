@@ -168,6 +168,9 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !isTagInsufficient(m),
     );
     const degraded = others.length < 20;
+    // 帯幅はバックエンドの zone_bands と同じ規則（比率 10% / 下限 4 / 上限 8）。
+    // 上限があるのは、順位で切った帯が覆う類似度の幅が分布の裾で桁違いに広がるため
+    const bandSize = Math.min(8, Math.max(4, Math.ceil(others.length * 0.1)));
     const toItem = (m: MediaItem, similarity: number) => ({ media_id: m.id, similarity, media: m });
     const take = (from: number, sim: (i: number) => number) =>
       others.slice(from, from + 4).map((m, i) => toItem(m, sim(i)));
@@ -175,9 +178,9 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     const zones = degraded
       ? [{ key: 'similar', band_size: Math.min(4, others.length), items: take(0, (i) => 0.72 - i * 0.06) }]
       : [
-          { key: 'similar', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(0, (i) => 0.72 - i * 0.06) },
-          { key: 'middle', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(4, (i) => 0.02 - i * 0.01) },
-          { key: 'distant', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(8, (i) => -0.24 - i * 0.02) },
+          { key: 'similar', band_size: bandSize, items: take(0, (i) => 0.72 - i * 0.06) },
+          { key: 'middle', band_size: bandSize, items: take(4, (i) => 0.02 - i * 0.01) },
+          { key: 'distant', band_size: bandSize, items: take(8, (i) => -0.24 - i * 0.02) },
         ];
 
     return {

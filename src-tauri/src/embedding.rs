@@ -42,11 +42,32 @@ const DIAGNOSTICS_SAMPLE_CAP: usize = 400;
 /// 各ゾーンに表示する件数。
 pub const ZONE_SIZE: usize = 4;
 
-/// 帯の幅（候補数に対する比率）。下限は `ZONE_SIZE`。
+/// 帯の幅（候補数に対する比率）。下限は `ZONE_SIZE`、上限は `ZONE_BAND_MAX`。
 ///
 /// 帯から `ZONE_SIZE` 件を無作為抽出するので、ライブラリが育つほど帯が広がり
 /// 引き直しの多様性が自然に増える。N=20 では帯 = 4 件で決定的になる。
 const ZONE_BAND_RATIO: f32 = 0.10;
+
+/// 帯の件数上限。
+///
+/// **比率だけで帯を切ると裾で精度が壊れる。** 順位で切っているのに、帯が覆う
+/// 類似度の幅は分布上の位置によって桁で変わるため。実測（bge-m3 / 候補 1,007 件 /
+/// 基準 40 件平均 / `tools/embedding-check/band-width.mjs`）:
+///
+/// | 帯幅 | 上位帯が覆う幅 | 下端σ | 最下位帯が覆う幅 | 最類似が出る確率 |
+/// |---|---|---|---|---|
+/// | 4 | 0.141 | +3.62σ | 0.032 | 100% |
+/// | 8 | 0.201 | +3.13σ | 0.045 | 50% |
+/// | 101（比率 10%） | 0.431 | +1.34σ | 0.126 | 4% |
+///
+/// 上限が無いと上位帯の下端が平均 +1.34σ まで降りてきて、「タグの類似度が高い」枠が
+/// 実質「平均より少し上」の候補を出す。中央付近は密集しているので比率のままでも
+/// 精度は落ちないが、ゾーンごとに規則を変える理由が無いので一律に上限を掛ける。
+///
+/// `ZONE_SIZE * 2` にすると引き直しの組み合わせが C(8,4) = 70 通り残るので、
+/// 引き直しは死なない。1 にすれば決定的な「上位 N 件」になるが、それは
+/// この機能の目的（スペクトラムの提示）ではない。
+const ZONE_BAND_MAX: usize = ZONE_SIZE * 2;
 
 // ---------------------------------------------------------------------------
 // 乱択（帯域サンプリング用）
@@ -94,9 +115,12 @@ fn sample_indices(len: usize, k: usize, rng: &mut SplitMix64) -> Vec<usize> {
 /// 絶対的なコサイン閾値ではなく**順位**で切るのは、実測で分布が
 /// centering 無しでは 0.61〜0.99 に圧縮され、有りでも 0 中心に集まるため
 /// （閾値では Zone2・Zone3 が空になる）。順位ベースは分布とモデルに依存しない。
+///
+/// ただし順位だけでは裾の精度が保てないので、件数に上限を掛ける（`ZONE_BAND_MAX`）。
 fn zone_bands(n: usize) -> [(usize, usize); 3] {
     let band = ((n as f32 * ZONE_BAND_RATIO).ceil() as usize)
         .max(ZONE_SIZE)
+        .min(ZONE_BAND_MAX)
         .min(n);
     let mid_start = (n / 2).saturating_sub(band / 2).min(n - band);
     [
@@ -1404,12 +1428,15 @@ mod tests {
     }
 
     #[test]
-    fn zone_bands_widen_as_the_library_grows() {
-        // ライブラリが育つほど帯が広がり、引き直しの多様性が自然に増える
+    fn zone_bands_widen_then_stop_widening() {
+        // ライブラリが育つほど帯が広がり、引き直しの多様性が増える。
+        // ただし上限で止まること。止めないと上位帯の下端が平均 +1.34σ まで降りてきて、
+        // 「タグの類似度が高い」枠が実質「平均より少し上」を出す（ZONE_BAND_MAX の実測表）
         let width = |n: usize| { let b = zone_bands(n); b[0].1 - b[0].0 };
         assert_eq!(width(20), ZONE_SIZE);
-        assert_eq!(width(100), 10);
-        assert_eq!(width(1000), 100);
+        assert_eq!(width(60), 6);
+        assert_eq!(width(100), ZONE_BAND_MAX);
+        assert_eq!(width(1000), ZONE_BAND_MAX, "候補が増えても帯は広げない");
     }
 
     #[test]
