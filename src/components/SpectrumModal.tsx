@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { MediaItem, SimilarItem, SpectrumResult, Zone, ZoneKey } from '../types';
-import { X, Loader2, Info, ChevronRight, Dices } from 'lucide-react';
+import { MediaItem, SimilarItem, SpectrumResult, TagPairItem, Zone, ZoneKey } from '../types';
+import { X, Loader2, Info, ChevronRight, Dices, Radar, Tag } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 
 interface SpectrumModalProps {
@@ -11,9 +11,44 @@ interface SpectrumModalProps {
   onOpenSettings: () => void;
   /** タグ不足で対象外のメディアを一覧したいときに呼ぶ */
   onShowExcluded?: () => void;
+  /**
+   * メディアの詳細を開く。
+   *
+   * カードのクリックは**この操作に割り当てる**。アプリの他の画面では
+   * メディアのクリックが常に「詳細を開く」なので、ここだけ再検索にすると
+   * 同じ見た目のものが違う動きをすることになる。
+   * 「これを基準に探索」は別のボタンに分ける。
+   */
+  onOpenDetail?: (item: MediaItem) => void;
 }
 
 const fileNameOf = (p: string) => p.split(/[/\\]/).pop() || '';
+
+/** 重心に入っている基本語タグだけを、表示用の名前で返す */
+const basicTagNames = (tags: TagPairItem[]) =>
+  tags.filter((t) => t.kind === 'basic').map((t) => t.name_ja || t.name);
+
+/** タグのチップ列。「タグの類似度」と表示するなら、そのタグが見えなければ検証できない */
+const TagChips: React.FC<{ tags: TagPairItem[]; max?: number }> = ({ tags, max = 4 }) => {
+  const names = basicTagNames(tags);
+  if (names.length === 0) return null;
+  return (
+    <div className="flex flex-wrap gap-1">
+      {names.slice(0, max).map((n) => (
+        <span
+          key={n}
+          className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-slate-800 text-slate-300 rounded text-[10px] max-w-full truncate"
+        >
+          <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
+          <span className="truncate">{n}</span>
+        </span>
+      ))}
+      {names.length > max && (
+        <span className="text-[10px] text-slate-500 self-center">+{names.length - max}</span>
+      )}
+    </div>
+  );
+};
 
 /**
  * データマークの色。
@@ -108,32 +143,106 @@ const RangeLegend: React.FC<{ min: number; mean: number; max: number; zones: Zon
   );
 };
 
-const SimilarCard: React.FC<{ item: SimilarItem; onClick: () => void }> = ({ item, onClick }) => (
-  <button
-    type="button"
-    onClick={onClick}
-    className="group shrink-0 w-36 text-left rounded-lg overflow-hidden border border-white/10 bg-slate-900/60 hover:border-indigo-400/60 transition"
-    title={fileNameOf(item.file_path)}
-  >
-    {/* サムネイル本体には手を加えない。淡くすると「格下」と読めてしまい、
-        最も似ていない枠＝セレンディピティ枠の意味が逆立ちする */}
-    <div className="relative aspect-square bg-slate-950/80">
-      <img
-        src={convertFileSrc(item.thumbnail_path || item.file_path)}
-        alt={fileNameOf(item.file_path)}
-        loading="lazy"
-        className="w-full h-full object-cover"
-        onError={(e) => {
-          (e.target as HTMLElement).style.display = 'none';
-        }}
-      />
+const SimilarCard: React.FC<{
+  item: SimilarItem;
+  onOpenDetail: () => void;
+  onExplore: () => void;
+}> = ({ item, onOpenDetail, onExplore }) => {
+  const { t } = useTranslation();
+  const name = fileNameOf(item.media.file_path);
+  return (
+    <div className="group shrink-0 w-40 rounded-lg overflow-hidden border border-white/10 bg-slate-900/60 hover:border-indigo-400/60 transition">
+      {/* クリックは詳細を開く。他画面と同じ操作にする。
+          サムネイル本体には手を加えない。淡くすると「格下」と読めてしまい、
+          最も似ていない枠＝セレンディピティ枠の意味が逆立ちする */}
+      <button
+        type="button"
+        onClick={onOpenDetail}
+        title={`${name}\n${t('spectrum.open_detail', '詳細を開く')}`}
+        className="relative block w-full aspect-square bg-slate-950/80 cursor-pointer"
+      >
+        <img
+          src={convertFileSrc(item.media.thumbnail_path || item.media.file_path)}
+          alt={name}
+          loading="lazy"
+          className="w-full h-full object-cover"
+          onError={(e) => {
+            (e.target as HTMLElement).style.display = 'none';
+          }}
+        />
+        {/* 探索の続行は別ボタンに分ける。ホバーでのみ出るので普段は邪魔にならない */}
+        <span
+          role="button"
+          tabIndex={0}
+          onClick={(e) => {
+            e.stopPropagation();
+            onExplore();
+          }}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+              e.stopPropagation();
+              e.preventDefault();
+              onExplore();
+            }
+          }}
+          title={t('spectrum.explore_from', 'このメディアを基準に探索')}
+          className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-black/60 hover:bg-indigo-500/80 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
+        >
+          <Radar className="w-3.5 h-3.5" />
+        </span>
+      </button>
+      <div className="p-2 space-y-1">
+        <div className="text-[11px] text-slate-300 truncate" title={name}>
+          {name}
+        </div>
+        <div className="text-[11px] text-slate-400 tabular-nums">{item.similarity.toFixed(3)}</div>
+        <TagChips tags={item.media.tags} />
+      </div>
     </div>
-    <div className="p-2">
-      <div className="text-[11px] text-slate-300 truncate">{fileNameOf(item.file_path)}</div>
-      <div className="mt-0.5 text-[11px] text-slate-400 tabular-nums">{item.similarity.toFixed(3)}</div>
+  );
+};
+
+/** 基準メディアのプレビュー。何と比べているのかが見えないと似ているか判断できない */
+const BaseMediaPreview: React.FC<{ media: MediaItem; onOpenDetail?: () => void }> = ({
+  media,
+  onOpenDetail,
+}) => {
+  const { t } = useTranslation();
+  const name = fileNameOf(media.file_path);
+  return (
+    <div className="flex gap-3 p-2.5 rounded-xl bg-slate-900/60 border border-white/10">
+      <button
+        type="button"
+        onClick={onOpenDetail}
+        disabled={!onOpenDetail}
+        title={onOpenDetail ? t('spectrum.open_detail', '詳細を開く') : name}
+        className="relative w-24 h-24 shrink-0 rounded-lg overflow-hidden bg-slate-950/80 border border-white/10 disabled:cursor-default"
+      >
+        <img
+          src={convertFileSrc(media.thumbnail_path || media.file_path)}
+          alt={name}
+          className="w-full h-full object-cover"
+          onError={(e) => {
+            (e.target as HTMLElement).style.display = 'none';
+          }}
+        />
+      </button>
+      <div className="min-w-0 flex-1 space-y-1">
+        <div className="text-[10px] font-bold text-indigo-300 uppercase tracking-wide">
+          {t('spectrum.base', '基準')}
+        </div>
+        <div className="text-xs text-slate-100 truncate" title={name}>
+          {name}
+        </div>
+        {media.categories.length > 0 && (
+          <div className="text-[10px] text-slate-400 truncate">{media.categories.join(' / ')}</div>
+        )}
+        {/* このタグ集合が類似度の根拠そのもの。並べて初めて結果を検証できる */}
+        <TagChips tags={media.tags} max={8} />
+      </div>
     </div>
-  </button>
-);
+  );
+};
 
 const ZONE_LABEL: Record<ZoneKey, [string, string]> = {
   // 「まったく違う」「真逆」とは書かない。最低コサイン類似度は意味的な反対ではなく
@@ -148,6 +257,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
   onClose,
   onOpenSettings,
   onShowExcluded,
+  onOpenDetail,
 }) => {
   const { t } = useTranslation();
   const [result, setResult] = useState<SpectrumResult | null>(null);
@@ -188,7 +298,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
 
   // 結果カードのクリックでそのメディアを新しい基準にする（連鎖探索）
   const explore = (item: SimilarItem) => {
-    setTrail((prev) => [...prev, { id: item.media_id, label: fileNameOf(item.file_path) }]);
+    setTrail((prev) => [...prev, { id: item.media_id, label: fileNameOf(item.media.file_path) }]);
     run(item.media_id);
   };
 
@@ -233,7 +343,9 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
   })();
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
+    // z-40 にしているのは、カードから開くメディア詳細（z-50）をこの上に重ねるため。
+    // 同じ z だと DOM 順でこちらが前面に来て、詳細が見えなくなる
+    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4">
       <div className="glass-panel w-full max-w-5xl max-h-[88vh] flex flex-col rounded-2xl border border-white/10 overflow-hidden">
         {/* Header */}
         <div className="flex items-center gap-3 px-5 py-3 border-b border-white/10 shrink-0">
@@ -319,6 +431,15 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
             </div>
           )}
 
+          {/* 基準メディアは結果が空でも見せる。対象外の理由を説明する場面でも
+              「どのメディアの話か」が分からないと意味がない */}
+          {!loading && result?.base_media && (
+            <BaseMediaPreview
+              media={result.base_media}
+              onOpenDetail={onOpenDetail ? () => onOpenDetail(result.base_media!) : undefined}
+            />
+          )}
+
           {!loading && result && result.zones.length > 0 && (
             <>
               <RangeLegend
@@ -343,7 +464,12 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
                     </div>
                     <div className="flex gap-3 overflow-x-auto pb-2">
                       {zone.items.map((item) => (
-                        <SimilarCard key={item.media_id} item={item} onClick={() => explore(item)} />
+                        <SimilarCard
+                          key={item.media_id}
+                          item={item}
+                          onOpenDetail={() => onOpenDetail?.(item.media)}
+                          onExplore={() => explore(item)}
+                        />
                       ))}
                     </div>
                   </div>
@@ -373,10 +499,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
           )}
         </div>
 
-        {/* Footer: 現在の基準 */}
-        <div className="px-5 py-2.5 border-t border-white/10 text-[11px] text-slate-400 shrink-0 truncate">
-          {t('spectrum.base', '基準')}: {current?.label}
-        </div>
+        {/* 基準は本文先頭のプレビューが示すので、フッターでの重複表示はやめた */}
       </div>
     </div>
   );

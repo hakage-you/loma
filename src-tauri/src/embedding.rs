@@ -722,14 +722,77 @@ pub async fn generate_tag_embeddings(
 
 /// 類似メディア1件。
 ///
-/// `file_path` / `thumbnail_path` まで返すのは、類似メディアが現在のフィルタ結果に
-/// 含まれているとは限らず、画面側が id からサムネイルを解決できないため。
+/// `MediaItem` を丸ごと返すのは3つの理由から。
+/// 1. 類似メディアが現在のフィルタ結果に含まれているとは限らず、画面側が id から解決できない
+/// 2. **「タグの類似度」と表示するならタグを見せなければ検証できない**
+/// 3. カードのクリックでメディア詳細を開くのに、詳細画面が要求する形がそのまま必要
 #[derive(Serialize)]
 pub struct SimilarItem {
     pub media_id: i64,
     pub similarity: f32,
-    pub file_path: String,
-    pub thumbnail_path: String,
+    pub media: crate::commands::MediaItem,
+}
+
+/// 指定した id のメディアを `MediaItem` として読み出す（タグ・カテゴリ込み）。
+/// `get_media` のタグ一括取得と同じ組み立て方をしている。
+async fn load_media_items(
+    pool: &Pool<Sqlite>,
+    ids: &[i64],
+) -> Result<HashMap<i64, crate::commands::MediaItem>, String> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let ids_str = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+
+    let rows = sqlx::query_as::<_, (i64, String, String, String, i64, String, Option<String>)>(&format!(
+        "SELECT id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error
+         FROM media WHERE id IN ({})",
+        ids_str
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(&format!(
+        "SELECT mt.media_id, t.name, t.name_ja, t.is_category, t.tag_kind
+         FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+         WHERE mt.media_id IN ({})",
+        ids_str
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut tags_map: HashMap<i64, (Vec<String>, Vec<crate::commands::TagPairItem>)> = HashMap::new();
+    for (m_id, name, name_ja, is_cat, kind) in tag_rows {
+        let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new()));
+        if is_cat == 1 {
+            entry.0.push(name);
+        } else {
+            entry.1.push(crate::commands::TagPairItem { name, name_ja, kind });
+        }
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error)| {
+            let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
+            (
+                id,
+                crate::commands::MediaItem {
+                    id,
+                    file_path,
+                    parent_folder,
+                    thumbnail_path,
+                    file_size,
+                    analysis_status,
+                    analysis_error,
+                    categories,
+                    tags,
+                },
+            )
+        })
+        .collect())
 }
 
 /// スペクトラムの1ゾーン。
@@ -749,6 +812,8 @@ pub struct SpectrumResult {
     /// `ok` / `degraded` / `not_enough_candidates` / `base_not_eligible` / `no_embeddings`
     pub status: String,
     pub base_media_id: i64,
+    /// 基準メディア。何と比べているのかを画面上でプレビューできるようにするため返す
+    pub base_media: Option<crate::commands::MediaItem>,
     pub model: String,
     pub zones: Vec<Zone>,
     /// このレスポンスを生成したシード。引き直し前の状態を再現したいときに使う。
@@ -768,6 +833,7 @@ fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Opt
     SpectrumResult {
         status: status.to_string(),
         base_media_id,
+        base_media: None,
         model: cfg.model.clone(),
         zones: Vec::new(),
         seed: 0,
@@ -862,25 +928,16 @@ pub async fn find_similar_media(
         })
         .collect();
 
-    // 表示に必要なパスだけを、選ばれた分についてまとめて引く
-    let ids: Vec<String> = picked
+    // 選ばれた分と基準メディアを、タグ込みでまとめて引く
+    let mut ids: Vec<i64> = picked
         .iter()
-        .flat_map(|(_, _, items)| items.iter().map(|(id, _)| id.to_string()))
+        .flat_map(|(_, _, items)| items.iter().map(|(id, _)| *id))
         .collect();
-    let paths: HashMap<i64, (String, String)> = if ids.is_empty() {
-        HashMap::new()
-    } else {
-        sqlx::query_as::<_, (i64, String, String)>(&format!(
-            "SELECT id, file_path, thumbnail_path FROM media WHERE id IN ({})",
-            ids.join(",")
-        ))
-        .fetch_all(pool)
+    ids.push(base_media_id);
+    let mut loaded = load_media_items(pool, &ids)
         .await
-        .map_err(|e| cmd_err("find_similar_media", e))?
-        .into_iter()
-        .map(|(id, f, t)| (id, (f, t)))
-        .collect()
-    };
+        .map_err(|e| cmd_err("find_similar_media", e))?;
+    let base_media = loaded.get(&base_media_id).cloned();
 
     let zones: Vec<Zone> = picked
         .into_iter()
@@ -889,9 +946,11 @@ pub async fn find_similar_media(
             band_size,
             items: items
                 .into_iter()
-                .map(|(media_id, similarity)| {
-                    let (file_path, thumbnail_path) = paths.get(&media_id).cloned().unwrap_or_default();
-                    SimilarItem { media_id, similarity, file_path, thumbnail_path }
+                .filter_map(|(media_id, similarity)| {
+                    // 直前に削除された等でメディアが引けない場合は落とす。
+                    // 空のカードを出すより、出さないほうが誠実
+                    let media = loaded.remove(&media_id)?;
+                    Some(SimilarItem { media_id, similarity, media })
                 })
                 .collect(),
         })
@@ -900,6 +959,7 @@ pub async fn find_similar_media(
     Ok(SpectrumResult {
         status: if degraded { "degraded" } else { "ok" }.to_string(),
         base_media_id,
+        base_media,
         model: cfg.model.clone(),
         zones,
         seed,

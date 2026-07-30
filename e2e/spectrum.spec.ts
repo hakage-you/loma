@@ -47,19 +47,50 @@ test.describe('概念スペクトラム検索', () => {
     await expect(page.getByRole('button', { name: '引き直す' })).toHaveCount(0);
   });
 
-  test('結果カードのクリックで基準が切り替わりパンくずが伸びる', async ({ page }) => {
-    await openSpectrum(page);
-    const before = await page.locator('.glass-panel').getByText(/^基準:/).textContent();
-
-    // ゾーン内のカード（サムネイル付きボタン）を1枚選ぶ
-    await page
+  /** 「タグの類似度が高い」ゾーンの先頭カード */
+  const firstCard = (page: Page) =>
+    page
       .getByRole('heading', { name: 'タグの類似度が高い' })
       .locator('xpath=../following-sibling::div[1]')
-      .getByRole('button')
-      .first()
-      .click();
+      .locator('> div')
+      .first();
 
-    await expect(page.locator('.glass-panel').getByText(/^基準:/)).not.toHaveText(before || '');
+  test('基準メディアをタグ付きでプレビューできる', async ({ page }) => {
+    // 何と比べているのかが見えないと、似ているかどうか判断できない
+    await openSpectrum(page);
+    const preview = page
+      .locator('div.rounded-xl')
+      .filter({ has: page.getByText('基準', { exact: true }) })
+      .first();
+    await expect(preview).toBeVisible();
+    // モックのサムネイル画像は実体が無く onError で非表示になるため、
+    // 可視性ではなく要素の存在で確認する
+    await expect(preview.locator('img')).toBeAttached();
+    await expect(preview.getByText('mock_media_1.jpg')).toBeVisible();
+    // 「タグの類似度」と表示するなら、そのタグが見えなければ検証できない
+    await expect(preview.getByText('ウィンドウ')).toBeVisible();
+  });
+
+  test('カードのクリックは詳細を開く（他画面と同じ操作）', async ({ page }) => {
+    await openSpectrum(page);
+    await firstCard(page).getByRole('button').first().click();
+    // 詳細モーダルが探索モーダルの上に開く
+    await expect(page.getByRole('heading', { name: 'タグ & カテゴリ' })).toBeVisible();
+    // 基準は変わっていない（クリックは再検索ではない）
+    await expect(page.getByRole('heading', { name: '似ているメディア' })).toBeVisible();
+  });
+
+  test('探索ボタンで基準が切り替わりパンくずが伸びる', async ({ page }) => {
+    await openSpectrum(page);
+    const crumbs = page.getByRole('heading', { name: '似ているメディア' }).locator('xpath=../div');
+    const before = await crumbs.textContent();
+
+    // 再検索は専用ボタンに分けてある（ホバーで出る）
+    const card = firstCard(page);
+    await card.hover();
+    await card.getByTitle('このメディアを基準に探索').click();
+
+    await expect(crumbs).not.toHaveText(before || '');
   });
 
   test('対象外メディアの件数を隠さない', async ({ page }) => {

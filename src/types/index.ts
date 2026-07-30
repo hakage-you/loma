@@ -130,8 +130,8 @@ export interface EmbeddingGenerateResult {
 export interface SimilarItem {
   media_id: number;
   similarity: number;
-  file_path: string;
-  thumbnail_path: string;
+  /** タグの表示・詳細画面を開くのに必要なので、メディア情報を丸ごと受け取る */
+  media: MediaItem;
 }
 
 /**
@@ -160,6 +160,8 @@ export interface Zone {
 export interface SpectrumResult {
   status: SpectrumStatus;
   base_media_id: number;
+  /** 基準メディア。何と比べているのかを画面上でプレビューするために使う */
+  base_media: MediaItem | null;
   model: string;
   zones: Zone[];
   /** このレスポンスを生成したシード */

@@ -240,6 +240,8 @@
     "reroll_help": "Pick different media from each zone band",
     "band_of": "sampled from",
     "band_pick": "candidates",
-    "badge_excluded": "Excluded from similar-media search: fewer than {n} tags"
+    "badge_excluded": "Excluded from similar-media search: fewer than {n} tags",
+    "open_detail": "Open details",
+    "explore_from": "Explore from this media"
   }
 }

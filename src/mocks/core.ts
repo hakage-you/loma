@@ -124,8 +124,8 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     reclaimable_bytes: tagState.length * 16384,
   }),
   cleanup_unused_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
-  // 実測値（bge-m3 / centering ON / 1,007件）に寄せた形。判定表示を確認できるようにする
   discard_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
+  // 実測値（bge-m3 / centering ON / 1,007件）に寄せた形。判定表示を確認できるようにする。
   // 引数の centering / includeDescriptive をそのまま反映して、
   // トグルが即時に効くことを画面で確認できるようにする
   get_embedding_diagnostics: (args) => {
@@ -168,12 +168,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !isTagInsufficient(m),
     );
     const degraded = others.length < 20;
-    const toItem = (m: MediaItem, similarity: number) => ({
-      media_id: m.id,
-      similarity,
-      file_path: m.file_path,
-      thumbnail_path: m.thumbnail_path,
-    });
+    const toItem = (m: MediaItem, similarity: number) => ({ media_id: m.id, similarity, media: m });
     const take = (from: number, sim: (i: number) => number) =>
       others.slice(from, from + 4).map((m, i) => toItem(m, sim(i)));
 
@@ -188,6 +183,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     return {
       status: degraded ? 'degraded' : 'ok',
       base_media_id: args.baseMediaId,
+      base_media: mediaState.find((m) => m.id === args.baseMediaId) ?? null,
       model: 'bge-m3',
       zones,
       seed: args.seed ?? 0,
