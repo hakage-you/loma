@@ -257,6 +257,14 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
             '判定の目安は少数の実測に基づくため、境界付近の値は厳密に扱わないでください。',
           )}
         </span>
+        {/* ここはモデルの素性を測る場所で、検索結果の分布ではない。
+            混同すると「計測では 0.9 が出ているのに検索結果は 0.4 止まり」と読めてしまう */}
+        <span className="block mt-0.5">
+          {t(
+            'settings.diag_scope',
+            'ここで測っているのはモデルの素性です。タグを共有するペアも含むため、似ているメディアの検索で表示される数値より高めに出ます（検索側はタグを共有する候補を除外します）。',
+          )}
+        </span>
       </div>
     </div>
   );

@@ -20,10 +20,16 @@ const CATEGORY_DEFS: CategoryDef[] = [
   { category: 'landscape', parentFolder: '2024_Travel', tags: [{ name: 'nature', name_ja: '自然' }, { name: 'sky', name_ja: '空' }, { name: 'mountain', name_ja: '山' }], count: 3 },
   { category: 'food', parentFolder: '2024_Travel', tags: [{ name: 'meal', name_ja: '食事' }, { name: 'dessert', name_ja: 'デザート' }, { name: 'plate', name_ja: '皿' }], count: 3 },
   { category: 'character', parentFolder: 'Portraits', tags: [{ name: 'person', name_ja: '人物' }, { name: 'portrait', name_ja: 'ポートレート' }, { name: 'smile', name_ja: '笑顔' }], count: 3 },
-  { category: 'text_heavy', parentFolder: 'Manga', tags: [{ name: 'manga', name_ja: '漫画' }, { name: 'subtitle', name_ja: '字幕' }, { name: 'panel', name_ja: 'コマ' }], count: 2 },
-  { category: 'tech', parentFolder: 'WorkDocs', tags: [{ name: 'device', name_ja: 'デバイス' }, { name: 'code', name_ja: 'コード' }, { name: 'screen', name_ja: '画面' }], count: 2 },
+  { category: 'text_heavy', parentFolder: 'Manga', tags: [{ name: 'manga', name_ja: '漫画' }, { name: 'subtitle', name_ja: '字幕' }, { name: 'panel', name_ja: 'コマ' }], count: 3 },
+  { category: 'tech', parentFolder: 'WorkDocs', tags: [{ name: 'device', name_ja: 'デバイス' }, { name: 'code', name_ja: 'コード' }, { name: 'screen', name_ja: '画面' }], count: 3 },
   { category: 'other', parentFolder: 'Misc', tags: [{ name: 'misc', name_ja: 'その他' }, { name: 'object', name_ja: '物体' }, { name: 'indoor', name_ja: '屋内' }], count: 2 },
 ];
+
+// 解析済みは 23 件。概念スペクトラム検索は基準とタグを共有する候補を外すので、
+// カテゴリ内の兄弟（ここでは同じタグを持つ2件）が引かれて候補は 20 件になる。
+// これは3ゾーン表示の最小値（FULL_SPECTRUM_MIN）とちょうど同じで、
+// **ここを下回るとモックが縮退モードに落ちて3ゾーンのテストが壊れる**。
+// カテゴリの件数を減らすときはこの数を確認すること。
 
 function buildMedia(): MediaItem[] {
   const items: MediaItem[] = [];

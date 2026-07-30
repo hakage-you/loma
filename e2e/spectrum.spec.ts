@@ -21,11 +21,11 @@ test.describe('概念スペクトラム検索', () => {
   test('3つのゾーンが見出しで区別できる', async ({ page }) => {
     await openSpectrum(page);
 
-    await expect(page.getByRole('heading', { name: 'タグの類似度が高い' })).toBeVisible();
-    await expect(page.getByRole('heading', { name: '類似度が中くらい' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: 'タグは違うが意味が近い' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '意味の近さが中くらい' })).toBeVisible();
     // 「まったく違う」「真逆」とは書かない。最低コサイン類似度は意味的な反対ではなく
     // 単なる無関係なので、ラベルが実態以上を約束しないこと
-    await expect(page.getByRole('heading', { name: 'タグの類似度が最も低い' })).toBeVisible();
+    await expect(page.getByRole('heading', { name: '意味が最も遠い' })).toBeVisible();
   });
 
   test('レンジ凡例が実測値を数値で開示する', async ({ page }) => {
@@ -41,7 +41,7 @@ test.describe('概念スペクトラム検索', () => {
     // 色は「類似度の大小」ではなく「どの見出しの範囲か」を示すためだけに使う。
     // 名前は見出しテキストが担うので、色だけに意味を載せてはいない
     await openSpectrum(page);
-    const heading = page.getByRole('heading', { name: 'タグの類似度が高い' });
+    const heading = page.getByRole('heading', { name: 'タグは違うが意味が近い' });
     const border = await heading.evaluate((el) => getComputedStyle(el).borderBottomColor);
     // #3987e5
     expect(border).toBe('rgb(57, 135, 229)');
@@ -59,10 +59,10 @@ test.describe('概念スペクトラム検索', () => {
     await expect(page.getByRole('button', { name: '引き直す' })).toHaveCount(0);
   });
 
-  /** 「タグの類似度が高い」ゾーンの先頭カード */
+  /** 「タグは違うが意味が近い」ゾーンの先頭カード */
   const firstCard = (page: Page) =>
     page
-      .getByRole('heading', { name: 'タグの類似度が高い' })
+      .getByRole('heading', { name: 'タグは違うが意味が近い' })
       .locator('xpath=../following-sibling::div[1]')
       .locator('> div')
       .first();
@@ -108,6 +108,20 @@ test.describe('概念スペクトラム検索', () => {
   test('対象外メディアの件数を隠さない', async ({ page }) => {
     await openSpectrum(page);
     await expect(page.getByText(/比較対象: \d+/)).toBeVisible();
+  });
+
+  test('タグ共有で除外した件数と理由を開示する', async ({ page }) => {
+    // 除外は結果の中身を決めている規則なので、黙って適用してはいけない。
+    // モックの基準（screenshot カテゴリ）は同じタグを持つ兄弟2件を失う
+    await openSpectrum(page);
+    await expect(page.getByText(/タグ共有で除外: 2/)).toBeVisible();
+    // 理由が読めること。「なぜ明らかに似た画像が出ないのか」への答えになる
+    const help = page
+      .getByText(/タグ共有で除外: 2/)
+      .locator('xpath=./*[local-name()="svg" or self::div]')
+      .first();
+    await help.hover();
+    await expect(page.getByText(/タグ検索で見つけられるため/)).toBeVisible();
   });
 });
 

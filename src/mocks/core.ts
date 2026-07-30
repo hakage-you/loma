@@ -164,9 +164,19 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     // モックは実際の意味的近さを再現しないので、順位と数値の見た目だけを揃える。
     // 候補集合はバックエンドと同じ条件（解析済み かつ basic タグが足りている）で作る。
     // ここを揃えないと、設定画面が出す「検索対象メディア」の件数と食い違う。
-    const others = mediaState.filter(
+    const base = mediaState.find((m) => m.id === args.baseMediaId);
+    const baseBasic = new Set(
+      (base?.tags ?? []).filter((t) => t.kind === 'basic').map((t) => t.name),
+    );
+    const eligible = mediaState.filter(
       (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !isTagInsufficient(m),
     );
+    // 基準と basic タグを1つでも共有する候補は外す（バックエンドと同じ規則）。
+    // これが無いと上位ゾーンが近似重複で埋まり、タグ検索の劣化版になる
+    const sharesTag = (m: MediaItem) =>
+      m.tags.some((t) => t.kind === 'basic' && baseBasic.has(t.name));
+    const others = eligible.filter((m) => !sharesTag(m));
+    const sharedTagExcluded = eligible.length - others.length;
     const degraded = others.length < 20;
     // 帯幅はバックエンドの zone_bands と同じ規則（比率 10% / 下限 4 / 上限 8）。
     // 上限があるのは、順位で切った帯が覆う類似度の幅が分布の裾で桁違いに広がるため
@@ -186,7 +196,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     return {
       status: degraded ? 'degraded' : 'ok',
       base_media_id: args.baseMediaId,
-      base_media: mediaState.find((m) => m.id === args.baseMediaId) ?? null,
+      base_media: base ?? null,
       model: 'bge-m3',
       zones,
       seed: args.seed ?? 0,
@@ -195,6 +205,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       range_max: 0.78,
       candidate_count: others.length,
       excluded_media: mediaState.filter(isTagInsufficient).length,
+      shared_tag_excluded: sharedTagExcluded,
       centering: true,
       include_descriptive: false,
       elapsed_ms: 12,

@@ -225,7 +225,7 @@
     "loading": "類似度を計算しています...",
     "legend_low": "似ていない",
     "legend_high": "似ている",
-    "zone_similar": "タグの類似度が高い",
+    "zone_similar": "タグは違うが意味が近い",
     "candidates": "比較対象",
     "excluded": "タグ不足で対象外",
     "model_hint": "類似度の算出に使ったモデル",
@@ -234,8 +234,8 @@
     "notice_base_not_eligible": "このメディアはタグが少ないため対象外です。タグを手動で追加するか、再解析してください。",
     "notice_not_enough": "比較できるメディアがまだ足りません。解析済みのメディアを増やしてください。",
     "notice_degraded": "候補が少ないため、類似上位のみを表示しています。",
-    "zone_middle": "類似度が中くらい",
-    "zone_distant": "タグの類似度が最も低い",
+    "zone_middle": "意味の近さが中くらい",
+    "zone_distant": "意味が最も遠い",
     "reroll": "引き直す",
     "reroll_help": "各ゾーンの帯から別のメディアを選び直します",
     "band_of": "候補",
@@ -243,6 +243,8 @@
     "badge_excluded": "タグが {n} 個未満のため、似ているメディアの検索の対象外です",
     "open_detail": "詳細を開く",
     "explore_from": "このメディアを基準に探索",
-    "legend_mean": "平均"
+    "legend_mean": "平均",
+    "shared_excluded": "タグ共有で除外",
+    "shared_excluded_help": "基準とタグを1つでも共有するメディアは候補から外しています。それらはタグ検索で見つけられるため、ここでは「タグが違うのに意味が近い」ものだけを出します。"
   }
 }

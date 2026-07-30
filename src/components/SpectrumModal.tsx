@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { MediaItem, SimilarItem, SpectrumResult, TagPairItem, Zone, ZoneKey } from '../types';
 import { X, Loader2, Info, ChevronRight, Dices, Radar, Tag } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { TooltipHelp } from './TooltipHelp';
 
 interface SpectrumModalProps {
   /** 探索の起点。null で閉じる */
@@ -272,9 +273,11 @@ const BaseMediaPreview: React.FC<{ media: MediaItem; onOpenDetail?: () => void }
 const ZONE_LABEL: Record<ZoneKey, [string, string]> = {
   // 「まったく違う」「真逆」とは書かない。最低コサイン類似度は意味的な反対ではなく
   // 単なる無関係であり、ラベルが実態以上を約束することになる。
-  similar: ['spectrum.zone_similar', 'タグの類似度が高い'],
-  middle: ['spectrum.zone_middle', '類似度が中くらい'],
-  distant: ['spectrum.zone_distant', 'タグの類似度が最も低い'],
+  // 基準とタグを共有する候補は除外済みなので、「タグの類似度が高い」は実態と合わない
+  // （同じタグのメディアはここには絶対に出ない）。何が出る枠なのかをラベルで言い切る
+  similar: ['spectrum.zone_similar', 'タグは違うが意味が近い'],
+  middle: ['spectrum.zone_middle', '意味の近さが中くらい'],
+  distant: ['spectrum.zone_distant', '意味が最も遠い'],
 };
 
 export const SpectrumModal: React.FC<SpectrumModalProps> = ({
@@ -522,6 +525,19 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
                   >
                     {t('spectrum.excluded', 'タグ不足で対象外')}: {result.excluded_media}
                   </button>
+                )}
+                {/* 除外は結果の中身を決めている規則なので、件数と理由を必ず出す */}
+                {result.shared_tag_excluded > 0 && (
+                  <span className="inline-flex items-center gap-1">
+                    {t('spectrum.shared_excluded', 'タグ共有で除外')}: {result.shared_tag_excluded}
+                    <TooltipHelp
+                      text={t(
+                        'spectrum.shared_excluded_help',
+                        '基準とタグを1つでも共有するメディアは候補から外しています。それらはタグ検索で見つけられるため、ここでは「タグが違うのに意味が近い」ものだけを出します。',
+                      )}
+                      width="w-80"
+                    />
+                  </span>
                 )}
                 <span>centering: {result.centering ? 'ON' : 'OFF'}</span>
                 <span>descriptive: {result.include_descriptive ? 'ON' : 'OFF'}</span>

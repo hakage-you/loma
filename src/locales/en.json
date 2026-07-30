@@ -225,7 +225,7 @@
     "loading": "Calculating similarity...",
     "legend_low": "Least similar",
     "legend_high": "Most similar",
-    "zone_similar": "Most similar tags",
+    "zone_similar": "Close in meaning, different tags",
     "candidates": "Compared",
     "excluded": "Excluded (too few tags)",
     "model_hint": "Model used to compute similarity",
@@ -234,8 +234,8 @@
     "notice_base_not_eligible": "This media has too few tags to compare. Add tags manually or re-analyze it.",
     "notice_not_enough": "Not enough analyzed media to compare against yet.",
     "notice_degraded": "Only the most similar results are shown because there are few candidates.",
-    "zone_middle": "Moderately similar",
-    "zone_distant": "Least similar tags",
+    "zone_middle": "Moderately close",
+    "zone_distant": "Farthest in meaning",
     "reroll": "Re-roll",
     "reroll_help": "Pick different media from each zone band",
     "band_of": "sampled from",
@@ -243,6 +243,8 @@
     "badge_excluded": "Excluded from similar-media search: fewer than {n} tags",
     "open_detail": "Open details",
     "explore_from": "Explore from this media",
-    "legend_mean": "mean"
+    "legend_mean": "mean",
+    "shared_excluded": "Excluded (shares tags)",
+    "shared_excluded_help": "Media sharing any tag with the base is left out of the candidate pool. Tag search already finds those, so this view shows only media that are close in meaning despite having different tags."
   }
 }

@@ -276,6 +276,9 @@ pub struct Library {
     /// 重心に寄与したタグ数（本数バイアスの診断に使う）
     pub contributing_counts: Vec<usize>,
     pub has_descriptive: Vec<bool>,
+    /// `basic` タグの id（昇順）。基準とタグを共有する候補を外すのに使う。
+    /// カテゴリを含めないのは、全メディアが必ず持つため共有判定が常に真になるから。
+    pub basic_tag_ids: Vec<Vec<i64>>,
     pub dim: usize,
     /// `basic` タグ不足で候補集合から外れたメディア数
     pub excluded_by_tag_count: usize,
@@ -288,6 +291,20 @@ pub struct Library {
 impl Library {
     pub fn index_of(&self, media_id: i64) -> Option<usize> {
         self.media_ids.iter().position(|&id| id == media_id)
+    }
+
+    /// 2件が `basic` タグを1つでも共有しているか。両方昇順なのでマージで判定する。
+    pub fn shares_basic_tag(&self, a: usize, b: usize) -> bool {
+        let (xs, ys) = (&self.basic_tag_ids[a], &self.basic_tag_ids[b]);
+        let (mut i, mut j) = (0, 0);
+        while i < xs.len() && j < ys.len() {
+            match xs[i].cmp(&ys[j]) {
+                std::cmp::Ordering::Equal => return true,
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+            }
+        }
+        false
     }
 }
 
@@ -337,6 +354,8 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
     // メディアごとに (寄与タグ id 集合, basic 本数, descriptive 有無) を組み立てる
     struct Pending {
         tag_ids: Vec<i64>,
+        /// カテゴリを除いた basic タグの id。タグ検索で到達できる候補を外すのに使う
+        basic_ids: Vec<i64>,
         basic_count: usize,
         has_descriptive: bool,
     }
@@ -346,6 +365,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
         let is_category = is_category != 0;
         let entry = per_media.entry(media_id).or_insert_with(|| Pending {
             tag_ids: Vec::new(),
+            basic_ids: Vec::new(),
             basic_count: 0,
             has_descriptive: false,
         });
@@ -357,6 +377,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
         // 数えると全員が下限を満たしてしまい閾値が意味を失う。
         if !is_category && kind == "basic" {
             entry.basic_count += 1;
+            entry.basic_ids.push(tag_id);
         }
 
         let contributes = is_category || kind == "basic" || (cfg.include_descriptive && kind == "descriptive");
@@ -385,7 +406,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
     let dim = vectors.values().next().map(|v| v.len()).unwrap_or(0);
 
     // 重み付き重心を並列に算出する
-    let raw: Vec<Option<(i64, Vec<f32>, usize, bool)>> = eligible
+    let raw: Vec<Option<(i64, Vec<f32>, usize, bool, Vec<i64>)>> = eligible
         .par_iter()
         .map(|(media_id, p)| {
             if dim == 0 {
@@ -428,7 +449,11 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
                 return None;
             };
             let _ = l2_normalize(&mut centroid);
-            Some((*media_id, centroid, used, p.has_descriptive))
+            // 共有判定をマージで回せるよう昇順・重複なしにしておく
+            let mut basic_ids = p.basic_ids.clone();
+            basic_ids.sort_unstable();
+            basic_ids.dedup();
+            Some((*media_id, centroid, used, p.has_descriptive, basic_ids))
         })
         .collect();
 
@@ -436,15 +461,17 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
     let mut centroids = Vec::with_capacity(n);
     let mut contributing_counts = Vec::with_capacity(n);
     let mut has_descriptive = Vec::with_capacity(n);
+    let mut basic_tag_ids = Vec::with_capacity(n);
     let mut excluded_by_missing_vectors = 0usize;
 
     for item in raw {
         match item {
-            Some((id, c, used, desc)) => {
+            Some((id, c, used, desc, basic)) => {
                 media_ids.push(id);
                 centroids.push(c);
                 contributing_counts.push(used);
                 has_descriptive.push(desc);
+                basic_tag_ids.push(basic);
             }
             None => excluded_by_missing_vectors += 1,
         }
@@ -485,6 +512,8 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
             contributing_counts.retain(|_| *it.next().unwrap_or(&true));
             let mut it = kept.iter();
             has_descriptive.retain(|_| *it.next().unwrap_or(&true));
+            let mut it = kept.iter();
+            basic_tag_ids.retain(|_| *it.next().unwrap_or(&true));
         }
     }
 
@@ -501,6 +530,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
         centroids,
         contributing_counts,
         has_descriptive,
+        basic_tag_ids,
         dim,
         excluded_by_tag_count,
         excluded_by_missing_vectors,
@@ -848,6 +878,9 @@ pub struct SpectrumResult {
     pub range_max: f32,
     pub candidate_count: usize,
     pub excluded_media: usize,
+    /// 基準と `basic` タグを共有するため候補から外した件数。
+    /// 除外はこの機能の要（タグ検索で到達できるものを出さない）なので、件数を隠さず開示する。
+    pub shared_tag_excluded: usize,
     pub centering: bool,
     pub include_descriptive: bool,
     pub elapsed_ms: u64,
@@ -868,6 +901,7 @@ fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Opt
         excluded_media: lib
             .map(|l| l.excluded_by_tag_count + l.excluded_by_missing_vectors)
             .unwrap_or(0),
+        shared_tag_excluded: 0,
         centering: cfg.centering,
         include_descriptive: cfg.include_descriptive,
         elapsed_ms: 0,
@@ -897,11 +931,26 @@ pub async fn find_similar_media(
         return Ok(empty_result("base_not_eligible", base_media_id, &cfg, Some(&lib)));
     };
 
-    // 候補は基準メディア自身を除いた数で数える
-    let candidate_count = lib.media_ids.len() - 1;
+    // 基準と `basic` タグを1つでも共有する候補は、タグ検索で到達できるので候補から外す。
+    //
+    // これが無いと上位ゾーンが近似重複で埋まり、この機能はタグ検索の劣化版になる。
+    // 実測（bge-m3 / 1,007 件 / 基準 30 件 / tools/embedding-check/lexical-overlap.mjs）:
+    // 上位 8 件のうちタグを共有しない割合は 23% しかなく、1 位は平均 2.5 本を共有していた。
+    // この除外で 100% になり、除外されるのは候補の 9%（最悪 18%）だけ。
+    //
+    // 「共有タグを外してから重心を作り直す」案も測ったが不利だった。共有が 0 の候補では
+    // 現行指標と数学的に一致し（省くものが無い）、部分的に重なった候補にしか効かない。
+    // しかも残差が語形の違い（`スノーボーダー` 対 `スノーボード`）だと近似重複が 1 位に残る。
+    let shared_tag_excluded = (0..lib.centroids.len())
+        .filter(|&i| i != base_idx && lib.shares_basic_tag(base_idx, i))
+        .count();
+
+    // 候補は基準メディア自身と、タグを共有する分を除いた数で数える
+    let candidate_count = lib.media_ids.len() - 1 - shared_tag_excluded;
     if candidate_count < MIN_CANDIDATES {
         let mut r = empty_result("not_enough_candidates", base_media_id, &cfg, Some(&lib));
         r.candidate_count = candidate_count;
+        r.shared_tag_excluded = shared_tag_excluded;
         return Ok(r);
     }
 
@@ -910,7 +959,7 @@ pub async fn find_similar_media(
         .centroids
         .par_iter()
         .enumerate()
-        .filter(|(i, _)| *i != base_idx)
+        .filter(|(i, _)| *i != base_idx && !lib.shares_basic_tag(base_idx, *i))
         .map(|(i, c)| (lib.media_ids[i], dot(base, c)))
         .collect();
 
@@ -992,6 +1041,7 @@ pub async fn find_similar_media(
         range_max,
         candidate_count,
         excluded_media: lib.excluded_by_tag_count + lib.excluded_by_missing_vectors,
+        shared_tag_excluded,
         centering: cfg.centering,
         include_descriptive: cfg.include_descriptive,
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -1437,6 +1487,40 @@ mod tests {
         assert_eq!(width(60), 6);
         assert_eq!(width(100), ZONE_BAND_MAX);
         assert_eq!(width(1000), ZONE_BAND_MAX, "候補が増えても帯は広げない");
+    }
+
+    /// `shares_basic_tag` の検証だけに使う最小のライブラリ
+    fn lib_with_basic_tags(sets: &[&[i64]]) -> Library {
+        Library {
+            media_ids: (0..sets.len() as i64).collect(),
+            centroids: vec![vec![1.0]; sets.len()],
+            contributing_counts: vec![0; sets.len()],
+            has_descriptive: vec![false; sets.len()],
+            basic_tag_ids: sets.iter().map(|s| s.to_vec()).collect(),
+            dim: 1,
+            excluded_by_tag_count: 0,
+            excluded_by_missing_vectors: 0,
+            load_ms: 0,
+            centroid_ms: 0,
+        }
+    }
+
+    #[test]
+    fn shares_basic_tag_detects_any_single_overlap() {
+        // タグを1つでも共有する候補はタグ検索で到達できるので、候補から外す判定
+        let lib = lib_with_basic_tags(&[
+            &[10, 20, 30], // 基準
+            &[40, 50],     // 共有なし
+            &[30, 40],     // 末尾で共有
+            &[5, 10],      // 先頭で共有
+            &[],           // 空（タグ不足で候補に入らないが、判定は落ちないこと）
+        ]);
+        assert!(!lib.shares_basic_tag(0, 1));
+        assert!(lib.shares_basic_tag(0, 2));
+        assert!(lib.shares_basic_tag(0, 3));
+        assert!(!lib.shares_basic_tag(0, 4));
+        // 対称であること。片方向だけ真だと候補数と除外数が食い違う
+        assert!(lib.shares_basic_tag(2, 0));
     }
 
     #[test]

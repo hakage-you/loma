@@ -172,6 +172,11 @@ export interface SpectrumResult {
   range_max: number;
   candidate_count: number;
   excluded_media: number;
+  /**
+   * 基準と basic タグを共有するため候補から外した件数。
+   * タグ検索で到達できるものを出さない、というこの機能の要なので画面で開示する。
+   */
+  shared_tag_excluded: number;
   centering: boolean;
   include_descriptive: boolean;
   elapsed_ms: number;
