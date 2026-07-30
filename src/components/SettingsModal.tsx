@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HelpCircle, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar } from 'lucide-react';
+import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -21,6 +21,7 @@ import {
 } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
+import { TooltipHelp } from './TooltipHelp';
 
 interface SettingsModalProps {
   open: boolean;
@@ -31,33 +32,6 @@ interface SettingsModalProps {
   onFetchModels: () => Promise<void>;
   onUnloadModel?: () => Promise<void>;
 }
-
-// Hover-activated instant tooltip component (with smart positioning)
-const TooltipHelp: React.FC<{ text: string; align?: 'left' | 'right' | 'center' }> = ({ text, align = 'left' }) => {
-  const containerClasses =
-    align === 'right'
-      ? 'right-0 bottom-full mb-2'
-      : align === 'center'
-      ? 'left-1/2 -translate-x-1/2 bottom-full mb-2'
-      : 'left-0 bottom-full mb-2';
-
-  const arrowClasses =
-    align === 'right'
-      ? 'right-2'
-      : align === 'center'
-      ? 'left-1/2 -translate-x-1/2'
-      : 'left-2';
-
-  return (
-    <div className="relative group inline-flex items-center">
-      <HelpCircle className="w-3.5 h-3.5 text-slate-400 hover:text-indigo-300 transition cursor-help shrink-0" />
-      <div className={`absolute ${containerClasses} hidden group-hover:block z-50 w-64 p-2.5 bg-slate-900 border border-indigo-500/50 rounded-xl text-[11px] text-slate-200 shadow-2xl backdrop-blur-md pointer-events-none leading-relaxed animate-in fade-in zoom-in-95 duration-150`}>
-        {text}
-        <div className={`absolute top-full ${arrowClasses} border-4 border-transparent border-t-slate-900`} />
-      </div>
-    </div>
-  );
-};
 
 // Flexible installed model matching helper (checks model family/base)
 const isModelInstalled = (recommendedName: string, availableList: string[]): boolean => {

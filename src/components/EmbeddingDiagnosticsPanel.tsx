@@ -2,6 +2,7 @@ import React from 'react';
 import { EmbeddingDiagnostics } from '../types';
 import { CheckCircle, AlertTriangle, Info } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { TooltipHelp } from './TooltipHelp';
 
 /**
  * 類似度分布の計測結果を「読める」形で出すパネル。
@@ -47,12 +48,15 @@ const Metric: React.FC<{
   verdict: Verdict;
   verdictLabel: string;
   reading: string;
+  /** 数字そのものの意味。統計用語を知らなくても読めるように書く */
+  help: React.ReactNode;
   reference?: string;
-}> = ({ title, value, verdict, verdictLabel, reading, reference }) => (
+}> = ({ title, value, verdict, verdictLabel, reading, help, reference }) => (
   <div className="space-y-0.5">
-    <div className="flex items-baseline gap-2">
-      <span className="text-slate-200 font-semibold w-24 shrink-0">{title}</span>
-      <span className="tabular-nums text-slate-100">{value}</span>
+    <div className="flex items-baseline gap-1.5">
+      <span className="text-slate-200 font-semibold shrink-0">{title}</span>
+      <TooltipHelp text={help} width="w-80" />
+      <span className="tabular-nums text-slate-100 ml-1">{value}</span>
       <span className="flex-1" />
       <VerdictBadge verdict={verdict} label={verdictLabel} />
     </div>
@@ -123,6 +127,17 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
         {d.include_descriptive ? 'ON' : 'OFF'}
       </div>
 
+      <div className="flex items-center gap-1.5">
+        <span className="text-slate-200 font-semibold">{t('settings.diag_dist', '類似度の分布')}</span>
+        <TooltipHelp
+          width="w-80"
+          text={t(
+            'settings.diag_dist_help',
+            '横軸は類似度（−1〜+1）、縦軸はその範囲に入った組み合わせの件数です。中央の縦線が 0 の位置です。\n\ncentering が効いていれば 0 を中心にした山型になります。1本の棒に集中している場合は、どの組み合わせもほぼ同じ類似度で区別がついていません。右に大きく偏っている場合は「全部似ている」と判定されている状態です。\n\n棒にマウスを乗せると、その範囲の割合が出ます。',
+          )}
+        />
+      </div>
+
       <Histogram d={d} />
 
       <div className="space-y-2.5 pt-1">
@@ -149,6 +164,10 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
                 )
           }
           reference={`${t('settings.diag_ref', '参考')}: bge-m3 ${REFERENCE.sd.bgeM3} / qwen3-embedding:8b ${REFERENCE.sd.qwen8b} / centering OFF ${REFERENCE.sd.centeringOff}`}
+          help={t(
+            'settings.diag_separation_help',
+            'まず前提: 類似度はメディア2枚の「タグの意味の近さ」で、−1〜+1 の値です。ここでは全部の組み合わせについてこの値を出しています。\n\nsd（標準偏差）は、その値がどれくらいバラついているかを表す1つの数字です。sd 0.13 なら「典型的な組み合わせは平均から 0.13 くらい離れている」という意味です。\n\n0 に近いほど、どの組み合わせもほぼ同じ値ということで、似ている／似ていないの区別がついていません。「幅」は実測の最大値から最小値を引いた値です。',
+          )}
         />
 
         <Metric
@@ -177,6 +196,10 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
             'settings.diag_hub_ref',
             '参考: |r| が 0.15 以下は計測のばらつきの範囲。centering OFF での実測は +0.32〜+0.53',
           )}
+          help={t(
+            'settings.diag_hub_help',
+            'r（相関係数）は、2つの数量がどれくらい連動しているかを −1〜+1 で表した1つの数字です。0 なら無関係、+1 なら片方が増えれば必ずもう片方も増える関係です。\n\nここで比べているのは「そのメディアが持つタグの本数」と「そのメディアの平均類似度」です。\n\n+ に大きいと、タグが多いメディアほど何とでも似ていることになります。これは類似度が意味ではなくタグの本数を測っている状態で、タグの多い写真ばかりが結果に出ます。centering がこれを打ち消します。',
+          )}
         />
 
         {groupsMeasurable ? (
@@ -198,6 +221,10 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
                     '記述的タグの有無による偏りは出ていません。似ていると判定される理由が「同じ設定で解析されたから」になっていない状態です。',
                   )
             }
+            help={t(
+              'settings.diag_group_help',
+              'メディアを「記述的タグを持つもの」と「持たないもの」の2グループに分け、それぞれのグループ内での平均類似度と、グループをまたいだ平均類似度を比べています。\n\nここに出ている数字は「グループ内の平均」から「グループをまたいだ平均」を引いた差です。\n\n0 に近ければ、グループ分けは類似度に影響していません。差が大きいと、意味が近いからではなく「同じ設定で解析されたから」近いと判定されていることになります。判定は sd の 1/4 を目安にしています。',
+            )}
           />
         ) : (
           <div className="text-[10px] text-slate-500 leading-relaxed">
@@ -210,7 +237,19 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
       </div>
 
       <div className="text-[10px] text-slate-500 pt-1 border-t border-white/5">
-        {t('settings.spectrum_sample', '標本')} {d.sample_size} / {d.eligible_media} ·{' '}
+        <span className="inline-flex items-center gap-1 align-middle">
+          {t('settings.spectrum_sample', '標本')} {d.sample_size} / {d.eligible_media}
+          <TooltipHelp
+            width="w-80"
+            // align="right" にすると、このアイコンは左寄りなので吹き出しが左方向へ
+            // はみ出して画面外に出る。既定の left（アイコンから右へ展開）が正しい
+            text={t(
+              'settings.diag_sample_help',
+              '全部の組み合わせを調べると件数の2乗になり、1,000件でも約50万通りになります。そのため一定間隔で抜き出した標本だけで計算しています。\n\n抜き出し方は毎回同じなので、設定を変えて測り直したときに数値がぶれません。\n\n後ろの2つの数字は、ベクトルの読み込みと重心の算出にかかった時間、総当り計算にかかった時間です。',
+            )}
+          />
+        </span>
+        {' · '}
         {d.load_ms + d.centroid_ms}ms + {d.pairwise_ms}ms
         <span className="block mt-0.5">
           {t(

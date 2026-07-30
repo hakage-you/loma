@@ -197,7 +197,13 @@
     "spectrum_discard_regen": "You will need to rebuild them with \"Vectorize missing tags\"",
     "spectrum_discard_note": "Changing centering or descriptive-tag settings does not need a discard — change them and press \"Measure similarity distribution\" to see the effect immediately",
     "spectrum_discard_ok": "Discard",
-    "spectrum_toggle_note": "The two options below do not affect tag vectors. Toggle them and press \"Measure similarity distribution\" to compare immediately, without saving."
+    "spectrum_toggle_note": "The two options below do not affect tag vectors. Toggle them and press \"Measure similarity distribution\" to compare immediately, without saving.",
+    "diag_dist": "Similarity distribution",
+    "diag_dist_help": "The horizontal axis is similarity (−1 to +1); the vertical axis is how many pairs fell in each range. The center line marks 0.\n\nWith centering on, the shape should be a hill centered on 0. If everything piles into one bar, no pair can be told apart. A strong lean to the right means everything is being judged \"similar\".\n\nHover a bar to see its share.",
+    "diag_separation_help": "First, the basics: similarity is how close two media are in tag meaning, on a −1 to +1 scale. Every pair is measured.\n\nsd (standard deviation) is a single number for how spread out those values are. sd 0.13 means a typical pair sits about 0.13 away from the average.\n\nCloser to 0 means every pair has nearly the same value — nothing can be told apart. \"Range\" is the measured maximum minus the minimum.",
+    "diag_hub_help": "r (correlation coefficient) is a single number from −1 to +1 for how much two quantities move together. 0 means unrelated; +1 means one always rises with the other.\n\nHere it compares how many tags a media has against its average similarity.\n\nA large positive value means media with more tags match everything — similarity is measuring tag count rather than meaning, so heavily tagged photos dominate the results. Centering cancels this out.",
+    "diag_group_help": "Media are split into those with descriptive tags and those without. This compares the average similarity within each group against the average across groups.\n\nThe number shown is the within-group average minus the across-group average.\n\nNear 0 means the split has no effect on similarity. A large value means media are matching because they were analyzed with the same setting, not because they mean similar things. The threshold is a quarter of sd.",
+    "diag_sample_help": "Checking every pair scales with the square of the count — even 1,000 media is about 500,000 pairs. So the calculation uses an evenly spaced sample.\n\nThe sample is picked the same way every time, so numbers do not jitter when you re-measure after changing a setting.\n\nThe two trailing numbers are the time to load vectors and compute centroids, and the time for the all-pairs comparison."
   },
   "logs": {
     "title": "Process Logs",
