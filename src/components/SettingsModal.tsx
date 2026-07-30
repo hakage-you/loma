@@ -20,6 +20,7 @@ import {
   EmbeddingCleanupResult,
 } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
+import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
 
 interface SettingsModalProps {
   open: boolean;
@@ -1360,35 +1361,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   )}
 
-                  {/* 計測結果 */}
-                  {diagnostics && (
-                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1.5">
-                      <div className="text-slate-400">
-                        {diagnostics.model} / {diagnostics.dim}次元 / centering{' '}
-                        {diagnostics.centering ? 'ON' : 'OFF'} / descriptive{' '}
-                        {diagnostics.include_descriptive ? 'ON' : 'OFF'}
-                      </div>
-                      <div className="tabular-nums">
-                        min {diagnostics.sim_min.toFixed(3)} / mean {diagnostics.sim_mean.toFixed(3)} / max{' '}
-                        {diagnostics.sim_max.toFixed(3)} / sd {diagnostics.sim_stddev.toFixed(3)}
-                      </div>
-                      <div className="tabular-nums text-slate-400">
-                        {t('settings.spectrum_hub_corr', 'タグ本数と平均類似度の相関')}:{' '}
-                        {diagnostics.tagcount_similarity_corr.toFixed(3)}
-                      </div>
-                      {diagnostics.desc_intra_mean !== null && diagnostics.inter_group_mean !== null && (
-                        <div className="tabular-nums text-slate-400">
-                          {t('settings.spectrum_group_sep', '記述的タグ 群内/群間')}:{' '}
-                          {diagnostics.desc_intra_mean.toFixed(3)} / {diagnostics.inter_group_mean.toFixed(3)}
-                        </div>
-                      )}
-                      <div className="text-slate-500">
-                        {t('settings.spectrum_sample', '標本')} {diagnostics.sample_size} /{' '}
-                        {diagnostics.eligible_media} · {diagnostics.load_ms + diagnostics.centroid_ms}ms +{' '}
-                        {diagnostics.pairwise_ms}ms
-                      </div>
-                    </div>
-                  )}
+                  {/* 計測結果。生の数値だけでは評価できないため、判定と次の一手を添える */}
+                  {diagnostics && <EmbeddingDiagnosticsPanel d={diagnostics} />}
                 </div>
               </div>
             )}

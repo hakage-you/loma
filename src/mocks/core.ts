@@ -124,6 +124,38 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     reclaimable_bytes: tagState.length * 16384,
   }),
   cleanup_unused_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
+  // 実測値（bge-m3 / centering ON / 1,007件）に寄せた形。判定表示を確認できるようにする
+  get_embedding_diagnostics: () => {
+    // 0 中心の正規形 + 右の裾（実データも max 付近まで薄く伸びる）。
+    // sim_min / sim_max と矛盾しないよう、両端の非ゼロ位置を揃えておく
+    const shape = [0, 0, 0, 0, 0, 0, 1, 3, 20, 34, 25, 11, 5, 2, 1, 1, 1, 1, 1, 0];
+    return {
+      model: 'bge-m3',
+      dim: 1024,
+      centering: true,
+      include_descriptive: false,
+      eligible_media: 1007,
+      excluded_by_tag_count: 1,
+      excluded_by_missing_vectors: 0,
+      sample_size: 336,
+      pair_count: 56280,
+      sim_min: -0.346,
+      sim_mean: -0.001,
+      sim_max: 0.929,
+      sim_stddev: 0.132,
+      histogram: shape.map((count, i) => ({ lower: -1 + i * 0.1, upper: -1 + (i + 1) * 0.1, count })),
+      tagcount_similarity_corr: 0.035,
+      desc_group_size: 336,
+      nondesc_group_size: 0,
+      // 実ライブラリ同様、対照群が無いため群分離は測定不能
+      desc_intra_mean: -0.002,
+      nondesc_intra_mean: null,
+      inter_group_mean: null,
+      load_ms: 340,
+      centroid_ms: 5,
+      pairwise_ms: 147,
+    };
+  },
   find_similar_media: (args) => {
     // 実データの分布（centering 有効時は 0 中心で min が負）に形だけ寄せる。
     // モックは実際の意味的近さを再現しないので、順位と数値の見た目だけを揃える。
