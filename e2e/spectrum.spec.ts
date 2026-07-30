@@ -30,10 +30,21 @@ test.describe('概念スペクトラム検索', () => {
 
   test('レンジ凡例が実測値を数値で開示する', async ({ page }) => {
     await openSpectrum(page);
-    // 生のコサイン類似度をそのまま出す。読み方が分かるよう min/mean/max を併記する
+    // 生のコサイン類似度をそのまま出す。読み方が分かるよう min / 平均 / max を併記する
     await expect(page.getByText(/^min -?\d\.\d{3}$/)).toBeVisible();
-    await expect(page.getByText(/^mean -?\d\.\d{3}$/)).toBeVisible();
+    // 軸上の白丸が何かを示すため、凡例側にも同じ丸を添えて「平均」と明記する
+    await expect(page.getByText(/^平均 -?\d\.\d{3}$/)).toBeVisible();
     await expect(page.getByText(/^max -?\d\.\d{3}$/)).toBeVisible();
+  });
+
+  test('ゾーンの見出しと凡例の帯が同じ色で対応する', async ({ page }) => {
+    // 色は「類似度の大小」ではなく「どの見出しの範囲か」を示すためだけに使う。
+    // 名前は見出しテキストが担うので、色だけに意味を載せてはいない
+    await openSpectrum(page);
+    const heading = page.getByRole('heading', { name: 'タグの類似度が高い' });
+    const border = await heading.evaluate((el) => getComputedStyle(el).borderBottomColor);
+    // #3987e5
+    expect(border).toBe('rgb(57, 135, 229)');
   });
 
   test('引き直しが無意味なときはボタンを出さない', async ({ page }) => {

@@ -242,6 +242,7 @@
     "band_pick": "candidates",
     "badge_excluded": "Excluded from similar-media search: fewer than {n} tags",
     "open_detail": "Open details",
-    "explore_from": "Explore from this media"
+    "explore_from": "Explore from this media",
+    "legend_mean": "mean"
   }
 }
