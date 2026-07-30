@@ -159,6 +159,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [storageInfo, setStorageInfo] = useState<EmbeddingStorageInfo | null>(null);
   const [isCleaningUp, setIsCleaningUp] = useState(false);
+  const [confirmDiscard, setConfirmDiscard] = useState(false);
   /** 埋め込みモデルを切り替えて保存しようとしたときの確認 */
   const [confirmModelSwitch, setConfirmModelSwitch] = useState<{ from: string; to: string } | null>(null);
 
@@ -474,12 +475,37 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setDiagnosticsLoading(true);
     setEmbeddingError(null);
     try {
-      setDiagnostics(await invoke<EmbeddingDiagnostics>('get_embedding_diagnostics'));
+      // 画面上のトグルをそのまま渡す。保存済みの値で測ると、切り替えても
+      // 結果が変わらず「効いていない」ように見える。
+      // この2つはタグのベクトルに影響しないので、その場で測り直せる。
+      setDiagnostics(
+        await invoke<EmbeddingDiagnostics>('get_embedding_diagnostics', {
+          centering: spectrumCentering,
+          includeDescriptive: spectrumIncludeDescriptive,
+        }),
+      );
     } catch (e) {
       setEmbeddingError(String(e));
       setDiagnostics(null);
     } finally {
       setDiagnosticsLoading(false);
+    }
+  };
+
+  /** 使用中のモデルのベクトルを破棄する（作り直したいとき用）。取り返しがつかないので確認を取る */
+  const handleDiscardEmbeddings = async () => {
+    setIsCleaningUp(true);
+    setEmbeddingError(null);
+    setConfirmDiscard(false);
+    try {
+      await invoke<EmbeddingCleanupResult>('discard_embeddings');
+      await refreshEmbeddingStatus();
+      // 破棄後の分布を出したままにすると、消えたデータの結果を見せ続けることになる
+      setDiagnostics(null);
+    } catch (e) {
+      setEmbeddingError(String(e));
+    } finally {
+      setIsCleaningUp(false);
     }
   };
 
@@ -1284,8 +1310,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </div>
                   )}
 
-                  {/* 実験用トグル（Phase 1 の実測比較用） */}
+                  {/* 実験用トグル。ベクトルには影響しないので、切り替えたら
+                      そのまま「類似度分布を計測」で比較できる（保存も再生成も不要） */}
                   <div className="mt-3 space-y-2">
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      {t(
+                        'settings.spectrum_toggle_note',
+                        '下の2つはタグのベクトルに影響しません。切り替えてから「類似度分布を計測」を押すと、保存せずにその場で比較できます。',
+                      )}
+                    </p>
                     <label className="flex items-start gap-2 cursor-pointer">
                       <input
                         type="checkbox"
@@ -1342,22 +1375,36 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </span>
                         </div>
                       ))}
-                      {storageInfo.reclaimable_bytes > 0 && (
-                        <button
-                          type="button"
-                          onClick={handleCleanupEmbeddings}
-                          disabled={isCleaningUp || isGeneratingEmbeddings}
-                          className="mt-1 flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                        >
-                          {isCleaningUp ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Trash2 className="w-3.5 h-3.5 text-slate-400" />
-                          )}
-                          {t('settings.spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
-                          {(storageInfo.reclaimable_bytes / 1e6).toFixed(1)} MB)
-                        </button>
-                      )}
+                      <div className="flex flex-wrap gap-2 pt-1">
+                        {storageInfo.reclaimable_bytes > 0 && (
+                          <button
+                            type="button"
+                            onClick={handleCleanupEmbeddings}
+                            disabled={isCleaningUp || isGeneratingEmbeddings}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
+                          >
+                            {isCleaningUp ? (
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            ) : (
+                              <Trash2 className="w-3.5 h-3.5 text-slate-400" />
+                            )}
+                            {t('settings.spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
+                            {(storageInfo.reclaimable_bytes / 1e6).toFixed(1)} MB)
+                          </button>
+                        )}
+                        {/* 使用中のモデルを作り直したいとき用。GC では消えない */}
+                        {storageInfo.models.some((m) => m.in_use) && (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDiscard(true)}
+                            disabled={isCleaningUp || isGeneratingEmbeddings}
+                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
+                          >
+                            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
+                            {t('settings.spectrum_discard', '使用中のモデルのベクトルを破棄して作り直す')}
+                          </button>
+                        )}
+                      </div>
                     </div>
                   )}
 
@@ -1404,6 +1451,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           </button>
         </div>
       </div>
+
+      {/* ベクトル破棄の確認。取り返しがつかない操作なので必ず通す */}
+      {confirmDiscard && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
+          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
+            <div className="flex items-center gap-3">
+              <div className="p-2.5 bg-amber-500/20 text-amber-300 rounded-xl border border-amber-500/30">
+                <AlertTriangle className="w-5 h-5" />
+              </div>
+              <div className="min-w-0">
+                <h4 className="text-base font-bold text-white">
+                  {t('settings.spectrum_discard_title', 'ベクトルを破棄しますか')}
+                </h4>
+                <p className="text-xs text-slate-300 font-mono truncate">{storageInfo?.current_model}</p>
+              </div>
+            </div>
+            <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
+              <li>
+                {t('settings.spectrum_discard_regen', '破棄後は「未生成のタグをベクトル化」で作り直す必要があります')}
+              </li>
+              <li>
+                {t('settings.spectrum_discard_note', 'centering と記述的タグの設定を変えるだけなら破棄は不要です。設定を変えて「類似度分布を計測」を押せばその場で反映されます')}
+              </li>
+            </ul>
+            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
+              <button
+                onClick={() => setConfirmDiscard(false)}
+                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
+              >
+                {t('settings.spectrum_switch_cancel', 'やめる')}
+              </button>
+              <button
+                onClick={handleDiscardEmbeddings}
+                className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white transition cursor-pointer"
+              >
+                {t('settings.spectrum_discard_ok', '破棄する')}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* 埋め込みモデル切り替えの確認 */}
       {confirmModelSwitch && (

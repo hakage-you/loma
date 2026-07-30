@@ -125,15 +125,18 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   }),
   cleanup_unused_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
   // 実測値（bge-m3 / centering ON / 1,007件）に寄せた形。判定表示を確認できるようにする
-  get_embedding_diagnostics: () => {
+  discard_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
+  // 引数の centering / includeDescriptive をそのまま反映して、
+  // トグルが即時に効くことを画面で確認できるようにする
+  get_embedding_diagnostics: (args) => {
     // 0 中心の正規形 + 右の裾（実データも max 付近まで薄く伸びる）。
     // sim_min / sim_max と矛盾しないよう、両端の非ゼロ位置を揃えておく
     const shape = [0, 0, 0, 0, 0, 0, 1, 3, 20, 34, 25, 11, 5, 2, 1, 1, 1, 1, 1, 0];
     return {
       model: 'bge-m3',
       dim: 1024,
-      centering: true,
-      include_descriptive: false,
+      centering: args.centering ?? true,
+      include_descriptive: args.includeDescriptive ?? false,
       eligible_media: 1007,
       excluded_by_tag_count: 1,
       excluded_by_missing_vectors: 0,

@@ -191,7 +191,13 @@
     "diag_group_ok": "No bias from descriptive tags. Similarity is not driven by which analysis setting was used.",
     "diag_group_warn": "Media with descriptive tags match each other regardless of meaning. Turn off \"Include descriptive tags in similarity\".",
     "diag_group_unmeasurable": "Mixed analysis settings cannot be measured (needs both media with and without descriptive tags).",
-    "diag_basis": "These thresholds come from a small number of measurements — do not treat borderline values as exact."
+    "diag_basis": "These thresholds come from a small number of measurements — do not treat borderline values as exact.",
+    "spectrum_discard": "Discard and rebuild vectors for the model in use",
+    "spectrum_discard_title": "Discard vectors?",
+    "spectrum_discard_regen": "You will need to rebuild them with \"Vectorize missing tags\"",
+    "spectrum_discard_note": "Changing centering or descriptive-tag settings does not need a discard — change them and press \"Measure similarity distribution\" to see the effect immediately",
+    "spectrum_discard_ok": "Discard",
+    "spectrum_toggle_note": "The two options below do not affect tag vectors. Toggle them and press \"Measure similarity distribution\" to compare immediately, without saving."
   },
   "logs": {
     "title": "Process Logs",

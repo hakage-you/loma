@@ -67,3 +67,42 @@ test.describe('概念スペクトラム検索', () => {
     await expect(page.getByText(/比較対象: \d+/)).toBeVisible();
   });
 });
+
+test.describe('類似度分布の計測', () => {
+  /** 設定モーダルの詳細設定を開いて、埋め込みセクションまで送る */
+  async function openSpectrumSettings(page: Page) {
+    await page.goto('/?debugOpen=settings');
+    const adv = page.getByRole('button', { name: /詳細設定/ });
+    if ((await adv.getAttribute('aria-expanded')) !== 'true') await adv.click();
+    await page.getByText('似ているメディアの検索（タグのベクトル化）').scrollIntoViewIfNeeded();
+  }
+
+  test('トグルの切り替えが保存せずに計測へ反映される', async ({ page }) => {
+    // 以前は計測が保存済み設定をDBから読んでいたため、トグルを切り替えても
+    // 結果が変わらず「効かない」ように見えた。画面の値を渡すようにした回帰テスト。
+    await openSpectrumSettings(page);
+    const measure = page.getByRole('button', { name: '類似度分布を計測' });
+
+    await measure.click();
+    await expect(page.getByText(/centering ON \/ descriptive OFF/)).toBeVisible();
+
+    const centering = page
+      .locator('label')
+      .filter({ hasText: 'ハブ化対策 (centering) を有効にする' })
+      .locator('input[type="checkbox"]');
+    await centering.uncheck();
+
+    await measure.click();
+    // 保存ボタンを押していないのに、計測結果は切り替え後の設定で出る
+    await expect(page.getByText(/centering OFF \/ descriptive OFF/)).toBeVisible();
+  });
+
+  test('計測結果に判定とヒストグラムが出る', async ({ page }) => {
+    await openSpectrumSettings(page);
+    await page.getByRole('button', { name: '類似度分布を計測' }).click();
+    // 生の数値だけでは評価できないため、判定を必ず添える
+    await expect(page.getByText('概念の分離')).toBeVisible();
+    await expect(page.getByText('ハブ化', { exact: true })).toBeVisible();
+    await expect(page.getByText(/^参考:/).first()).toBeVisible();
+  });
+});

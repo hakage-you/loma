@@ -91,6 +91,7 @@ pub fn run() {
             embedding::get_embedding_diagnostics,
             embedding::get_embedding_storage_info,
             embedding::cleanup_unused_embeddings,
+            embedding::discard_embeddings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

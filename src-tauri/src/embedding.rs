@@ -1024,8 +1024,48 @@ pub async fn cleanup_unused_embeddings(
     Ok(CleanupResult { deleted_rows: deleted, freed_bytes, vacuumed })
 }
 
+/// 指定モデル（省略時は使用中のモデル）のベクトルを破棄する。
+///
+/// `cleanup_unused_embeddings` は**使用中以外**を消すので、使用中のものを作り直す手段が無かった。
+/// 埋め込みモデルを差し替えて同じ名前で配布し直された場合や、生成が途中で失敗して
+/// 中途半端に入っている場合に、明示的にやり直せる経路が必要になる。
+///
+/// 破棄後は「未生成のタグをベクトル化」で作り直す。
+#[tauri::command]
+pub async fn discard_embeddings(
+    model: Option<String>,
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<CleanupResult, String> {
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    let pool = &db_state.pool;
+    let target = match model {
+        Some(m) => m,
+        None => load_spectrum_config(pool).await.model,
+    };
+
+    let freed_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model = ?1",
+    )
+    .bind(&target)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model = ?1")
+        .bind(&target)
+        .execute(pool)
+        .await
+        .map_err(|e| cmd_err("discard_embeddings", e))?
+        .rows_affected();
+
+    let vacuumed = deleted > 0 && sqlx::query("VACUUM;").execute(pool).await.is_ok();
+
+    Ok(CleanupResult { deleted_rows: deleted, freed_bytes, vacuumed })
+}
+
 // ---------------------------------------------------------------------------
-// コマンド: 診断（Phase 2 の設計値を確定するための実測）
+// コマンド: 診断（設計値を確定するための実測）
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -1090,13 +1130,28 @@ fn pearson(xs: &[f32], ys: &[f32]) -> f32 {
     }
 }
 
-/// 類似度分布・ハブ化・群分離を実測する。Phase 2 の帯域設計と各対策の要否を決めるための計測。
+/// 類似度分布・ハブ化・群分離を実測する。各対策の要否を決めるための計測。
+///
+/// `centering` / `include_descriptive` を渡すと、**保存済みの設定を上書きして**測る。
+/// 画面上のトグルをその場で反映するために必要。これが無いと、トグルを切り替えても
+/// 保存するまで古い設定で測ってしまい、「切り替えが効かない」ように見える。
+///
+/// この2つは**タグのベクトルに影響しない**（重心を組み立てるときのオプション）。
+/// したがって切り替えても再ベクトル化は要らず、その場で測り直せる。
 #[tauri::command]
 pub async fn get_embedding_diagnostics(
+    centering: Option<bool>,
+    include_descriptive: Option<bool>,
     db_state: State<'_, DbState>,
 ) -> Result<EmbeddingDiagnostics, String> {
     let pool = &db_state.pool;
-    let cfg = load_spectrum_config(pool).await;
+    let mut cfg = load_spectrum_config(pool).await;
+    if let Some(v) = centering {
+        cfg.centering = v;
+    }
+    if let Some(v) = include_descriptive {
+        cfg.include_descriptive = v;
+    }
     let lib = build_library(pool, &cfg).await?;
     compute_diagnostics(&lib, &cfg)
 }
