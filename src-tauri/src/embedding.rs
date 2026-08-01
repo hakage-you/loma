@@ -42,11 +42,32 @@ const DIAGNOSTICS_SAMPLE_CAP: usize = 400;
 /// 各ゾーンに表示する件数。
 pub const ZONE_SIZE: usize = 4;
 
-/// 帯の幅（候補数に対する比率）。下限は `ZONE_SIZE`。
+/// 帯の幅（候補数に対する比率）。下限は `ZONE_SIZE`、上限は `ZONE_BAND_MAX`。
 ///
 /// 帯から `ZONE_SIZE` 件を無作為抽出するので、ライブラリが育つほど帯が広がり
 /// 引き直しの多様性が自然に増える。N=20 では帯 = 4 件で決定的になる。
 const ZONE_BAND_RATIO: f32 = 0.10;
+
+/// 帯の件数上限。
+///
+/// **比率だけで帯を切ると裾で精度が壊れる。** 順位で切っているのに、帯が覆う
+/// 類似度の幅は分布上の位置によって桁で変わるため。実測（bge-m3 / 候補 1,007 件 /
+/// 基準 40 件平均 / `tools/embedding-check/band-width.mjs`）:
+///
+/// | 帯幅 | 上位帯が覆う幅 | 下端σ | 最下位帯が覆う幅 | 最類似が出る確率 |
+/// |---|---|---|---|---|
+/// | 4 | 0.141 | +3.62σ | 0.032 | 100% |
+/// | 8 | 0.201 | +3.13σ | 0.045 | 50% |
+/// | 101（比率 10%） | 0.431 | +1.34σ | 0.126 | 4% |
+///
+/// 上限が無いと上位帯の下端が平均 +1.34σ まで降りてきて、「タグの類似度が高い」枠が
+/// 実質「平均より少し上」の候補を出す。中央付近は密集しているので比率のままでも
+/// 精度は落ちないが、ゾーンごとに規則を変える理由が無いので一律に上限を掛ける。
+///
+/// `ZONE_SIZE * 2` にすると引き直しの組み合わせが C(8,4) = 70 通り残るので、
+/// 引き直しは死なない。1 にすれば決定的な「上位 N 件」になるが、それは
+/// この機能の目的（スペクトラムの提示）ではない。
+const ZONE_BAND_MAX: usize = ZONE_SIZE * 2;
 
 // ---------------------------------------------------------------------------
 // 乱択（帯域サンプリング用）
@@ -94,9 +115,12 @@ fn sample_indices(len: usize, k: usize, rng: &mut SplitMix64) -> Vec<usize> {
 /// 絶対的なコサイン閾値ではなく**順位**で切るのは、実測で分布が
 /// centering 無しでは 0.61〜0.99 に圧縮され、有りでも 0 中心に集まるため
 /// （閾値では Zone2・Zone3 が空になる）。順位ベースは分布とモデルに依存しない。
+///
+/// ただし順位だけでは裾の精度が保てないので、件数に上限を掛ける（`ZONE_BAND_MAX`）。
 fn zone_bands(n: usize) -> [(usize, usize); 3] {
     let band = ((n as f32 * ZONE_BAND_RATIO).ceil() as usize)
         .max(ZONE_SIZE)
+        .min(ZONE_BAND_MAX)
         .min(n);
     let mid_start = (n / 2).saturating_sub(band / 2).min(n - band);
     [
@@ -252,6 +276,9 @@ pub struct Library {
     /// 重心に寄与したタグ数（本数バイアスの診断に使う）
     pub contributing_counts: Vec<usize>,
     pub has_descriptive: Vec<bool>,
+    /// `basic` タグの id（昇順）。基準とタグを共有する候補を外すのに使う。
+    /// カテゴリを含めないのは、全メディアが必ず持つため共有判定が常に真になるから。
+    pub basic_tag_ids: Vec<Vec<i64>>,
     pub dim: usize,
     /// `basic` タグ不足で候補集合から外れたメディア数
     pub excluded_by_tag_count: usize,
@@ -264,6 +291,20 @@ pub struct Library {
 impl Library {
     pub fn index_of(&self, media_id: i64) -> Option<usize> {
         self.media_ids.iter().position(|&id| id == media_id)
+    }
+
+    /// 2件が `basic` タグを1つでも共有しているか。両方昇順なのでマージで判定する。
+    pub fn shares_basic_tag(&self, a: usize, b: usize) -> bool {
+        let (xs, ys) = (&self.basic_tag_ids[a], &self.basic_tag_ids[b]);
+        let (mut i, mut j) = (0, 0);
+        while i < xs.len() && j < ys.len() {
+            match xs[i].cmp(&ys[j]) {
+                std::cmp::Ordering::Equal => return true,
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+            }
+        }
+        false
     }
 }
 
@@ -313,6 +354,8 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
     // メディアごとに (寄与タグ id 集合, basic 本数, descriptive 有無) を組み立てる
     struct Pending {
         tag_ids: Vec<i64>,
+        /// カテゴリを除いた basic タグの id。タグ検索で到達できる候補を外すのに使う
+        basic_ids: Vec<i64>,
         basic_count: usize,
         has_descriptive: bool,
     }
@@ -322,6 +365,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
         let is_category = is_category != 0;
         let entry = per_media.entry(media_id).or_insert_with(|| Pending {
             tag_ids: Vec::new(),
+            basic_ids: Vec::new(),
             basic_count: 0,
             has_descriptive: false,
         });
@@ -333,6 +377,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
         // 数えると全員が下限を満たしてしまい閾値が意味を失う。
         if !is_category && kind == "basic" {
             entry.basic_count += 1;
+            entry.basic_ids.push(tag_id);
         }
 
         let contributes = is_category || kind == "basic" || (cfg.include_descriptive && kind == "descriptive");
@@ -361,7 +406,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
     let dim = vectors.values().next().map(|v| v.len()).unwrap_or(0);
 
     // 重み付き重心を並列に算出する
-    let raw: Vec<Option<(i64, Vec<f32>, usize, bool)>> = eligible
+    let raw: Vec<Option<(i64, Vec<f32>, usize, bool, Vec<i64>)>> = eligible
         .par_iter()
         .map(|(media_id, p)| {
             if dim == 0 {
@@ -404,7 +449,11 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
                 return None;
             };
             let _ = l2_normalize(&mut centroid);
-            Some((*media_id, centroid, used, p.has_descriptive))
+            // 共有判定をマージで回せるよう昇順・重複なしにしておく
+            let mut basic_ids = p.basic_ids.clone();
+            basic_ids.sort_unstable();
+            basic_ids.dedup();
+            Some((*media_id, centroid, used, p.has_descriptive, basic_ids))
         })
         .collect();
 
@@ -412,15 +461,17 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
     let mut centroids = Vec::with_capacity(n);
     let mut contributing_counts = Vec::with_capacity(n);
     let mut has_descriptive = Vec::with_capacity(n);
+    let mut basic_tag_ids = Vec::with_capacity(n);
     let mut excluded_by_missing_vectors = 0usize;
 
     for item in raw {
         match item {
-            Some((id, c, used, desc)) => {
+            Some((id, c, used, desc, basic)) => {
                 media_ids.push(id);
                 centroids.push(c);
                 contributing_counts.push(used);
                 has_descriptive.push(desc);
+                basic_tag_ids.push(basic);
             }
             None => excluded_by_missing_vectors += 1,
         }
@@ -461,6 +512,8 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
             contributing_counts.retain(|_| *it.next().unwrap_or(&true));
             let mut it = kept.iter();
             has_descriptive.retain(|_| *it.next().unwrap_or(&true));
+            let mut it = kept.iter();
+            basic_tag_ids.retain(|_| *it.next().unwrap_or(&true));
         }
     }
 
@@ -477,6 +530,7 @@ pub async fn build_library(pool: &Pool<Sqlite>, cfg: &SpectrumConfig) -> Result<
         centroids,
         contributing_counts,
         has_descriptive,
+        basic_tag_ids,
         dim,
         excluded_by_tag_count,
         excluded_by_missing_vectors,
@@ -722,14 +776,77 @@ pub async fn generate_tag_embeddings(
 
 /// 類似メディア1件。
 ///
-/// `file_path` / `thumbnail_path` まで返すのは、類似メディアが現在のフィルタ結果に
-/// 含まれているとは限らず、画面側が id からサムネイルを解決できないため。
+/// `MediaItem` を丸ごと返すのは3つの理由から。
+/// 1. 類似メディアが現在のフィルタ結果に含まれているとは限らず、画面側が id から解決できない
+/// 2. **「タグの類似度」と表示するならタグを見せなければ検証できない**
+/// 3. カードのクリックでメディア詳細を開くのに、詳細画面が要求する形がそのまま必要
 #[derive(Serialize)]
 pub struct SimilarItem {
     pub media_id: i64,
     pub similarity: f32,
-    pub file_path: String,
-    pub thumbnail_path: String,
+    pub media: crate::commands::MediaItem,
+}
+
+/// 指定した id のメディアを `MediaItem` として読み出す（タグ・カテゴリ込み）。
+/// `get_media` のタグ一括取得と同じ組み立て方をしている。
+async fn load_media_items(
+    pool: &Pool<Sqlite>,
+    ids: &[i64],
+) -> Result<HashMap<i64, crate::commands::MediaItem>, String> {
+    if ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let ids_str = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+
+    let rows = sqlx::query_as::<_, (i64, String, String, String, i64, String, Option<String>)>(&format!(
+        "SELECT id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error
+         FROM media WHERE id IN ({})",
+        ids_str
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(&format!(
+        "SELECT mt.media_id, t.name, t.name_ja, t.is_category, t.tag_kind
+         FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
+         WHERE mt.media_id IN ({})",
+        ids_str
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    let mut tags_map: HashMap<i64, (Vec<String>, Vec<crate::commands::TagPairItem>)> = HashMap::new();
+    for (m_id, name, name_ja, is_cat, kind) in tag_rows {
+        let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new()));
+        if is_cat == 1 {
+            entry.0.push(name);
+        } else {
+            entry.1.push(crate::commands::TagPairItem { name, name_ja, kind });
+        }
+    }
+
+    Ok(rows
+        .into_iter()
+        .map(|(id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error)| {
+            let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
+            (
+                id,
+                crate::commands::MediaItem {
+                    id,
+                    file_path,
+                    parent_folder,
+                    thumbnail_path,
+                    file_size,
+                    analysis_status,
+                    analysis_error,
+                    categories,
+                    tags,
+                },
+            )
+        })
+        .collect())
 }
 
 /// スペクトラムの1ゾーン。
@@ -749,6 +866,8 @@ pub struct SpectrumResult {
     /// `ok` / `degraded` / `not_enough_candidates` / `base_not_eligible` / `no_embeddings`
     pub status: String,
     pub base_media_id: i64,
+    /// 基準メディア。何と比べているのかを画面上でプレビューできるようにするため返す
+    pub base_media: Option<crate::commands::MediaItem>,
     pub model: String,
     pub zones: Vec<Zone>,
     /// このレスポンスを生成したシード。引き直し前の状態を再現したいときに使う。
@@ -759,6 +878,9 @@ pub struct SpectrumResult {
     pub range_max: f32,
     pub candidate_count: usize,
     pub excluded_media: usize,
+    /// 基準と `basic` タグを共有するため候補から外した件数。
+    /// 除外はこの機能の要（タグ検索で到達できるものを出さない）なので、件数を隠さず開示する。
+    pub shared_tag_excluded: usize,
     pub centering: bool,
     pub include_descriptive: bool,
     pub elapsed_ms: u64,
@@ -768,6 +890,7 @@ fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Opt
     SpectrumResult {
         status: status.to_string(),
         base_media_id,
+        base_media: None,
         model: cfg.model.clone(),
         zones: Vec::new(),
         seed: 0,
@@ -778,6 +901,7 @@ fn empty_result(status: &str, base_media_id: i64, cfg: &SpectrumConfig, lib: Opt
         excluded_media: lib
             .map(|l| l.excluded_by_tag_count + l.excluded_by_missing_vectors)
             .unwrap_or(0),
+        shared_tag_excluded: 0,
         centering: cfg.centering,
         include_descriptive: cfg.include_descriptive,
         elapsed_ms: 0,
@@ -807,11 +931,26 @@ pub async fn find_similar_media(
         return Ok(empty_result("base_not_eligible", base_media_id, &cfg, Some(&lib)));
     };
 
-    // 候補は基準メディア自身を除いた数で数える
-    let candidate_count = lib.media_ids.len() - 1;
+    // 基準と `basic` タグを1つでも共有する候補は、タグ検索で到達できるので候補から外す。
+    //
+    // これが無いと上位ゾーンが近似重複で埋まり、この機能はタグ検索の劣化版になる。
+    // 実測（bge-m3 / 1,007 件 / 基準 30 件 / tools/embedding-check/lexical-overlap.mjs）:
+    // 上位 8 件のうちタグを共有しない割合は 23% しかなく、1 位は平均 2.5 本を共有していた。
+    // この除外で 100% になり、除外されるのは候補の 9%（最悪 18%）だけ。
+    //
+    // 「共有タグを外してから重心を作り直す」案も測ったが不利だった。共有が 0 の候補では
+    // 現行指標と数学的に一致し（省くものが無い）、部分的に重なった候補にしか効かない。
+    // しかも残差が語形の違い（`スノーボーダー` 対 `スノーボード`）だと近似重複が 1 位に残る。
+    let shared_tag_excluded = (0..lib.centroids.len())
+        .filter(|&i| i != base_idx && lib.shares_basic_tag(base_idx, i))
+        .count();
+
+    // 候補は基準メディア自身と、タグを共有する分を除いた数で数える
+    let candidate_count = lib.media_ids.len() - 1 - shared_tag_excluded;
     if candidate_count < MIN_CANDIDATES {
         let mut r = empty_result("not_enough_candidates", base_media_id, &cfg, Some(&lib));
         r.candidate_count = candidate_count;
+        r.shared_tag_excluded = shared_tag_excluded;
         return Ok(r);
     }
 
@@ -820,7 +959,7 @@ pub async fn find_similar_media(
         .centroids
         .par_iter()
         .enumerate()
-        .filter(|(i, _)| *i != base_idx)
+        .filter(|(i, _)| *i != base_idx && !lib.shares_basic_tag(base_idx, *i))
         .map(|(i, c)| (lib.media_ids[i], dot(base, c)))
         .collect();
 
@@ -862,25 +1001,16 @@ pub async fn find_similar_media(
         })
         .collect();
 
-    // 表示に必要なパスだけを、選ばれた分についてまとめて引く
-    let ids: Vec<String> = picked
+    // 選ばれた分と基準メディアを、タグ込みでまとめて引く
+    let mut ids: Vec<i64> = picked
         .iter()
-        .flat_map(|(_, _, items)| items.iter().map(|(id, _)| id.to_string()))
+        .flat_map(|(_, _, items)| items.iter().map(|(id, _)| *id))
         .collect();
-    let paths: HashMap<i64, (String, String)> = if ids.is_empty() {
-        HashMap::new()
-    } else {
-        sqlx::query_as::<_, (i64, String, String)>(&format!(
-            "SELECT id, file_path, thumbnail_path FROM media WHERE id IN ({})",
-            ids.join(",")
-        ))
-        .fetch_all(pool)
+    ids.push(base_media_id);
+    let mut loaded = load_media_items(pool, &ids)
         .await
-        .map_err(|e| cmd_err("find_similar_media", e))?
-        .into_iter()
-        .map(|(id, f, t)| (id, (f, t)))
-        .collect()
-    };
+        .map_err(|e| cmd_err("find_similar_media", e))?;
+    let base_media = loaded.get(&base_media_id).cloned();
 
     let zones: Vec<Zone> = picked
         .into_iter()
@@ -889,9 +1019,11 @@ pub async fn find_similar_media(
             band_size,
             items: items
                 .into_iter()
-                .map(|(media_id, similarity)| {
-                    let (file_path, thumbnail_path) = paths.get(&media_id).cloned().unwrap_or_default();
-                    SimilarItem { media_id, similarity, file_path, thumbnail_path }
+                .filter_map(|(media_id, similarity)| {
+                    // 直前に削除された等でメディアが引けない場合は落とす。
+                    // 空のカードを出すより、出さないほうが誠実
+                    let media = loaded.remove(&media_id)?;
+                    Some(SimilarItem { media_id, similarity, media })
                 })
                 .collect(),
         })
@@ -900,6 +1032,7 @@ pub async fn find_similar_media(
     Ok(SpectrumResult {
         status: if degraded { "degraded" } else { "ok" }.to_string(),
         base_media_id,
+        base_media,
         model: cfg.model.clone(),
         zones,
         seed,
@@ -908,6 +1041,7 @@ pub async fn find_similar_media(
         range_max,
         candidate_count,
         excluded_media: lib.excluded_by_tag_count + lib.excluded_by_missing_vectors,
+        shared_tag_excluded,
         centering: cfg.centering,
         include_descriptive: cfg.include_descriptive,
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -915,7 +1049,157 @@ pub async fn find_similar_media(
 }
 
 // ---------------------------------------------------------------------------
-// コマンド: 診断（Phase 2 の設計値を確定するための実測）
+// コマンド: 保存領域の管理
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize)]
+pub struct EmbeddingModelStorage {
+    pub model: String,
+    pub tag_count: i64,
+    pub dim: i64,
+    pub bytes: i64,
+    /// 現在の設定で使われているモデルか。これだけは GC の対象外。
+    pub in_use: bool,
+}
+
+#[derive(Serialize)]
+pub struct EmbeddingStorageInfo {
+    pub current_model: String,
+    pub total_tags: i64,
+    pub models: Vec<EmbeddingModelStorage>,
+    /// 使用中でないモデルを削除したときに解放される容量
+    pub reclaimable_bytes: i64,
+}
+
+/// モデル別のベクトル保有状況を返す。
+#[tauri::command]
+pub async fn get_embedding_storage_info(
+    db_state: State<'_, DbState>,
+) -> Result<EmbeddingStorageInfo, String> {
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+
+    let total_tags: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0);
+
+    let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+        "SELECT model, COUNT(*), COALESCE(MAX(dim), 0), COALESCE(SUM(LENGTH(vector)), 0)
+         FROM tag_embeddings GROUP BY model ORDER BY model",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| cmd_err("get_embedding_storage_info", e))?;
+
+    let models: Vec<EmbeddingModelStorage> = rows
+        .into_iter()
+        .map(|(model, tag_count, dim, bytes)| EmbeddingModelStorage {
+            in_use: model == cfg.model,
+            model,
+            tag_count,
+            dim,
+            bytes,
+        })
+        .collect();
+
+    let reclaimable_bytes = models.iter().filter(|m| !m.in_use).map(|m| m.bytes).sum();
+
+    Ok(EmbeddingStorageInfo {
+        current_model: cfg.model,
+        total_tags,
+        models,
+        reclaimable_bytes,
+    })
+}
+
+#[derive(Serialize)]
+pub struct CleanupResult {
+    pub deleted_rows: u64,
+    pub freed_bytes: i64,
+    pub vacuumed: bool,
+}
+
+/// 使用中でないモデルのベクトルを削除する。
+///
+/// **自動 GC は実装しない。** 「モデルを戻せば以前の類似度が復元される」と学習した直後に
+/// 黙って消えるとユーザーの期待を裏切るため、削除は常に明示操作とする。
+#[tauri::command]
+pub async fn cleanup_unused_embeddings(
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<CleanupResult, String> {
+    // 削除中に重心算出やベクトル生成が走らないよう、他の処理と同じロックを取る
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    let pool = &db_state.pool;
+    let cfg = load_spectrum_config(pool).await;
+
+    let freed_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model != ?1",
+    )
+    .bind(&cfg.model)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model != ?1")
+        .bind(&cfg.model)
+        .execute(pool)
+        .await
+        .map_err(|e| cmd_err("cleanup_unused_embeddings", e))?
+        .rows_affected();
+
+    // DELETE だけではファイルは縮まない。数十MB単位の BLOB を消す操作なので、
+    // 「解放された」と表示する以上は実際にディスクを返す。
+    // 明示操作のときしか走らないため、VACUUM の重さは許容できる。
+    let vacuumed = deleted > 0
+        && sqlx::query("VACUUM;").execute(pool).await.is_ok();
+
+    Ok(CleanupResult { deleted_rows: deleted, freed_bytes, vacuumed })
+}
+
+/// 指定モデル（省略時は使用中のモデル）のベクトルを破棄する。
+///
+/// `cleanup_unused_embeddings` は**使用中以外**を消すので、使用中のものを作り直す手段が無かった。
+/// 埋め込みモデルを差し替えて同じ名前で配布し直された場合や、生成が途中で失敗して
+/// 中途半端に入っている場合に、明示的にやり直せる経路が必要になる。
+///
+/// 破棄後は「未生成のタグをベクトル化」で作り直す。
+#[tauri::command]
+pub async fn discard_embeddings(
+    model: Option<String>,
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<CleanupResult, String> {
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    let pool = &db_state.pool;
+    let target = match model {
+        Some(m) => m,
+        None => load_spectrum_config(pool).await.model,
+    };
+
+    let freed_bytes: i64 = sqlx::query_scalar(
+        "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model = ?1",
+    )
+    .bind(&target)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+
+    let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model = ?1")
+        .bind(&target)
+        .execute(pool)
+        .await
+        .map_err(|e| cmd_err("discard_embeddings", e))?
+        .rows_affected();
+
+    let vacuumed = deleted > 0 && sqlx::query("VACUUM;").execute(pool).await.is_ok();
+
+    Ok(CleanupResult { deleted_rows: deleted, freed_bytes, vacuumed })
+}
+
+// ---------------------------------------------------------------------------
+// コマンド: 診断（設計値を確定するための実測）
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
@@ -980,13 +1264,28 @@ fn pearson(xs: &[f32], ys: &[f32]) -> f32 {
     }
 }
 
-/// 類似度分布・ハブ化・群分離を実測する。Phase 2 の帯域設計と各対策の要否を決めるための計測。
+/// 類似度分布・ハブ化・群分離を実測する。各対策の要否を決めるための計測。
+///
+/// `centering` / `include_descriptive` を渡すと、**保存済みの設定を上書きして**測る。
+/// 画面上のトグルをその場で反映するために必要。これが無いと、トグルを切り替えても
+/// 保存するまで古い設定で測ってしまい、「切り替えが効かない」ように見える。
+///
+/// この2つは**タグのベクトルに影響しない**（重心を組み立てるときのオプション）。
+/// したがって切り替えても再ベクトル化は要らず、その場で測り直せる。
 #[tauri::command]
 pub async fn get_embedding_diagnostics(
+    centering: Option<bool>,
+    include_descriptive: Option<bool>,
     db_state: State<'_, DbState>,
 ) -> Result<EmbeddingDiagnostics, String> {
     let pool = &db_state.pool;
-    let cfg = load_spectrum_config(pool).await;
+    let mut cfg = load_spectrum_config(pool).await;
+    if let Some(v) = centering {
+        cfg.centering = v;
+    }
+    if let Some(v) = include_descriptive {
+        cfg.include_descriptive = v;
+    }
     let lib = build_library(pool, &cfg).await?;
     compute_diagnostics(&lib, &cfg)
 }
@@ -1179,12 +1478,49 @@ mod tests {
     }
 
     #[test]
-    fn zone_bands_widen_as_the_library_grows() {
-        // ライブラリが育つほど帯が広がり、引き直しの多様性が自然に増える
+    fn zone_bands_widen_then_stop_widening() {
+        // ライブラリが育つほど帯が広がり、引き直しの多様性が増える。
+        // ただし上限で止まること。止めないと上位帯の下端が平均 +1.34σ まで降りてきて、
+        // 「タグの類似度が高い」枠が実質「平均より少し上」を出す（ZONE_BAND_MAX の実測表）
         let width = |n: usize| { let b = zone_bands(n); b[0].1 - b[0].0 };
         assert_eq!(width(20), ZONE_SIZE);
-        assert_eq!(width(100), 10);
-        assert_eq!(width(1000), 100);
+        assert_eq!(width(60), 6);
+        assert_eq!(width(100), ZONE_BAND_MAX);
+        assert_eq!(width(1000), ZONE_BAND_MAX, "候補が増えても帯は広げない");
+    }
+
+    /// `shares_basic_tag` の検証だけに使う最小のライブラリ
+    fn lib_with_basic_tags(sets: &[&[i64]]) -> Library {
+        Library {
+            media_ids: (0..sets.len() as i64).collect(),
+            centroids: vec![vec![1.0]; sets.len()],
+            contributing_counts: vec![0; sets.len()],
+            has_descriptive: vec![false; sets.len()],
+            basic_tag_ids: sets.iter().map(|s| s.to_vec()).collect(),
+            dim: 1,
+            excluded_by_tag_count: 0,
+            excluded_by_missing_vectors: 0,
+            load_ms: 0,
+            centroid_ms: 0,
+        }
+    }
+
+    #[test]
+    fn shares_basic_tag_detects_any_single_overlap() {
+        // タグを1つでも共有する候補はタグ検索で到達できるので、候補から外す判定
+        let lib = lib_with_basic_tags(&[
+            &[10, 20, 30], // 基準
+            &[40, 50],     // 共有なし
+            &[30, 40],     // 末尾で共有
+            &[5, 10],      // 先頭で共有
+            &[],           // 空（タグ不足で候補に入らないが、判定は落ちないこと）
+        ]);
+        assert!(!lib.shares_basic_tag(0, 1));
+        assert!(lib.shares_basic_tag(0, 2));
+        assert!(lib.shares_basic_tag(0, 3));
+        assert!(!lib.shares_basic_tag(0, 4));
+        // 対称であること。片方向だけ真だと候補数と除外数が食い違う
+        assert!(lib.shares_basic_tag(2, 0));
     }
 
     #[test]
@@ -1220,6 +1556,83 @@ mod tests {
         let r = pearson(&[1.0, 1.0, 1.0], &[1.0, 2.0, 3.0]);
         assert!(r.is_finite());
         assert_eq!(r, 0.0);
+    }
+
+    /// インメモリDBを1つ用意する（Tauri の State を経由せず純粋なSQLとして検証する）
+    async fn storage_test_pool() -> Pool<Sqlite> {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query(
+            "CREATE TABLE tag_embeddings (tag_id INTEGER NOT NULL, model TEXT NOT NULL,
+             dim INTEGER NOT NULL, vector BLOB NOT NULL, PRIMARY KEY (tag_id, model))",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        for (tag_id, model, bytes) in [(1i64, "in-use", 8usize), (2, "in-use", 8), (3, "old", 16)] {
+            sqlx::query("INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1,?2,?3,?4)")
+                .bind(tag_id)
+                .bind(model)
+                .bind(bytes as i64 / 4)
+                .bind(vec![0u8; bytes])
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        pool
+    }
+
+    #[tokio::test]
+    async fn cleanup_removes_only_models_not_in_use() {
+        // 「モデルを戻せば復元される」と案内している以上、使用中のモデルを
+        // 巻き込んで消してはならない
+        let pool = storage_test_pool().await;
+        let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model != ?1")
+            .bind("in-use")
+            .execute(&pool)
+            .await
+            .unwrap()
+            .rows_affected();
+        assert_eq!(deleted, 1);
+
+        let remaining: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT model FROM tag_embeddings")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec!["in-use".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn reclaimable_bytes_counts_only_unused_models() {
+        // GC ボタンに実数で出す値なので、使用中の分を含めてはならない
+        let pool = storage_test_pool().await;
+        let reclaimable: i64 = sqlx::query_scalar(
+            "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model != ?1",
+        )
+        .bind("in-use")
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(reclaimable, 16);
+    }
+
+    #[tokio::test]
+    async fn storage_rollup_groups_by_model() {
+        let pool = storage_test_pool().await;
+        let rows = sqlx::query_as::<_, (String, i64, i64, i64)>(
+            "SELECT model, COUNT(*), COALESCE(MAX(dim), 0), COALESCE(SUM(LENGTH(vector)), 0)
+             FROM tag_embeddings GROUP BY model ORDER BY model",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0], ("in-use".to_string(), 2, 2, 16));
+        assert_eq!(rows[1], ("old".to_string(), 1, 4, 16));
     }
 
     /// 計測用テストの共通前処理。

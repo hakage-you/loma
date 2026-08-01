@@ -6,34 +6,41 @@ export interface RecommendedModel {
   description: string;
 }
 
+/**
+ * タグ付け用 VLM。
+ *
+ * **ここには実測したモデルだけを載せる。** 名前やパラメータ数だけでは
+ * 安定性（低情報量画像で幻覚しないか等）も速度も判断できない
+ * （実測: 12B超のモデルを使っても、8B前後と比べてタグの質・複雑な指示への追従に
+ * 有意差が出なかった。逆に 2B まで下げると崩れ始めた）。
+ * VRAM は計測ツールでの実測値（`/api/ps` の `size_vram`）。ディスクサイズではない。
+ * 計測手順は tools/prompt-check/README.md。
+ *
+ * `gemma4:12b` は `qwen3-vl:8b-instruct` と精度が同等で速度だけ劣る。
+ * VRAM に余裕があるからといって自動では格上げしない
+ * （「重い方が高精度」という誤解を UI 側で強化しないため。`getBestVlmModelName` 参照）。
+ */
 export const RECOMMENDED_VLM_MODELS: RecommendedModel[] = [
   {
-    name: 'qwen3-vl:4b',
+    name: 'translategemma:4b',
     badge: 'Lightweight',
     badgeJa: '軽量',
     size: '~2.8 GB',
-    description: '高速かつ低VRAMで動作する最新小型Visionモデル',
+    description: '低VRAM環境向け。低情報量な画像でも幻覚せず安定して動作する',
   },
   {
-    name: 'qwen3-vl:8b',
+    name: 'qwen3-vl:8b-instruct',
     badge: 'Standard',
     badgeJa: '標準',
-    size: '~5.5 GB',
-    description: '精度と処理速度のバランスに優れた推奨VLM',
+    size: '~6.1 GB',
+    description: '軸となる推奨モデル。速度・精度・複雑な指示への追従、いずれも上位モデルと同等',
   },
   {
     name: 'gemma4:12b',
     badge: 'Standard',
     badgeJa: '標準',
-    size: '~8.0 GB',
-    description: 'Google Gemma 4ベースの高性能マルチモーダルモデル',
-  },
-  {
-    name: 'qwen3-vl:30b',
-    badge: 'High Performance',
-    badgeJa: '高精度',
-    size: '~19 GB',
-    description: '最高水準の画像・動画認識が可能なフラッグシップモデル',
+    size: '~7.8 GB',
+    description: 'qwen3-vl:8b-instructと同等の精度で低速。安定性を優先したい場合の代替',
   },
 ];
 

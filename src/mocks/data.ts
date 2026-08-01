@@ -15,15 +15,21 @@ const SAMPLE_DESCRIPTIVE_TAGS: TagPairItem[] = [
 ];
 
 const CATEGORY_DEFS: CategoryDef[] = [
-  { category: 'screenshot', parentFolder: 'Screenshots', tags: [{ name: 'ui', name_ja: 'UI' }, { name: 'app', name_ja: 'アプリ' }], count: 3 },
-  { category: 'document', parentFolder: 'WorkDocs', tags: [{ name: 'text', name_ja: 'テキスト' }, { name: 'paper', name_ja: '書類' }], count: 3 },
-  { category: 'landscape', parentFolder: '2024_Travel', tags: [{ name: 'nature', name_ja: '自然' }, { name: 'sky', name_ja: '空' }], count: 3 },
-  { category: 'food', parentFolder: '2024_Travel', tags: [{ name: 'meal', name_ja: '食事' }, { name: 'dessert', name_ja: 'デザート' }], count: 3 },
-  { category: 'character', parentFolder: 'Portraits', tags: [{ name: 'person', name_ja: '人物' }, { name: 'portrait', name_ja: 'ポートレート' }], count: 3 },
-  { category: 'text_heavy', parentFolder: 'Manga', tags: [{ name: 'manga', name_ja: '漫画' }, { name: 'subtitle', name_ja: '字幕' }], count: 2 },
-  { category: 'tech', parentFolder: 'WorkDocs', tags: [{ name: 'device', name_ja: 'デバイス' }, { name: 'code', name_ja: 'コード' }], count: 2 },
-  { category: 'other', parentFolder: 'Misc', tags: [{ name: 'misc', name_ja: 'その他' }], count: 2 },
+  { category: 'screenshot', parentFolder: 'Screenshots', tags: [{ name: 'ui', name_ja: 'UI' }, { name: 'app', name_ja: 'アプリ' }, { name: 'window', name_ja: 'ウィンドウ' }], count: 3 },
+  { category: 'document', parentFolder: 'WorkDocs', tags: [{ name: 'text', name_ja: 'テキスト' }, { name: 'paper', name_ja: '書類' }, { name: 'table', name_ja: '表' }], count: 3 },
+  { category: 'landscape', parentFolder: '2024_Travel', tags: [{ name: 'nature', name_ja: '自然' }, { name: 'sky', name_ja: '空' }, { name: 'mountain', name_ja: '山' }], count: 3 },
+  { category: 'food', parentFolder: '2024_Travel', tags: [{ name: 'meal', name_ja: '食事' }, { name: 'dessert', name_ja: 'デザート' }, { name: 'plate', name_ja: '皿' }], count: 3 },
+  { category: 'character', parentFolder: 'Portraits', tags: [{ name: 'person', name_ja: '人物' }, { name: 'portrait', name_ja: 'ポートレート' }, { name: 'smile', name_ja: '笑顔' }], count: 3 },
+  { category: 'text_heavy', parentFolder: 'Manga', tags: [{ name: 'manga', name_ja: '漫画' }, { name: 'subtitle', name_ja: '字幕' }, { name: 'panel', name_ja: 'コマ' }], count: 3 },
+  { category: 'tech', parentFolder: 'WorkDocs', tags: [{ name: 'device', name_ja: 'デバイス' }, { name: 'code', name_ja: 'コード' }, { name: 'screen', name_ja: '画面' }], count: 3 },
+  { category: 'other', parentFolder: 'Misc', tags: [{ name: 'misc', name_ja: 'その他' }, { name: 'object', name_ja: '物体' }, { name: 'indoor', name_ja: '屋内' }], count: 2 },
 ];
+
+// 解析済みは 23 件。概念スペクトラム検索は基準とタグを共有する候補を外すので、
+// カテゴリ内の兄弟（ここでは同じタグを持つ2件）が引かれて候補は 20 件になる。
+// これは3ゾーン表示の最小値（FULL_SPECTRUM_MIN）とちょうど同じで、
+// **ここを下回るとモックが縮退モードに落ちて3ゾーンのテストが壊れる**。
+// カテゴリの件数を減らすときはこの数を確認すること。
 
 function buildMedia(): MediaItem[] {
   const items: MediaItem[] = [];
@@ -129,7 +135,7 @@ export const MOCK_SCAN_FOLDERS: ScanFolderItem[] = [
 export const MOCK_SETTINGS: Record<string, string> = {
   llm_provider: 'ollama',
   ollama_url: 'http://localhost:11434',
-  ollama_model: 'qwen3-vl:8b',
+  ollama_model: 'qwen3-vl:8b-instruct',
   ollama_text_model: 'qwen2.5:7b',
   force_detailed_prompt: 'false',
   tag_granularity: 'balanced',
@@ -137,12 +143,14 @@ export const MOCK_SETTINGS: Record<string, string> = {
   ffmpeg_notice_enabled: 'true',
 };
 
-export const MOCK_AVAILABLE_MODELS: string[] = ['qwen3-vl:8b', 'qwen3-vl:4b', 'qwen2.5:7b'];
+// qwen3-vl:8b-instruct のみインストール済みにして、他の推奨カード（要DL）と
+// 混在した表示を mock モードでも確認できるようにする
+export const MOCK_AVAILABLE_MODELS: string[] = ['qwen3-vl:8b-instruct', 'qwen2.5:7b'];
 
 export const MOCK_VRAM_GB = 12.0;
 
 export const MOCK_LOGS = [
   '[INFO] Loma started (mock mode)',
   '[INFO] Loaded 24 mock media items',
-  '[INFO] Ollama model: qwen3-vl:8b',
+  '[INFO] Ollama model: qwen3-vl:8b-instruct',
 ].join('\n');

@@ -102,9 +102,10 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     total_tags: tagState.length,
     embedded_tags: tagState.length,
     missing_tags: 0,
-    eligible_media: mediaState.filter((m) => !isTagInsufficient(m)).length,
+    // 母数は解析済みのみ。未解析・失敗は候補集合の話に入らない
+    eligible_media: mediaState.filter((m) => m.analysis_status === 'completed' && !isTagInsufficient(m)).length,
     excluded_media: mediaState.filter(isTagInsufficient).length,
-    completed_media: mediaState.length,
+    completed_media: mediaState.filter((m) => m.analysis_status === 'completed').length,
     min_basic_tags: MIN_BASIC_TAGS,
     min_candidates: 5,
     full_spectrum_min: 20,
@@ -112,31 +113,90 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     centering: true,
   }),
   generate_tag_embeddings: () => ({ model: 'bge-m3', generated: 0, dim: 1024, elapsed_ms: 0 }),
+  get_embedding_storage_info: () => ({
+    current_model: 'bge-m3',
+    total_tags: tagState.length,
+    // 旧モデルのベクトルが残っている状態を再現して GC ボタンを確認できるようにする
+    models: [
+      { model: 'bge-m3', tag_count: tagState.length, dim: 1024, bytes: tagState.length * 4096, in_use: true },
+      { model: 'qwen3-embedding:8b', tag_count: tagState.length, dim: 4096, bytes: tagState.length * 16384, in_use: false },
+    ],
+    reclaimable_bytes: tagState.length * 16384,
+  }),
+  cleanup_unused_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
+  discard_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
+  // 実測値（bge-m3 / centering ON / 1,007件）に寄せた形。判定表示を確認できるようにする。
+  // 引数の centering / includeDescriptive をそのまま反映して、
+  // トグルが即時に効くことを画面で確認できるようにする
+  get_embedding_diagnostics: (args) => {
+    // 0 中心の正規形 + 右の裾（実データも max 付近まで薄く伸びる）。
+    // sim_min / sim_max と矛盾しないよう、両端の非ゼロ位置を揃えておく
+    const shape = [0, 0, 0, 0, 0, 0, 1, 3, 20, 34, 25, 11, 5, 2, 1, 1, 1, 1, 1, 0];
+    return {
+      model: 'bge-m3',
+      dim: 1024,
+      centering: args.centering ?? true,
+      include_descriptive: args.includeDescriptive ?? false,
+      eligible_media: 1007,
+      excluded_by_tag_count: 1,
+      excluded_by_missing_vectors: 0,
+      sample_size: 336,
+      pair_count: 56280,
+      sim_min: -0.346,
+      sim_mean: -0.001,
+      sim_max: 0.929,
+      sim_stddev: 0.132,
+      histogram: shape.map((count, i) => ({ lower: -1 + i * 0.1, upper: -1 + (i + 1) * 0.1, count })),
+      tagcount_similarity_corr: 0.035,
+      desc_group_size: 336,
+      nondesc_group_size: 0,
+      // 実ライブラリ同様、対照群が無いため群分離は測定不能
+      desc_intra_mean: -0.002,
+      nondesc_intra_mean: null,
+      inter_group_mean: null,
+      load_ms: 340,
+      centroid_ms: 5,
+      pairwise_ms: 147,
+    };
+  },
   find_similar_media: (args) => {
     // 実データの分布（centering 有効時は 0 中心で min が負）に形だけ寄せる。
     // モックは実際の意味的近さを再現しないので、順位と数値の見た目だけを揃える。
-    const others = mediaState.filter((m) => m.id !== args.baseMediaId);
+    // 候補集合はバックエンドと同じ条件（解析済み かつ basic タグが足りている）で作る。
+    // ここを揃えないと、設定画面が出す「検索対象メディア」の件数と食い違う。
+    const base = mediaState.find((m) => m.id === args.baseMediaId);
+    const baseBasic = new Set(
+      (base?.tags ?? []).filter((t) => t.kind === 'basic').map((t) => t.name),
+    );
+    const eligible = mediaState.filter(
+      (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !isTagInsufficient(m),
+    );
+    // 基準と basic タグを1つでも共有する候補は外す（バックエンドと同じ規則）。
+    // これが無いと上位ゾーンが近似重複で埋まり、タグ検索の劣化版になる
+    const sharesTag = (m: MediaItem) =>
+      m.tags.some((t) => t.kind === 'basic' && baseBasic.has(t.name));
+    const others = eligible.filter((m) => !sharesTag(m));
+    const sharedTagExcluded = eligible.length - others.length;
     const degraded = others.length < 20;
-    const toItem = (m: MediaItem, similarity: number) => ({
-      media_id: m.id,
-      similarity,
-      file_path: m.file_path,
-      thumbnail_path: m.thumbnail_path,
-    });
+    // 帯幅はバックエンドの zone_bands と同じ規則（比率 10% / 下限 4 / 上限 8）。
+    // 上限があるのは、順位で切った帯が覆う類似度の幅が分布の裾で桁違いに広がるため
+    const bandSize = Math.min(8, Math.max(4, Math.ceil(others.length * 0.1)));
+    const toItem = (m: MediaItem, similarity: number) => ({ media_id: m.id, similarity, media: m });
     const take = (from: number, sim: (i: number) => number) =>
       others.slice(from, from + 4).map((m, i) => toItem(m, sim(i)));
 
     const zones = degraded
       ? [{ key: 'similar', band_size: Math.min(4, others.length), items: take(0, (i) => 0.72 - i * 0.06) }]
       : [
-          { key: 'similar', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(0, (i) => 0.72 - i * 0.06) },
-          { key: 'middle', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(4, (i) => 0.02 - i * 0.01) },
-          { key: 'distant', band_size: Math.max(4, Math.ceil(others.length * 0.1)), items: take(8, (i) => -0.24 - i * 0.02) },
+          { key: 'similar', band_size: bandSize, items: take(0, (i) => 0.72 - i * 0.06) },
+          { key: 'middle', band_size: bandSize, items: take(4, (i) => 0.02 - i * 0.01) },
+          { key: 'distant', band_size: bandSize, items: take(8, (i) => -0.24 - i * 0.02) },
         ];
 
     return {
       status: degraded ? 'degraded' : 'ok',
       base_media_id: args.baseMediaId,
+      base_media: base ?? null,
       model: 'bge-m3',
       zones,
       seed: args.seed ?? 0,
@@ -145,6 +205,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       range_max: 0.78,
       candidate_count: others.length,
       excluded_media: mediaState.filter(isTagInsufficient).length,
+      shared_tag_excluded: sharedTagExcluded,
       centering: true,
       include_descriptive: false,
       elapsed_ms: 12,

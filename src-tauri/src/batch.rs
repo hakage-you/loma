@@ -56,21 +56,37 @@ pub struct OllamaModel {
     pub name: String,
 }
 
+/// 動画マルチフレーム解析の Ollama オプション。
+///
+/// **`num_predict` を付けてはならない。** これは生成トークンの上限だが、thinking 対応モデルでは
+/// **thinking の消費分も同じ枠から引かれる**。フレーム3枚の解析では thinking だけで
+/// 2,000 トークン超を使うため、上限を切ると答えを書く前に打ち切られて応答が空になる。
+/// 実測（qwen3-vl:4b / サムネイル3枚 / 4試行）:
+/// | オプション | 空応答 | done_reason |
+/// | `num_predict: 2048` | **3/4** | length（eval がちょうど 2048 で停止） |
+/// | 無指定 | 0/4 | stop（eval は 2,148〜4,337 とばらつく） |
+///
+/// 上限を上げるのではなく無指定にする。必要量はモデルと画像枚数で変わるため、
+/// 固定値を置くと同じ壊れ方を再現するだけになる。`llm/ollama.rs` の本流も無指定である。
 #[derive(Serialize)]
 struct OllamaOptions {
     temperature: f32,
-    top_p: f32,
-    num_predict: i32,
     num_ctx: i32,
 }
 
+/// Ollama /api/generate のリクエスト（動画マルチフレーム解析用）。
+///
+/// **`format: "json"` フィールドを追加してはならない。** thinking 対応モデル
+/// （既定の `qwen3-vl` 系はすべて該当）に指定すると応答が空文字になり、`thinking` も空になる。
+/// `done_reason` は "stop"（正常終了）で返るためエラーにならず、パース失敗として現れる。
+/// 詳細は `llm/ollama.rs` の同名構造体のコメントを参照（実測データもそこにある）。
+/// JSON の抽出は `extract_and_parse_json` が担うので format 指定は不要。
 #[derive(Serialize)]
 struct OllamaGenerateRequest {
     model: String,
     prompt: String,
     images: Vec<String>,
     stream: bool,
-    format: String,
     options: OllamaOptions,
 }
 
@@ -78,6 +94,31 @@ struct OllamaGenerateRequest {
 struct OllamaGenerateResponse {
     response: String,
     thinking: Option<String>,
+    /// "stop" = 正常終了, "length" = 生成上限に到達して打ち切り。
+    /// 打ち切りを見分けないと、途切れた thinking をパースしようとして
+    /// 「JSON が壊れている」という誤った診断になる。
+    #[serde(default)]
+    done_reason: Option<String>,
+}
+
+/// Ollama の応答から解析結果を取り出す。
+///
+/// 空応答を `thinking` で代替するのは、thinking 対応モデルが答えを thinking 側に
+/// 書いてしまう場合があるため。ただし**打ち切り（done_reason = "length"）のときは代替しない。**
+/// 途切れた thinking には JSON が無く、パースエラーとして原因が隠れるだけになる。
+fn parse_generate_response(gen_res: &OllamaGenerateResponse) -> Result<crate::llm::AnalysisResult> {
+    if gen_res.response.trim().is_empty() && gen_res.done_reason.as_deref() == Some("length") {
+        return Err(anyhow!(
+            "Ollama が生成上限に到達し、応答が空のまま打ち切られました（done_reason=length）。\n\n💡【対処のご案内】\n思考（thinking）が長引いて答えを書く前に打ち切られています。設定画面から thinking を使わないモデルか、より小さいモデルに変更してください。"
+        ));
+    }
+
+    let raw_text = if !gen_res.response.trim().is_empty() {
+        gen_res.response.as_str()
+    } else {
+        gen_res.thinking.as_deref().unwrap_or("")
+    };
+    extract_and_parse_json(raw_text)
 }
 
 // 英語タグの表記揺れ防止（単数形化＆正規化）
@@ -238,7 +279,13 @@ pub async fn check_ollama(base_url: &str, model_name: &str) -> Result<()> {
 
 // Ollamaモデル一覧取得
 pub async fn fetch_ollama_models(base_url: &str) -> Result<Vec<String>> {
-    let client = Client::new();
+    // タイムアウトは必須。設定画面を開くたびに同期的に呼ばれるため、
+    // Ollama が起動していない・URL が誤っている場合に OS の TCP タイムアウトまで
+    // 待たされ、画面が固まったように見える。一覧取得は本来ミリ秒で返る。
+    let client = Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .unwrap_or_else(|_| Client::new());
     let res = client.get(format!("{}/api/tags", base_url)).send().await?;
     let tags_res: OllamaTagsResponse = res.json().await?;
     Ok(tags_res.models.into_iter().map(|m| m.name).collect())
@@ -455,98 +502,6 @@ fn extract_and_parse_json(raw_text: &str) -> Result<crate::llm::AnalysisResult> 
         "Failed to parse VLM JSON output. Raw response content: {}",
         clean_text
     ))
-}
-
-// メディア単体の Ollama VLM 解析
-#[allow(dead_code)]
-async fn analyze_media_with_ollama(
-    client: &Client,
-    base_url: &str,
-    model_name: &str,
-    image_path: &Path,
-) -> Result<crate::llm::AnalysisResult> {
-    // 画像ファイルを読み込んでbase64化
-    // OllamaがWebP等でエラー(Failed to load image)を起こさないよう、
-    // image crateで読み込んでメモリ上でJPEGフォーマットに変換してからbase64化する
-    let base64_img = match image::open(image_path) {
-        Ok(img) => {
-            let mut buffer = std::io::Cursor::new(Vec::new());
-            if img.write_to(&mut buffer, image::ImageFormat::Jpeg).is_ok() {
-                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buffer.into_inner())
-            } else {
-                let img_bytes = fs::read(image_path)?;
-                base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes)
-            }
-        }
-        Err(_) => {
-            let img_bytes = fs::read(image_path)?;
-            base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes)
-        }
-    };
-
-    let prompt = crate::llm::get_vlm_prompt("Ollama", model_name, &crate::llm::PromptConfig::default());
-
-    let req_body = OllamaGenerateRequest {
-        model: model_name.to_string(),
-        prompt: prompt.to_string(),
-        images: vec![base64_img],
-        stream: false,
-        format: "json".to_string(),
-        options: OllamaOptions {
-            temperature: 0.1,
-            top_p: 0.9,
-            num_predict: 2048,
-            num_ctx: 16384,
-        },
-    };
-
-    let res = client
-        .post(format!("{}/api/generate", base_url))
-        .json(&req_body)
-        .send()
-        .await?;
-
-    if !res.status().is_success() {
-        let err_status = res.status();
-        let err_text = res.text().await.unwrap_or_default();
-        let full_err = format!("Ollama API Error Status {}: {}", err_status, err_text);
-        crate::logger::log_error(&format!("Image: {:?} - {}", image_path, full_err));
-        return Err(anyhow!("{}", full_err));
-    }
-
-    let gen_res: OllamaGenerateResponse = res.json().await?;
-    
-    let raw_text = if !gen_res.response.trim().is_empty() {
-        gen_res.response.clone()
-    } else if let Some(ref thinking_text) = gen_res.thinking {
-        thinking_text.clone()
-    } else {
-        gen_res.response.clone()
-    };
-
-    match extract_and_parse_json(&raw_text) {
-        Ok(parsed) => {
-            let file_name = image_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("unknown");
-            let tags_str = parsed
-                .tags
-                .iter()
-                .map(|t| format!("{}:{}", t.en, t.ja))
-                .collect::<Vec<_>>()
-                .join(", ");
-            crate::logger::log_info(&format!(
-                "Ollama VLM Output for '{}' -> Categories: {:?}, Tags: [{}]",
-                file_name, parsed.categories, tags_str
-            ));
-            Ok(parsed)
-        }
-        Err(e) => {
-            crate::logger::log_error(&format!("Parse error on {:?}: {}", image_path, e));
-            Err(e)
-        }
-    }
 }
 
 // スキャン＆バッチ解析メイン処理
@@ -1452,11 +1407,8 @@ async fn analyze_multi_frame_with_ollama(
         prompt: prompt.to_string(),
         images: images_b64.clone(),
         stream: false,
-        format: "json".to_string(),
         options: OllamaOptions {
             temperature: 0.1,
-            top_p: 0.9,
-            num_predict: 2048,
             num_ctx: 16384,
         },
     };
@@ -1473,14 +1425,7 @@ async fn analyze_multi_frame_with_ollama(
 
     if res.status().is_success() {
         let gen_res: OllamaGenerateResponse = res.json().await?;
-        let raw_text = if !gen_res.response.trim().is_empty() {
-            gen_res.response.clone()
-        } else if let Some(ref thinking_text) = gen_res.thinking {
-            thinking_text.clone()
-        } else {
-            gen_res.response.clone()
-        };
-        return extract_and_parse_json(&raw_text);
+        return parse_generate_response(&gen_res);
     }
 
     let err_status = res.status();
@@ -1498,11 +1443,8 @@ async fn analyze_multi_frame_with_ollama(
             prompt: prompt.to_string(),
             images: vec![images_b64[0].clone()],
             stream: false,
-            format: "json".to_string(),
             options: OllamaOptions {
                 temperature: 0.1,
-                top_p: 0.9,
-                num_predict: 2048,
                 num_ctx: 8192,
             },
         };
@@ -1528,15 +1470,7 @@ async fn analyze_multi_frame_with_ollama(
         }
 
         let gen_res: OllamaGenerateResponse = fb_res.json().await?;
-        let raw_text = if !gen_res.response.trim().is_empty() {
-            gen_res.response.clone()
-        } else if let Some(ref thinking_text) = gen_res.thinking {
-            thinking_text.clone()
-        } else {
-            gen_res.response.clone()
-        };
-
-        return extract_and_parse_json(&raw_text);
+        return parse_generate_response(&gen_res);
     }
 
     Err(anyhow!(
@@ -1916,6 +1850,28 @@ async fn cleanup_and_detect_moves(
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// 打ち切られた応答を「JSONが壊れている」と誤診しないことの回帰テスト。
+    /// 途切れた thinking を代替に使うと、原因が生成上限であることが隠れる。
+    #[test]
+    fn truncated_response_reports_the_generation_limit_not_a_parse_error() {
+        let truncated = OllamaGenerateResponse {
+            response: String::new(),
+            thinking: Some("Looking at the frames, I see a can of".to_string()),
+            done_reason: Some("length".to_string()),
+        };
+        let err = parse_generate_response(&truncated).unwrap_err().to_string();
+        assert!(err.contains("done_reason=length"), "打ち切りが原因だと分かる文言が必要: {err}");
+
+        // 正常終了なら、答えが thinking 側にあっても拾う
+        let in_thinking = OllamaGenerateResponse {
+            response: String::new(),
+            thinking: Some(r#"考えた結果: {"categories":["Food"],"tags":[{"en":"can","ja":"缶"}]}"#.to_string()),
+            done_reason: Some("stop".to_string()),
+        };
+        let parsed = parse_generate_response(&in_thinking).expect("thinking 側の JSON を拾えていない");
+        assert_eq!(parsed.categories, vec!["Food"]);
+    }
 
     /// 解析中のキャンセルが「推論の完了待ち」に引きずられないことの回帰テスト。
     /// 長時間かかる解析 Future を select! の負け側として drop できることを確認する。

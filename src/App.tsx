@@ -504,6 +504,9 @@ function AppContent() {
           setSpectrumBase(null);
           setIsSettingsOpen(true);
         }}
+        // カードのクリックは他画面と同じく詳細を開く。探索モーダルは開いたまま
+        // 背面に残るので、詳細を閉じれば探索に戻れる
+        onOpenDetail={(item) => setSelectedMedia(item)}
         onShowExcluded={() => {
           // 対象外メディアをメイングリッドで絞り込んで見せる。
           // 探索結果をグリッドに流し込むのではなく既存のフィルタ機構に載せるので、

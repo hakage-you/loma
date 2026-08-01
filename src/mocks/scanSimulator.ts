@@ -54,7 +54,7 @@ export function startScanSimulatorIfRequested(emit: Emit): void {
         total: TOTAL_ITEMS,
         current,
         current_file: fileName(current),
-        status: 'Analyzing with Ollama (qwen3-vl:30b)',
+        status: 'Analyzing with Ollama (qwen3-vl:8b-instruct)',
         error_count: 0,
       });
       current += 1;
@@ -82,7 +82,7 @@ export function startScanSimulatorIfRequested(emit: Emit): void {
           total: TOTAL_ITEMS,
           current: analyzed,
           current_file: fileName(analyzed),
-          status: 'Analyzing with Ollama (qwen3-vl:30b)',
+          status: 'Analyzing with Ollama (qwen3-vl:8b-instruct)',
           error_count: 0,
         });
         analyzed += 1;

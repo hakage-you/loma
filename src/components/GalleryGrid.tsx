@@ -3,6 +3,7 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem } from '../types';
 import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 
 interface GalleryGridProps {
   items: MediaItem[];
@@ -130,15 +131,25 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                     <ExternalLink className="w-5 h-5" />
                   </div>
                   {onFindSimilar && item.analysis_status === 'completed' && (
+                    // タグ不足なら押せなくし、理由を示す。MediaDetailModal 側の
+                    // トリガーと挙動を揃える（片方だけ押せると壊れて見える）
                     <button
                       type="button"
+                      disabled={isTagInsufficient(item)}
                       onClick={(e) => {
                         // カード全体のクリック（詳細を開く）に伝播させない
                         e.stopPropagation();
                         onFindSimilar(item);
                       }}
-                      title={t('spectrum.trigger', '似ているメディアを探す')}
-                      className="p-2 bg-white/20 hover:bg-indigo-500/70 backdrop-blur-md rounded-full text-white transition"
+                      title={
+                        isTagInsufficient(item)
+                          ? t(
+                              'spectrum.badge_excluded',
+                              'タグが {n} 個未満のため、似ているメディアの検索の対象外です',
+                            ).replace('{n}', String(MIN_BASIC_TAGS))
+                          : t('spectrum.trigger', '似ているメディアを探す')
+                      }
+                      className="p-2 bg-white/20 hover:bg-indigo-500/70 backdrop-blur-md rounded-full text-white transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/20"
                     >
                       <Radar className="w-5 h-5" />
                     </button>

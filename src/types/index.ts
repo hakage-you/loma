@@ -130,8 +130,8 @@ export interface EmbeddingGenerateResult {
 export interface SimilarItem {
   media_id: number;
   similarity: number;
-  file_path: string;
-  thumbnail_path: string;
+  /** タグの表示・詳細画面を開くのに必要なので、メディア情報を丸ごと受け取る */
+  media: MediaItem;
 }
 
 /**
@@ -160,6 +160,8 @@ export interface Zone {
 export interface SpectrumResult {
   status: SpectrumStatus;
   base_media_id: number;
+  /** 基準メディア。何と比べているのかを画面上でプレビューするために使う */
+  base_media: MediaItem | null;
   model: string;
   zones: Zone[];
   /** このレスポンスを生成したシード */
@@ -170,9 +172,37 @@ export interface SpectrumResult {
   range_max: number;
   candidate_count: number;
   excluded_media: number;
+  /**
+   * 基準と basic タグを共有するため候補から外した件数。
+   * タグ検索で到達できるものを出さない、というこの機能の要なので画面で開示する。
+   */
+  shared_tag_excluded: number;
   centering: boolean;
   include_descriptive: boolean;
   elapsed_ms: number;
+}
+
+export interface EmbeddingModelStorage {
+  model: string;
+  tag_count: number;
+  dim: number;
+  bytes: number;
+  /** 現在の設定で使われているモデル。GC の対象外 */
+  in_use: boolean;
+}
+
+export interface EmbeddingStorageInfo {
+  current_model: string;
+  total_tags: number;
+  models: EmbeddingModelStorage[];
+  /** 使用中でないモデルを削除したときに解放される容量 */
+  reclaimable_bytes: number;
+}
+
+export interface EmbeddingCleanupResult {
+  deleted_rows: number;
+  freed_bytes: number;
+  vacuumed: boolean;
 }
 
 export interface HistogramBin {
