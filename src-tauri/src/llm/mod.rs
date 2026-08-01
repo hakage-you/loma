@@ -477,4 +477,71 @@ mod tests {
         assert_eq!(parse_model_parameter_size("my-custom-model:12b"), Some(12.0));
         assert_eq!(parse_model_parameter_size("no-size-here"), None);
     }
+    /// 計測ツール（`tools/prompt-check`）が**本番の判定そのもの**を使うための出力。
+    ///
+    /// ```bash
+    ///   LOMA_PROMPT_MODELS=qwen3-vl:4b,gemma4:12b \
+    ///     cargo test --release resolve_prompt_selection -- --ignored --nocapture
+    /// ```
+    ///
+    /// JS 側に判定を書き写すと必ず乖離するため、**ミラーを持たせずここを呼ばせる**。
+    /// 本番の Ollama 経路（`llm/ollama.rs`）は生のモデル名をそのまま渡すので、ここでもそうする。
+    ///
+    /// 出力は 1 行 1 モデルの TSV。cargo のノイズと混ざらないよう接頭辞を付ける:
+    ///   `LOMA_PROMPT_SELECTION\t<model>\t<variant>\t<parsed_size|null>\t<prompt_chars>`
+    #[test]
+    #[ignore]
+    fn resolve_prompt_selection() {
+        let Ok(models) = std::env::var("LOMA_PROMPT_MODELS") else {
+            eprintln!("LOMA_PROMPT_MODELS が未設定のためスキップ");
+            return;
+        };
+        let provider = std::env::var("LOMA_PROMPT_PROVIDER").unwrap_or_else(|_| "Ollama".to_string());
+        let force_detailed = matches!(std::env::var("LOMA_PROMPT_FORCE_DETAILED").as_deref(), Ok("true"));
+        let granularity = match std::env::var("LOMA_PROMPT_GRANULARITY").unwrap_or_default().as_str() {
+            "atomic" => TagGranularity::Atomic,
+            "balanced" => TagGranularity::Balanced,
+            "descriptive" => TagGranularity::Descriptive,
+            // 未指定なら本番の既定値に従う（ここに既定を書かない）
+            _ => TagGranularity::default(),
+        };
+        let gran_name = match granularity {
+            TagGranularity::Atomic => "atomic",
+            TagGranularity::Balanced => "balanced",
+            TagGranularity::Descriptive => "descriptive",
+        };
+        let cfg = PromptConfig { granularity, force_detailed };
+
+        let mut seen: Vec<(String, String)> = Vec::new();
+        for model in models.split(',').map(str::trim).filter(|s| !s.is_empty()) {
+            let (kind, prompt) = get_vlm_prompt_info(&provider, model, &cfg);
+            let variant = match kind {
+                VlmPromptType::Light => "light".to_string(),
+                VlmPromptType::Detailed => format!("detailed_{}", gran_name),
+            };
+            let size = parse_model_parameter_size(model)
+                .map(|v| v.to_string())
+                .unwrap_or_else(|| "null".to_string());
+            println!(
+                "LOMA_PROMPT_SELECTION\t{}\t{}\t{}\t{}",
+                model,
+                variant,
+                size,
+                prompt.chars().count()
+            );
+            if !seen.iter().any(|(v, _): &(String, String)| v == &variant) {
+                seen.push((variant, prompt));
+            }
+        }
+
+        // 文字数だけでは balanced と descriptive を区別できない（差は数字1文字ずつで長さが同じ）。
+        // 抽出側が本番と一致しているかを確かめるには本文そのものを渡すしかない。
+        if matches!(std::env::var("LOMA_PROMPT_DUMP").as_deref(), Ok("true")) {
+            for (variant, prompt) in &seen {
+                println!("LOMA_PROMPT_BODY_BEGIN {}", variant);
+                println!("{}", prompt);
+                println!("LOMA_PROMPT_BODY_END");
+            }
+        }
+    }
 }

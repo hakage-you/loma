@@ -40,7 +40,9 @@ test.describe('設定モーダル', () => {
     await openSettings(page);
 
     await expect(page.getByText('UI表示言語')).toBeVisible();
-    await expect(page.getByText('タグ粒度')).toBeVisible();
+    // exact: true が必須。LIGHT プロンプト時の案内文にも「タグ粒度」が部分一致し、
+    // 非同期の get_effective_prompt_type 解決タイミング次第で strict mode violation になる
+    await expect(page.getByText('タグ粒度', { exact: true })).toBeVisible();
     await expect(page.getByText('使用するVLM (視覚言語) モデル')).toBeVisible();
     await expect(page.getByText('テキスト解析・タグ翻訳モデル')).toBeVisible();
 
@@ -89,7 +91,7 @@ test.describe('設定モーダル', () => {
   test('タグ粒度が無効な場合、案内文が詳細設定内の項目を指す', async ({ page }) => {
     await openSettings(page);
 
-    // モックの既定モデルは qwen3-vl:8b (10B未満) のため LIGHT プロンプトになり粒度が無効化される
+    // モックの既定モデルは qwen3-vl:8b-instruct (10B未満) のため LIGHT プロンプトになり粒度が無効化される
     const notice = page.getByText(/タグ粒度設定は適用されません/);
     await expect(notice).toBeVisible();
 

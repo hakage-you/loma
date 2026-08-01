@@ -135,7 +135,7 @@ export const MOCK_SCAN_FOLDERS: ScanFolderItem[] = [
 export const MOCK_SETTINGS: Record<string, string> = {
   llm_provider: 'ollama',
   ollama_url: 'http://localhost:11434',
-  ollama_model: 'qwen3-vl:8b',
+  ollama_model: 'qwen3-vl:8b-instruct',
   ollama_text_model: 'qwen2.5:7b',
   force_detailed_prompt: 'false',
   tag_granularity: 'balanced',
@@ -143,12 +143,14 @@ export const MOCK_SETTINGS: Record<string, string> = {
   ffmpeg_notice_enabled: 'true',
 };
 
-export const MOCK_AVAILABLE_MODELS: string[] = ['qwen3-vl:8b', 'qwen3-vl:4b', 'qwen2.5:7b'];
+// qwen3-vl:8b-instruct のみインストール済みにして、他の推奨カード（要DL）と
+// 混在した表示を mock モードでも確認できるようにする
+export const MOCK_AVAILABLE_MODELS: string[] = ['qwen3-vl:8b-instruct', 'qwen2.5:7b'];
 
 export const MOCK_VRAM_GB = 12.0;
 
 export const MOCK_LOGS = [
   '[INFO] Loma started (mock mode)',
   '[INFO] Loaded 24 mock media items',
-  '[INFO] Ollama model: qwen3-vl:8b',
+  '[INFO] Ollama model: qwen3-vl:8b-instruct',
 ].join('\n');

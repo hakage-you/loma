@@ -95,7 +95,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   // Ollama
   const [ollamaUrl, setOllamaUrl] = useState(settings.ollama_url || 'http://localhost:11434');
-  const [selectedVlmModel, setSelectedVlmModel] = useState(settings.ollama_model || 'qwen3-vl:30b');
+  const [selectedVlmModel, setSelectedVlmModel] = useState(settings.ollama_model || 'qwen3-vl:8b-instruct');
   const [selectedTextModel, setSelectedTextModel] = useState(settings.ollama_text_model || 'qwen3:14b');
   // 0 = タグ粒度から自動決定
   const [ollamaNumCtx, setOllamaNumCtx] = useState(settings.ollama_num_ctx ?? '0');
@@ -536,13 +536,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
-  // Determine best recommended VLM model based on system VRAM
+  // Determine best recommended VLM model based on system VRAM.
+  //
+  // gemma4:12b は qwen3-vl:8b-instruct と精度が同等で速度だけ劣ることが実測で分かっている
+  // （tools/prompt-check）。VRAM に余裕があるというだけで自動的に格上げすると
+  // 「重い方が高精度」という誤解を UI 側で強化してしまうため、しきい値には含めない。
   const getBestVlmModelName = () => {
     if (!vramGb || vramGb <= 0) return null;
-    if (vramGb >= 20.0) return 'qwen3-vl:30b';
-    if (vramGb >= 12.0) return 'gemma4:12b';
-    if (vramGb >= 6.0) return 'qwen3-vl:8b';
-    return 'qwen3-vl:4b';
+    if (vramGb >= 7.0) return 'qwen3-vl:8b-instruct';
+    return 'translategemma:4b';
   };
   const bestVlmName = getBestVlmModelName();
 
