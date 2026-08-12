@@ -54,7 +54,6 @@ function AppContent() {
     mergeTags,
     addTagToMedia,
     removeTagFromMedia,
-    suggestTagMerges,
     unloadModel,
     getLogs,
     clearLogs,
@@ -544,7 +543,10 @@ function AppContent() {
           await fetchMasterData();
           await fetchMedia();
         }}
-        onSuggestMerges={suggestTagMerges}
+        onDataChanged={async () => {
+          await fetchMasterData();
+          await fetchMedia();
+        }}
         onSelectTagFilter={handleAddTag}
         isScanning={scanning}
       />

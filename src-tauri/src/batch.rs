@@ -1104,23 +1104,19 @@ pub async fn run_scan_and_batch(
         },
     );
 
-    // 処理件数が1件以上かつ正常終了した場合、自動でタグマージ提案を再解析・キャッシュ更新
-    // ※ 外部LLMプロバイダー使用時は API クォータ浪費を防止するため、スキャン後の自動テキストLLM整理をスキップする
-    if total_pending > 0 {
-        if factory_config.provider.to_lowercase() == "ollama" {
-            let pool_clone = pool.clone();
-            let app_handle_clone = app_handle.clone();
-            tokio::spawn(async move {
-                crate::logger::log_info("Running automatic post-analysis tag merge scan...");
-                if let Ok(new_suggestions) = crate::commands::run_suggest_tag_merges_logic(&pool_clone).await {
-                    let _ = crate::commands::save_tag_suggestions_cache_internal(&app_handle_clone, &new_suggestions);
-                    let _ = app_handle_clone.emit("tag_suggestions_updated", new_suggestions);
-                }
-            });
-        } else {
-            crate::logger::log_info("[Info] External LLM is active: Skipped automatic post-analysis LLM tag merge scan to conserve API quota.");
-        }
-    }
+    // **スキャン後の自動タグ整理は廃止した（2026-08-05）。**
+    //
+    // 以前はここで `run_suggest_tag_merges_logic` を実行しキャッシュを更新していたが、
+    // 3つの問題があった:
+    //
+    //   1. **上書き** — 作り直し後の LLM 経路は実測37分かかる。その結果を表示中でも
+    //      メディアを1件取り込めば消えてしまう
+    //   2. **意図しない LLM 実行** — タグ301件未満のライブラリでは LLM 判定まで自動で走っていた
+    //   3. **不可視** — モーダルを開いていなくてもキャッシュが書き換わる
+    //
+    // 提案の生成は常にユーザーが起動する。代わりに UI 側で
+    // 「前回の検出以降にタグが N 件変わっています」と示して再実行を促す。
+    // 設計: `_plan/20260805_tag_organize_rebuild_implementation_plan.md` §7
 
     Ok(())
 }

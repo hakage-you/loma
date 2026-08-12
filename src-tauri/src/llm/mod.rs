@@ -1,5 +1,7 @@
 pub mod traits;
 pub mod ollama;
+/// タグ整理のテキスト生成専用。画像経路（`ollama`）とは要る歯止めが違う
+pub mod ollama_text;
 pub mod gemini;
 pub mod openai;
 pub mod claude;

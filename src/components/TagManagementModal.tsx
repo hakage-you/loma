@@ -1,10 +1,56 @@
 import React, { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+// **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
+// confirm は false 相当になるため、確認を出したつもりで何も起きない状態になる。
+import { ask, message as showMessage } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { X, Edit2, Check, GitMerge, Search, Sparkles, ThumbsUp, ThumbsDown, RefreshCw, Eye, Image as ImageIcon, PlusCircle, CheckCircle2, Filter, Film, AlertCircle } from 'lucide-react';
 import { TagItem, MergeSuggestion, MediaItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
+
+/**
+ * 提案の生成方式。**混ぜない。** リストには選んだ方式の結果だけを出す。
+ * ルール検出の誤爆が LLM の結果に混ざると質を下げるため（計画 §1）。
+ */
+type SuggestMethod = 'rules' | 'hypernym' | 'related';
+
+const METHODS: { id: SuggestMethod; command: string; label: string; hint: string }[] = [
+  {
+    id: 'rules',
+    command: 'suggest_tag_merges',
+    label: '表記ゆれ',
+    hint: '綴り・単複・日本語表記の規則だけで検出。即時',
+  },
+  {
+    id: 'hypernym',
+    command: 'suggest_hypernyms',
+    label: '包括関係',
+    hint: 'AI が「〜の一種」を判定してまとめる。数分かかる',
+  },
+  {
+    id: 'related',
+    command: 'suggest_related_tags',
+    label: '意味が近い',
+    hint: '埋め込みの類似度で近い組を出す。同義とは限らない',
+  },
+];
+
+/**
+ * 規則の識別子 → 表示名。
+ * バックエンドは識別子で返す（表示文字列に依存した判定をしないため）。
+ */
+const RULE_LABELS: Record<string, string> = {
+  ja_exact: '日本語名が同一',
+  ja_prefix: '日本語名の前方一致',
+  singular: '単数形・複数形',
+  keyphrase: '共通のキーフレーズ',
+  spelling: '綴りの近さ',
+  hypernym: 'AI: 包括関係',
+  embedding: '意味が近い',
+};
+
+const ruleLabel = (rule: string) => RULE_LABELS[rule] ?? rule;
 
 interface TagManagementModalProps {
   open: boolean;
@@ -13,7 +59,8 @@ interface TagManagementModalProps {
   onClose: () => void;
   onRenameTag: (tagId: number, newName: string, newNameJa?: string) => Promise<void>;
   onMergeTags: (targetTagId: number, sourceTagIds: number[]) => Promise<void>;
-  onSuggestMerges?: () => Promise<MergeSuggestion[]>;
+  /** 統合を適用した後の再読込。タグ一覧とメディアを取り直す */
+  onDataChanged?: () => Promise<void>;
   onSelectTagFilter?: (tagName: string) => void;
 }
 
@@ -92,7 +139,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   onClose,
   onRenameTag,
   onMergeTags,
-  onSuggestMerges,
+  onDataChanged,
   onSelectTagFilter,
 }) => {
   // タグ一覧の map では変数名 `t` がタグを指すため、翻訳関数に別名を用意しておく
@@ -109,6 +156,18 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
   // AI自動提案用の状態
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([]);
+  const [method, setMethod] = useState<SuggestMethod>('rules');
+  // ② は数分かかる。何も出ないと止まって見えるので進捗を出す
+  const [scanProgress, setScanProgress] = useState<string>('');
+  /**
+   * 保存済みの実行状態。**未判定の件数を出すために要る。**
+   * 中断で残ったぶん・実行後に増えたタグ・失敗したチャンクが同じ数に入る。
+   */
+  const [runStatus, setRunStatus] = useState<{
+    finished_at: number | null;
+    judged_count: number;
+    unjudged_count: number;
+  } | null>(null);
   const [scanningSuggestions, setScanningSuggestions] = useState<boolean>(false);
   const [applyingMerges, setApplyingMerges] = useState<boolean>(false);
   const [applyProgressText, setApplyProgressText] = useState<string>('');
@@ -119,44 +178,56 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   const [previewMediaItem, setPreviewMediaItem] = useState<MediaItem | null>(null);
   const [hoveredThumb, setHoveredThumb] = useState<{ src: string; x: number; y: number } | null>(null);
 
-  // アプリ起動・モーダル開口時に AppData キャッシュから自動復元 ＆ 不整合ファイルのクリーンアップ
   useEffect(() => {
-    if (open) {
-      invoke('cleanup_missing_media').catch(() => {});
-      invoke<MergeSuggestion[]>('load_tag_suggestions_cache')
-        .then((cached) => {
-          if (cached && cached.length > 0) {
-            setSuggestions(cached);
-            const initMasterMap: Record<string, number> = {};
-            cached.forEach((s) => {
-              initMasterMap[s.id] = s.target_tag.id;
-            });
-            setSelectedMasterTagIds(initMasterMap);
-            setAcceptedIds(new Set()); // デフォルトは未選択 (0 accepted)
-          }
-        })
-        .catch((e) => console.error('Failed to load tag suggestions cache:', e));
-    }
+    if (open) invoke('cleanup_missing_media').catch(() => {});
   }, [open]);
 
-  // バックエンドからの自動タグ解析完了イベントを受信
-  useEffect(() => {
-    const unlistenPromise = listen<MergeSuggestion[]>('tag_suggestions_updated', (event) => {
-      if (event.payload) {
-        setSuggestions(event.payload);
-        const initMasterMap: Record<string, number> = {};
-        event.payload.forEach((s) => {
-          initMasterMap[s.id] = s.target_tag.id;
-        });
-        setSelectedMasterTagIds(initMasterMap);
-        setAcceptedIds(new Set()); // デフォルトは未選択 (0 accepted)
-      }
+  /** 保存済みの判定と実行状態を読み直す */
+  const reloadSuggestions = React.useCallback(async () => {
+    const [cached, status] = await Promise.all([
+      invoke<MergeSuggestion[]>('load_tag_suggestions_cache', { method }),
+      invoke<typeof runStatus>('get_suggestion_run_status', { method }),
+    ]);
+    setSuggestions(cached ?? []);
+    const initMasterMap: Record<string, number> = {};
+    (cached ?? []).forEach((s) => {
+      initMasterMap[s.id] = s.target_tag.id;
     });
+    setSelectedMasterTagIds(initMasterMap);
+    setRunStatus(status ?? null);
+    // 既定はどれも未承認。ユーザーは上から見て良いものだけ採る
+    setAcceptedIds(new Set());
+    setRejectedIds(new Set());
+  }, [method]);
 
+  // 保存済みの判定から提案を復元する。**方式を切り替えたら読み直す**
+  // （方式ごとに独立した枠を持つので、①を回しても②③の結果は残っている）
+  useEffect(() => {
+    if (!open) return;
+    reloadSuggestions().catch((e) =>
+      console.error('Failed to load tag suggestions cache:', e)
+    );
+  }, [open, reloadSuggestions]);
+
+  // ② の進捗。段1/段2 とチャンク数が飛んでくる
+  useEffect(() => {
+    const p = listen<{ phase: string; done: number; total: number; failed: number }>(
+      'tag_hypernym_progress',
+      (e) => {
+        const { phase, done, total, failed } = e.payload;
+        setScanProgress(
+          `${phase} ${done}/${total}${failed > 0 ? `（失敗${failed}）` : ''}`
+        );
+      }
+    );
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      p.then((un) => un());
     };
   }, []);
+
+  // `tag_suggestions_updated` の購読は削除した。
+  // スキャン後に提案を自動生成する処理をやめたため、このイベントを送る側が存在しない
+  // （提案の生成は常にユーザーが起動する）。
 
   // 提案ごとの選択された Master Tag ID (-1 は手入力カスタム)
   const [selectedMasterTagIds, setSelectedMasterTagIds] = useState<Record<string, number>>({});
@@ -262,29 +333,33 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     }
   };
 
-  // 自動提案のスキャン
-  const handleScanSuggestions = async () => {
-    if (!onSuggestMerges || isScanning) return;
+  // 選んだ方式で提案を作り直す。
+  // **方式ごとに独立**なので、これを回しても他の方式の結果は消えない。
+  // ② は未判定のタグだけを処理するので、中断しても次回は続きから走る。
+  const handleScanSuggestions = async (fullRescan = false) => {
+    if (isScanning || scanningSuggestions) return;
+    const spec = METHODS.find((m) => m.id === method)!;
+    if (fullRescan) {
+      const ok = await ask(
+        '保存済みの判定をすべて捨てて、最初から作り直します。\n' +
+          '包括語の抽出もやり直すので数分かかります。\n（却下した提案の記録は残ります）',
+        { title: '最初から作り直す', kind: 'warning' }
+      );
+      if (!ok) return;
+    }
     setScanningSuggestions(true);
+    setScanProgress('');
+    setActiveTab('suggestions');
     try {
-      await invoke('clear_tag_suggestions_cache');
       setSuggestions([]);
-      const results = await onSuggestMerges();
-      setSuggestions(results);
-
-      const initMasterMap: Record<string, number> = {};
-      results.forEach((s) => {
-        initMasterMap[s.id] = s.target_tag.id;
-      });
-
-      setSelectedMasterTagIds(initMasterMap);
       setCustomMasterTags({});
       setExcludedTagIds({});
-      setAcceptedIds(new Set()); // デフォルトは未選択
-      setRejectedIds(new Set());
-      setActiveTab('suggestions');
+      await invoke<MergeSuggestion[]>(spec.command, fullRescan ? { fullRescan: true } : {});
+      // 実行結果は保存されているので、読み出し経路に一本化する
+      await reloadSuggestions();
     } catch (e) {
       console.error('Failed to scan suggestions:', e);
+      setScanProgress(String(e));
     } finally {
       setScanningSuggestions(false);
     }
@@ -372,11 +447,17 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
       rejectTimersRef.current[suggestionId] = setTimeout(() => {
         setSuggestions((prev) => {
-          const updated = prev.filter((s) => s.id !== suggestionId);
-          invoke('save_tag_suggestions_cache', { suggestions: updated }).catch((e) =>
-            console.error('Failed to update cache on reject:', e)
-          );
-          return updated;
+          // 却下はペア単位で記録する。**提案の一覧を保存し直すのではない。**
+          // 一覧を保存すると、再実行のたびに却下が消えて同じ提案が戻る。
+          const rejected = prev.find((s) => s.id === suggestionId);
+          if (rejected) {
+            invoke('dismiss_tag_suggestion', {
+              method,
+              targetId: rejected.target_tag.id,
+              memberIds: rejected.source_tags.map((t) => t.id),
+            }).catch((e) => console.error('Failed to dismiss suggestion:', e));
+          }
+          return prev.filter((s) => s.id !== suggestionId);
         });
         setRejectedIds((prev) => {
           const next = new Set(prev);
@@ -389,67 +470,108 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   };
 
   // 承認されたグループ提案を一括適用
-  const handleApplySelectedSuggestions = async () => {
-    const toApply = suggestions.filter((s) => acceptedIds.has(s.id) && !rejectedIds.has(s.id));
-    if (toApply.length === 0) return;
-
-    setApplyingMerges(true);
-    let successCount = 0;
-
-    for (let i = 0; i < toApply.length; i++) {
-      const sug = toApply[i];
-      setApplyProgressText(`Applying merge (${i + 1}/${toApply.length})...`);
-
-      const sources = Array.isArray(sug.source_tags)
-        ? sug.source_tags
-        : (sug as any).source_tag
-        ? [(sug as any).source_tag]
-        : [];
-      const allMembers = [sug.target_tag, ...sources];
-
+  /** 承認された提案を `{ target_id, source_ids }` の並びに変換する */
+  const buildMergePlan = async (
+    toApply: MergeSuggestion[]
+  ): Promise<{ target_id: number; source_ids: number[] }[]> => {
+    const items: { target_id: number; source_ids: number[] }[] = [];
+    for (const sug of toApply) {
       let masterId = selectedMasterTagIds[sug.id] ?? sug.target_tag.id;
 
-      // 手入力カスタムマスタータグが選択されている場合 (-1)
+      // 手入力のマスタータグ (-1) は先に作る
       if (masterId === -1) {
         const customInfo = customMasterTags[sug.id];
         if (customInfo && customInfo.name.trim()) {
-          try {
-            const createdTag = await invoke<TagItem>('get_or_create_tag', {
-              name: customInfo.name.trim(),
-              nameJa: customInfo.nameJa.trim() || undefined,
-            });
-            masterId = createdTag.id;
-          } catch (e) {
-            console.error('Failed to create custom master tag:', e);
-            continue;
-          }
+          const createdTag = await invoke<TagItem>('get_or_create_tag', {
+            name: customInfo.name.trim(),
+            nameJa: customInfo.nameJa.trim() || undefined,
+          });
+          masterId = createdTag.id;
         } else {
           masterId = sug.target_tag.id;
         }
       }
 
-      const excludedSet = excludedTagIds[sug.id] || new Set();
-      const sourceIds = allMembers
+      const excludedSet = excludedTagIds[sug.id] || new Set<number>();
+      const sourceIds = [sug.target_tag, ...sug.source_tags]
         .filter((t) => t.id !== masterId && !excludedSet.has(t.id))
         .map((t) => t.id);
-
-      if (sourceIds.length > 0) {
-        try {
-          await onMergeTags(masterId, sourceIds);
-          successCount++;
-        } catch (err) {
-          console.error('Merge failed for suggestion:', sug.id, err);
-        }
-      }
+      if (sourceIds.length > 0) items.push({ target_id: masterId, source_ids: sourceIds });
     }
+    return items;
+  };
 
-    setSuggestions((prev) => prev.filter((s) => !acceptedIds.has(s.id)));
-    setAcceptedIds(new Set());
-    setApplyingMerges(false);
-    setApplyProgressText('');
+  /**
+   * 承認された提案をまとめて適用する。
+   *
+   * **提案ごとに `merge_tags` を呼んではいけない。** 呼ぶ順で結果が変わるうえ、
+   * `merge_tags` は削除済みIDを渡されてもエラーを返さないので、
+   * ユーザーには成功と出たまま中身だけが変わる。
+   * `apply_tag_merges` は写像を解決してから最終的な統合先ごとに1回だけ実行する。
+   */
+  const handleApplySelectedSuggestions = async () => {
+    const toApply = suggestions.filter((s) => acceptedIds.has(s.id) && !rejectedIds.has(s.id));
+    if (toApply.length === 0) return;
 
-    setSuccessToast(`✓ Successfully applied ${successCount} group merges!`);
-    setTimeout(() => setSuccessToast(null), 3000);
+    setApplyingMerges(true);
+    try {
+      setApplyProgressText('統合の計画を作成中...');
+      const items = await buildMergePlan(toApply);
+      if (items.length === 0) return;
+
+      // **取り消せない操作なので、消える提案の数を先に見せる。**
+      // 適用後に知らせても手遅れになる
+      const invalidated = await invoke<[string, number][]>('count_invalidated_suggestions', {
+        items,
+        suggestions,
+      });
+      const lost = invalidated.reduce((n, [, c]) => n + c, 0);
+      if (lost > 0) {
+        const detail = invalidated.map(([rule, c]) => `${ruleLabel(rule)}: ${c}件`).join('\n');
+        const ok = await ask(
+          `${items.length}件の統合を適用します。\n\n` +
+            `この適用により ${lost}件の提案が表示できなくなります。\n${detail}`,
+          { title: '統合を適用', kind: 'warning' }
+        );
+        if (!ok) return;
+      }
+
+      setApplyProgressText(`${items.length}件の統合を適用中...`);
+      const result = await invoke<{
+        merged_tags: number;
+        targets: number;
+        conflicts: { tag_id: number; target_ids: number[] }[];
+      }>('apply_tag_merges', { items });
+
+      // **競合があると何も適用されない。** どのタグが競合したかを名前で見せる
+      if (result.conflicts.length > 0) {
+        const nameOf = (id: number) => tags.find((t) => t.id === id)?.name ?? `#${id}`;
+        const lines = result.conflicts.map(
+          (c) => `・${nameOf(c.tag_id)} → ${c.target_ids.map(nameOf).join(' / ')}`
+        );
+        await showMessage(
+          `統合先が競合しているため、何も適用していません。\n\n` +
+            `${lines.join('\n')}\n\nどちらか一方だけを選び直してください。`,
+          { title: '統合先が競合しています', kind: 'error' }
+        );
+        return;
+      }
+
+      // タグ一覧を読み直し、保存済みの判定から提案を組み直す。
+      // **必ず読み直すこと** — 統合処理は使われなくなったタグも消すので、
+      // 手元のタグ一覧は適用後に必ず古くなる
+      await onDataChanged?.();
+      await reloadSuggestions();
+
+      setSuccessToast(`✓ ${result.merged_tags}件のタグを${result.targets}件に統合しました`);
+      setTimeout(() => setSuccessToast(null), 3000);
+    } catch (e) {
+      console.error('Failed to apply merges:', e);
+      await showMessage(`統合に失敗しました: ${e}`, { title: '統合', kind: 'error' });
+    } finally {
+      setApplyingMerges(false);
+      setApplyProgressText('');
+    }
   };
 
   const sortedTags = [...filteredTags].sort((a, b) => {
@@ -515,19 +637,86 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
             </button>
           </div>
 
-          <button
-            onClick={handleScanSuggestions}
-            disabled={scanningSuggestions || applyingMerges || isScanning}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50"
-          >
-            {scanningSuggestions ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5" />
-            )}
-            <span>{t('tag_modal.btn_scan', 'Scan Similar Tags')}</span>
-          </button>
+          {/* 方式の切り替え。**結果は方式ごとに別に保存されている**ので、
+              切り替えても回し直しは要らない（保存済みの判定から組み直す） */}
+          <div className="flex items-center gap-2">
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
+              {METHODS.map((m) => (
+                <button
+                  key={m.id}
+                  onClick={() => setMethod(m.id)}
+                  disabled={scanningSuggestions}
+                  title={m.hint}
+                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer disabled:opacity-50 ${
+                    method === m.id
+                      ? 'bg-slate-700 text-white shadow'
+                      : 'text-slate-400 hover:text-slate-200'
+                  }`}
+                >
+                  {m.label}
+                </button>
+              ))}
+            </div>
+
+            <button
+              onClick={() => handleScanSuggestions(false)}
+              disabled={scanningSuggestions || applyingMerges || isScanning}
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50"
+            >
+              {scanningSuggestions ? (
+                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+              ) : (
+                <Sparkles className="w-3.5 h-3.5" />
+              )}
+              <span>{t('tag_modal.btn_scan', 'Scan Similar Tags')}</span>
+            </button>
+          </div>
         </div>
+
+        {/* 実行中の表示。② は数分かかるので、進捗が無いと止まって見える */}
+        {(scanningSuggestions || scanProgress) && (
+          <div className="mx-4 mt-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl px-3 py-2 text-indigo-200 text-xs flex items-center gap-2 shrink-0">
+            {scanningSuggestions && <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />}
+            <span className="truncate">
+              {METHODS.find((m) => m.id === method)?.hint}
+              {scanProgress && ` — ${scanProgress}`}
+            </span>
+          </div>
+        )}
+
+        {/* 未判定の提示。
+            **「見たが該当なし」と「まだ見ていない」は結果から区別できない。**
+            中断で残ったぶん・実行後に増えたタグ・失敗したチャンクがここに出る。 */}
+        {!scanningSuggestions && runStatus && runStatus.unjudged_count > 0 && (
+          <div className="mx-4 mt-3 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2 text-amber-200 text-xs flex items-center justify-between gap-3 shrink-0">
+            <span>
+              未判定のタグが <b>{runStatus.unjudged_count}件</b> あります
+              {runStatus.finished_at === null && '（前回は途中で終了）'}
+              {method === 'hypernym' && ' — 実行すると続きから判定します'}
+            </span>
+            <button
+              onClick={() => handleScanSuggestions(false)}
+              disabled={applyingMerges || isScanning}
+              className="shrink-0 px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition cursor-pointer disabled:opacity-50"
+            >
+              続きを判定
+            </button>
+          </div>
+        )}
+
+        {/* 全件やり直し。段1のカテゴリごと引き直したいときの唯一の手段 */}
+        {!scanningSuggestions && method === 'hypernym' && runStatus && (
+          <div className="mx-4 mt-2 flex justify-end shrink-0">
+            <button
+              onClick={() => handleScanSuggestions(true)}
+              disabled={applyingMerges || isScanning}
+              title="保存済みの判定を捨て、包括語の抽出からやり直す"
+              className="text-[11px] text-slate-400 hover:text-slate-200 underline underline-offset-2 cursor-pointer disabled:opacity-50"
+            >
+              最初から作り直す
+            </button>
+          </div>
+        )}
 
         {/* Warning Banner when analysis is running in background */}
         {isScanning && (
@@ -822,13 +1011,33 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-3 mb-3">
-                          <div className="flex items-center gap-2 max-w-[65%] min-w-0">
-                            <span
-                              className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold truncate"
-                              title={sug.reason}
-                            >
-                              {sug.reason}
-                            </span>
+                          <div className="flex items-center gap-2 max-w-[65%] min-w-0 flex-wrap">
+                            {/* **どの規則で候補になったかを個別に出す。**
+                                これが無いと、提案が妥当かどうかを判断する材料が無い。
+                                複数該当は確度が高いので、件数も併記する */}
+                            {sug.rules && sug.rules.length > 0 ? (
+                              sug.rules.map((r) => (
+                                <span
+                                  key={r}
+                                  title={r}
+                                  className="px-2 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold shrink-0"
+                                >
+                                  {ruleLabel(r)}
+                                </span>
+                              ))
+                            ) : (
+                              <span
+                                className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold truncate"
+                                title={sug.reason}
+                              >
+                                {sug.reason}
+                              </span>
+                            )}
+                            {sug.rules && sug.rules.length > 1 && (
+                              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full text-[11px] font-bold shrink-0">
+                                {sug.rules.length}規則に該当
+                              </span>
+                            )}
                             <span className="text-xs text-slate-400 shrink-0">
                               ({allMembers.length} tags)
                             </span>

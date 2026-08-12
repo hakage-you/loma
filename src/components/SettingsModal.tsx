@@ -9,6 +9,7 @@ import {
   RECOMMENDED_EMBEDDING_MODELS,
   RecommendedModel,
 } from '../constants/recommendedModels';
+import { resolveInstalledModel, isModelInstalled } from '../utils/modelMatch';
 import {
   OllamaPullProgressPayload,
   TagGranularity,
@@ -33,22 +34,6 @@ interface SettingsModalProps {
   onUnloadModel?: () => Promise<void>;
 }
 
-// Flexible installed model matching helper (checks model family/base)
-const isModelInstalled = (recommendedName: string, availableList: string[]): boolean => {
-  if (!availableList || availableList.length === 0) return false;
-  const target = recommendedName.toLowerCase().trim();
-  const targetBase = target.split(':')[0];
-
-  return availableList.some((installed) => {
-    const inst = installed.toLowerCase().trim();
-    const instBase = inst.split(':')[0];
-
-    if (inst === target) return true;
-    if (inst.startsWith(target) || target.startsWith(inst)) return true;
-    if (instBase === targetBase) return true;
-    return false;
-  });
-};
 
 // Precise selected model matching helper (strictly checks size tag e.g. 30b vs 8b vs 4b)
 const isModelSelected = (recommendedName: string, selectedModel: string): boolean => {
@@ -395,7 +380,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleSelectPreset = async (item: RecommendedModel, targetType: 'vlm' | 'text' | 'embedding') => {
-    const installedModelName = availableModels.find((m) => isModelInstalled(item.name, [m]));
+    // **系統名だけで探さない。** サイズ違いを掴むと推奨した意味が消える
+    // （`gemma4:12b` を押して `gemma4:26b` が選ばれていた）
+    const installedModelName = resolveInstalledModel(item.name, availableModels);
     if (installedModelName) {
       if (targetType === 'vlm') {
         setSelectedVlmModel(installedModelName);
@@ -549,11 +536,21 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const bestVlmName = getBestVlmModelName();
 
   // Determine best recommended Text model based on system VRAM
+  //
+  // 2026-08-05 の実測（tools/text-check）に基づく。詳細は RECOMMENDED_TEXT_MODELS 側のコメント。
+  //
+  // **VRAM が多いほど上位モデル、という並びにしない。** gemma4:12b (7.0GB) が
+  // qwen3:14b (8.6GB) を全指標で上回った（包括語の抽出 5/5 対 4/5、段2の発明タグ
+  // 0件 対 平均31件、所要も短い）。上に足すべきモデルが無いので上限を設けていない。
+  //
+  // **6GB 未満に推奨できるモデルは無いので null を返す。** 7B クラスは包括語を
+  // 1〜2/5 しか選べず、見落とした親はその下の階層が丸ごと出なくなる。
+  // 動かないモデルを勧めるより、推奨なしの方が誤解が少ない。
   const getBestTextModelName = () => {
     if (!vramGb || vramGb <= 0) return null;
-    if (vramGb >= 12.0) return 'qwen3:14b';
-    if (vramGb >= 6.0) return 'qwen2.5:7b';
-    return 'qwen2.5:3b';
+    if (vramGb >= 8.0) return 'gemma4:12b';
+    if (vramGb >= 7.0) return 'qwen3.5:9b';
+    return null;
   };
   const bestTextName = getBestTextModelName();
 

@@ -52,11 +52,34 @@ export const RECOMMENDED_VLM_MODELS: RecommendedModel[] = [
  *
  * **ここには実測したモデルだけを載せる。** 埋め込みモデルは名前や次元数からは
  * 概念の分離能力が判断できず、実際に自分のライブラリで類似度分布を測るまで
- * 良し悪しが分からない（実測: 類似度の sd は bge-m3 が 0.132、
- * qwen3-embedding:8b が 0.198 で 1.5 倍の開きがあった）。
- * 計測手順は tools/embedding-check/README.md。
+ * 良し悪しが分からない。
+ *
+ * 実測（2026-08-01 / 同一ライブラリ 1,108件 / centering ON / `tools/embedding-check`）:
+ *
+ * | モデル | sd | ハブ相関 r |
+ * |---|---|---|
+ * | `qwen3-embedding:8b` | **0.2014** | +0.093 |
+ * | `embeddinggemma` | 0.1375 | **-0.077** |
+ * | `bge-m3` | 0.1318 | -0.118 |
+ * | `snowflake-arctic-embed2` | 0.1650 | -0.254 |
+ * | `nomic-embed-text-v2-moe` | 0.1236 | -0.222 |
+ *
+ * sd は大きいほど概念を分離できている。`snowflake-arctic-embed2` は sd こそ
+ * `bge-m3` より高いが、ハブ相関 |r| が 0.25 と大きく、類似度が意味ではなく
+ * タグ本数を測ってしまっている疑いが強い（README「小さい r を読みすぎないこと」の
+ * 閾値 |r|≲0.1 を大きく超える）。`nomic-embed-text-v2-moe`（多言語対応を謳う nomic 系）
+ * も同様に r が大きく、sd も最下位のため候補に加えない。
+ * `embeddinggemma` は `bge-m3` よりモデルサイズが小さい（実測 VRAM 0.68GB vs 1024次元）
+ * にもかかわらず sd・r ともに同等以上で、軽量な代替になる。
  */
 export const RECOMMENDED_EMBEDDING_MODELS: RecommendedModel[] = [
+  {
+    name: 'embeddinggemma',
+    badge: 'Lightweight',
+    badgeJa: '軽量',
+    size: '~0.7 GB',
+    description: '最も軽量 (768次元)。分離能力・ハブ化の少なさともにbge-m3と同等以上',
+  },
   {
     name: 'bge-m3',
     badge: 'Standard',
@@ -73,26 +96,55 @@ export const RECOMMENDED_EMBEDDING_MODELS: RecommendedModel[] = [
   },
 ];
 
+/**
+ * タグ整理（同義語・包括関係の検出）用テキストモデル。
+ *
+ * **実際の用途はこの1機能のみ。** `commands.rs` の `run_suggest_tag_merges_logic` は
+ * 「タグ一覧 → 同義語ペアをJSONで返す」呼び出しにしか `ollama_text_model` を使っておらず、
+ * 翻訳用途の呼び出しは存在しない（日本語訳自体は VLM 側のプロンプトで生成されている）。
+ *
+ * ## 計測の範囲（**本番の現行経路そのものではない**）
+ *
+ * 2026-08-05 に `tools/text-check` で実測。ただし測ったのは**作り直し後の2段構成**の
+ * タスクで、現行の本番経路（ルール＋タグ301件以上ではLLMが動かない）ではない。
+ * 現行経路は実ライブラリ5,827件でLLMが一度も実行されないため比較の意味が薄く、
+ * 2段構成の実装が入るまでは本リストが先行する形になる。
+ *
+ * | モデル | VRAM | 段1: 親の再現（3回） | 段2: 発明タグ（3回） | 段2の所要 |
+ * |---|---|---|---|---|
+ * | `qwen2.5:7b` | 4.4GB | **1/5, 2/5, 2/5** | — | 0.3分 |
+ * | `qwen3.5:9b` | 6.1GB | **2/5, 1/5, 1/5** | 1, 0, 0 | 7.6分 |
+ * | **`gemma4:12b`** | 7.0GB | **5/5, 5/5, 5/5** | **0, 0, 0** | **6.6分** |
+ * | `qwen3:14b` | 8.6GB | 4/5, 4/5, 4/5 | **13, 30, 50** | 10.0分 |
+ *
+ * **`gemma4:12b` が全指標で最良。しかも `qwen3:14b` より小さく速い。**
+ * 「大きいほど高精度」は成り立たなかった。`qwen3:14b` は毎回 `footwear` だけを
+ * 落とすという再現性のある癖を持ち、段2では発明タグが平均31件・所要も 4.6〜16.1分と振れる。
+ *
+ * **7B / 9B は段1（包括語の抽出）に使えない。** 親を1〜2/5 しか選べず、
+ * 見落とした親はその下の階層が丸ごと永久に出ない。したがって
+ * **`qwen3.5:9b` を軽量枠に置くのは「段2だけなら実用になる」という限定的な意味**で、
+ * 単独で機能を成立させられるわけではない。**6GB を下回る環境に推奨できるモデルは無い。**
+ *
+ * > **単発の測定で順位を付けないこと。** 発明タグ数は同一条件で 124 → 0/0/0、
+ * > 20 → 59/41/30 と大きく振れた。一方で親の再現は3回とも完全に一致する。
+ * > **振れる指標と振れない指標があり、必要な反復数は指標ごとに違う。**
+ *
+ * 計測手順と判定基準は tools/text-check/README.md。
+ */
 export const RECOMMENDED_TEXT_MODELS: RecommendedModel[] = [
   {
-    name: 'qwen2.5:3b',
+    name: 'qwen3.5:9b',
     badge: 'Lightweight',
     badgeJa: '軽量',
-    size: '~1.9 GB',
-    description: '高速で軽量なテキスト処理・タグ統合用モデル',
+    size: '~6.1 GB',
+    description: '割り当て精度は高いが、包括語の抽出は苦手（実測 1〜2/5）。VRAMが足りない場合の妥協案',
   },
   {
-    name: 'qwen2.5:7b',
+    name: 'gemma4:12b',
     badge: 'Standard',
     badgeJa: '標準',
-    size: '~4.7 GB',
-    description: '自然な日本語理解と高いタグ統合能力を持つ標準モデル',
-  },
-  {
-    name: 'qwen3:14b',
-    badge: 'High Performance',
-    badgeJa: '高精度',
-    size: '~9.0 GB',
-    description: '高度なカテゴリ分けと高精度テキスト処理用モデル',
+    size: '~7.0 GB',
+    description: '推奨。包括語の抽出が3回とも完全一致、発明タグ0件。より大きいモデルより速く正確',
   },
 ];

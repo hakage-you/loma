@@ -16,7 +16,11 @@
     "vlm-check": "node tools/prompt-check/run.mjs",
     "vlm-report": "node tools/prompt-check/report.mjs",
     "vlm-merge": "node tools/prompt-check/merge.mjs",
-    "embedding-check": "node tools/embedding-check/run.mjs"
+    "embedding-check": "node tools/embedding-check/run.mjs",
+    "check:model-match": "node tools/check-model-match.ts",
+    "text-check": "node tools/text-check/run.mjs",
+    "text-report": "node tools/text-check/report.mjs",
+    "text-baseline": "node tools/text-check/baseline.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { MediaItem, TagItem, ScanFolderItem, ProgressPayload, MergeSuggestion, TagFilterNode } from '../types';
+import { MediaItem, TagItem, ScanFolderItem, ProgressPayload, TagFilterNode } from '../types';
 import { STATUS_TAG_INSUFFICIENT, isTagInsufficient } from '../constants/spectrum';
 
 export interface FilterState {
@@ -446,15 +446,6 @@ export function useMedia() {
     }
   };
 
-  const suggestTagMerges = async (): Promise<MergeSuggestion[]> => {
-    try {
-      return await invoke<MergeSuggestion[]>('suggest_tag_merges');
-    } catch (e) {
-      console.error('Failed to suggest tag merges:', e);
-      return [];
-    }
-  };
-
   const updateSetting = async (key: string, value: string) => {
     try {
       await invoke('update_setting', { key, value });
@@ -539,7 +530,6 @@ export function useMedia() {
     mergeTags,
     addTagToMedia,
     removeTagFromMedia,
-    suggestTagMerges,
     unloadModel,
     getLogs,
     clearLogs,

@@ -5,7 +5,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
-use tauri::{AppHandle, Emitter, Manager, State};
+use tauri::{AppHandle, Emitter, State};
 
 pub struct ScanState {
     pub cancel_flag: Arc<AtomicBool>,
@@ -816,6 +816,121 @@ pub async fn merge_tags(
     Ok(())
 }
 
+/// 適用の結果。UI が「N件の提案が無効になりました」を出すのに使う
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ApplyMergesResult {
+    /// 実際に消えたタグの数
+    pub merged_tags: usize,
+    /// 統合先の数（`merge_tags` を呼んだ回数）
+    pub targets: usize,
+    /// 競合。**空でなければ何も適用していない**
+    pub conflicts: Vec<MergeConflict>,
+}
+
+/// 承認された提案をまとめて適用する。
+///
+/// **提案ごとではなく、解決済みの写像ごとに `merge_tags` を呼ぶ。**
+/// これで「どの順に適用したか」という概念自体が消える。
+///
+/// 競合（同じタグに鎖でつながらない2つの行き先）があれば**何も適用せず**返す。
+/// ユーザーに選ばせてから呼び直す。
+#[tauri::command]
+pub async fn apply_tag_merges(
+    items: Vec<MergePlanItem>,
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<ApplyMergesResult, String> {
+    let _guard = try_acquire_task_lock(&scan_state)?;
+
+    let plan = match resolve_merge_plan(&items) {
+        Ok(p) => p,
+        Err(conflicts) => {
+            return Ok(ApplyMergesResult { merged_tags: 0, targets: 0, conflicts })
+        }
+    };
+
+    // 最終的な行き先ごとにまとめる
+    let mut by_target: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    for (&src, &dst) in &plan.redirects {
+        by_target.entry(dst).or_default().push(src);
+    }
+
+    let mut tx = db_state.pool.begin().await.map_err(|e| e.to_string())?;
+    let mut merged = 0usize;
+    for (target_id, source_ids) in &by_target {
+        for src_id in source_ids {
+            sqlx::query(
+                "INSERT OR IGNORE INTO media_tags (media_id, tag_id) \
+                 SELECT media_id, ?1 FROM media_tags WHERE tag_id = ?2",
+            )
+            .bind(target_id)
+            .bind(src_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+
+            let r = sqlx::query("DELETE FROM tags WHERE id = ?1")
+                .bind(src_id)
+                .execute(&mut *tx)
+                .await
+                .map_err(|e| e.to_string())?;
+            merged += r.rows_affected() as usize;
+        }
+    }
+
+    // 浮いた未使用タグの掃除。**統合と無関係なタグも消える**ので、
+    // 提案の再構成では必ずタグ一覧を読み直すこと
+    sqlx::query(
+        "DELETE FROM tags WHERE is_category = 0 AND id NOT IN (SELECT DISTINCT tag_id FROM media_tags)",
+    )
+    .execute(&mut *tx)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    tx.commit().await.map_err(|e| e.to_string())?;
+
+    crate::logger::log_info(&format!(
+        "Applied tag merges: {} tags into {} targets",
+        merged,
+        by_target.len()
+    ));
+    Ok(ApplyMergesResult { merged_tags: merged, targets: by_target.len(), conflicts: Vec::new() })
+}
+
+/// 適用したときに**無効になる提案**を、適用前に数える。
+///
+/// **取り消せない操作の前に見せる**ためのもの。適用後に知らせても手遅れになる。
+/// 前もって分かれば「先にこちらを採用する」といった判断ができる。
+///
+/// 数えるのは**保持している全方式**。37分かけた包括関係の結果が
+/// 知らないうちに削られるのを防ぐ。
+#[tauri::command]
+pub fn count_invalidated_suggestions(
+    items: Vec<MergePlanItem>,
+    suggestions: Vec<MergeSuggestion>,
+) -> Vec<(String, usize)> {
+    let Ok(plan) = resolve_merge_plan(&items) else {
+        return Vec::new();
+    };
+    let doomed: std::collections::HashSet<i64> = plan.redirects.keys().copied().collect();
+    let mut by_rule: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    for s in &suggestions {
+        let involved = std::iter::once(s.target_tag.id)
+            .chain(s.source_tags.iter().map(|t| t.id))
+            .filter(|id| doomed.contains(id))
+            .count();
+        // 残るタグが1件以下になる提案は表示できなくなる
+        let remaining = s.source_tags.len() + 1 - involved;
+        if involved > 0 && remaining < 2 {
+            let key = s.rules.first().cloned().unwrap_or_else(|| "other".to_string());
+            *by_rule.entry(key).or_insert(0) += 1;
+        }
+    }
+    let mut out: Vec<(String, usize)> = by_rule.into_iter().collect();
+    out.sort_by(|a, b| b.1.cmp(&a.1));
+    out
+}
+
 #[tauri::command]
 pub async fn get_parent_folders(db_state: State<'_, DbState>) -> Result<Vec<String>, String> {
     let rows = sqlx::query_scalar::<_, String>(
@@ -1255,6 +1370,13 @@ pub struct MergeSuggestion {
     pub confidence: String,
     pub sample_thumbnails: Vec<String>,
     pub total_images_count: usize,
+    /// 当たった規則の識別子（`ja_exact` / `singular` / `keyphrase` / `ja_prefix` / `spelling`）。
+    ///
+    /// **UI はこれで分類・絞り込みをする。** 表示文字列に依存した判定をしないため、
+    /// ラベル（`reason`）とは別に持つ。
+    /// **複数入っていれば確度が高い** —— 並び順の第一キーに使う。
+    #[serde(default)]
+    pub rules: Vec<String>,
 }
 
 #[allow(clippy::needless_range_loop)]
@@ -1286,56 +1408,792 @@ fn levenshtein_distance(a: &str, b: &str) -> usize {
 struct RawPair {
     t1: TagItem,
     t2: TagItem,
-    reason: String,
+    /// 当たった規則すべて。**1つとは限らない**（複数一致は確度が高い）
+    hits: Vec<RuleHit>,
 }
 
-pub fn get_cache_path(app_handle: &AppHandle) -> std::path::PathBuf {
-    let app_dir = app_handle
-        .path()
-        .app_data_dir()
-        .unwrap_or_else(|_| std::path::PathBuf::from("./data"));
-    if !app_dir.exists() {
-        let _ = std::fs::create_dir_all(&app_dir);
+/// 提案の組み立てに使うタグの一覧。カテゴリは統合の対象外なので除く。
+async fn load_tag_map(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+) -> Result<std::collections::HashMap<i64, TagItem>, String> {
+    let rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, i64, String)>(
+        r#"
+        SELECT t.id, t.name, t.name_ja, t.is_category, COUNT(mt.media_id) AS count, t.tag_kind
+        FROM tags t LEFT JOIN media_tags mt ON t.id = mt.tag_id
+        WHERE t.is_category = 0
+        GROUP BY t.id, t.name, t.name_ja, t.is_category, t.tag_kind
+        "#,
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, name_ja, is_cat, count, kind)| {
+            (
+                id,
+                TagItem { id, name, name_ja, is_category: is_cat == 1, count, kind },
+            )
+        })
+        .collect())
+}
+
+fn parse_method(method: Option<&str>) -> crate::suggestion_store::Method {
+    use crate::suggestion_store::Method;
+    match method {
+        Some("hypernym") => Method::Hypernym,
+        Some("related") => Method::Related,
+        _ => Method::Rules,
     }
-    app_dir.join("tag_suggestions_cache.json")
 }
 
-pub fn save_tag_suggestions_cache_internal(
-    app_handle: &AppHandle,
-    suggestions: &[MergeSuggestion],
-) -> Result<(), String> {
-    let path = get_cache_path(app_handle);
-    let json_str = serde_json::to_string_pretty(suggestions).map_err(|e| e.to_string())?;
-    std::fs::write(path, json_str).map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn load_tag_suggestions_cache(app_handle: AppHandle) -> Result<Vec<MergeSuggestion>, String> {
-    let path = get_cache_path(&app_handle);
-    if !path.exists() {
+/// 保存済みの判定から提案を組み立てる。**新規スキャンもこれを通す。**
+///
+/// 経路を分けると、同じ判定を見ているのに件数も中身も変わる
+/// （実測: 新規スキャン 8,984件 / 読み出し 2,460件）。
+///
+/// 統合で消えたタグは外部キーで既に落ちており、残りのペアはそのまま使える
+/// （②は段1からの作り直しになるため、1回の統合で払う代償ではない）。
+pub async fn build_suggestions_from_store(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    m: crate::suggestion_store::Method,
+    tag_map: &std::collections::HashMap<i64, TagItem>,
+) -> Result<Vec<MergeSuggestion>, String> {
+    use crate::suggestion_store::Method;
+    let pairs = crate::suggestion_store::load_pairs(pool, m).await?;
+    if pairs.is_empty() {
         return Ok(Vec::new());
     }
-    let content = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-    let suggestions: Vec<MergeSuggestion> = serde_json::from_str(&content).unwrap_or_default();
-    Ok(suggestions)
+
+    // **集約の仕方は方式で違う。**
+    //   ①② target ごとに1ホップだけ集約する（推移閉包を作らないので暴走しない）
+    //   ③   連結成分（クラスタを作るのが目的。閾値の算出で最大サイズを抑えてある）
+    let grouped = crate::suggestion_store::group_by_target(&pairs);
+    let groups: Vec<Vec<i64>> = if m == Method::Related {
+        let mut adj: std::collections::HashMap<i64, std::collections::HashSet<i64>> =
+            std::collections::HashMap::new();
+        for p in &pairs {
+            adj.entry(p.target_id).or_default().insert(p.member_id);
+            adj.entry(p.member_id).or_default().insert(p.target_id);
+        }
+        connected_components(&adj)
+    } else {
+        grouped
+            .iter()
+            .map(|(t, members, _)| {
+                let mut ids = vec![*t];
+                ids.extend(members.iter().copied());
+                ids
+            })
+            .collect()
+    };
+
+    // 規則と類似度は **target 側からも member 側からも引けるようにする**
+    // （③は連結成分なので、グループの先頭が保存時の target とは限らない）
+    let mut rules_of: std::collections::HashMap<i64, Vec<String>> =
+        std::collections::HashMap::new();
+    let mut min_score: std::collections::HashMap<i64, f32> = std::collections::HashMap::new();
+    for p in &pairs {
+        for id in [p.target_id, p.member_id] {
+            if !p.rules.is_empty() {
+                rules_of.entry(id).or_default().extend(p.rules.iter().cloned());
+            }
+            if let Some(s) = p.score {
+                let e = min_score.entry(id).or_insert(s);
+                if s < *e {
+                    *e = s;
+                }
+            }
+        }
+    }
+    // target 側の規則を優先する（①はそこに全規則がまとまっている）
+    for (t, _, r) in &grouped {
+        if !r.is_empty() {
+            rules_of.insert(*t, r.clone());
+        }
+    }
+
+    // **集約の鍵になったタグをそのまま代表にする。**
+    //
+    // ①② はどちらも保存時に代表が決まっている（①は使用数が多い方、②は段1の包括語）。
+    // ここで選び直すと、別の鍵で集めた2つのグループが同じ見出しになる
+    // （実測: `green_eyed_character <- …` が2件並んだ）。
+    // グループのメンバーは鍵との関係で選ばれているので、見出しを変えると対応が壊れる。
+    //
+    // ③ だけは連結成分なので保存時の代表に意味がなく、使用数で選ぶ。
+    let policy = match m {
+        Method::Related => TargetPolicy::MostUsed,
+        _ => TargetPolicy::Pinned,
+    };
+
+    Ok(build_suggestions(pool, &groups, tag_map, policy, |members| {
+        let head = members.first().copied().unwrap_or(0);
+        let mut rules = rules_of.get(&head).cloned().unwrap_or_default();
+        rules.sort();
+        rules.dedup();
+        // **規則の識別子は必ず入れる。** 無効化の予告で「何の提案が消えるか」を
+        // 出すのに使っており、空だと `other` と表示されて情報にならない。
+        // ②③を規則の識別子なしで保存していた時期のデータもここで補える
+        if rules.is_empty() {
+            rules = match m {
+                Method::Hypernym => vec!["hypernym".to_string()],
+                Method::Related => vec!["embedding".to_string()],
+                Method::Rules => Vec::new(),
+            };
+        }
+        let reason = match m {
+            Method::Hypernym => "AI: 包括関係".to_string(),
+            // **抽出方法をそのまま見せる。** これが誤りを許容できる条件
+            Method::Related => min_score
+                .get(&head)
+                .map(|s| format!("類似度 {:.2} 以上", s))
+                .unwrap_or_else(|| "類似タグ".to_string()),
+            Method::Rules => {
+                if rules.len() > 1 {
+                    format!("{}件のルールに該当", rules.len())
+                } else {
+                    "類似タグ".to_string()
+                }
+            }
+        };
+        (reason, rules)
+    })
+    .await)
 }
 
 #[tauri::command]
-pub async fn save_tag_suggestions_cache(
-    app_handle: AppHandle,
-    suggestions: Vec<MergeSuggestion>,
+pub async fn load_tag_suggestions_cache(
+    db_state: State<'_, DbState>,
+    method: Option<String>,
+) -> Result<Vec<MergeSuggestion>, String> {
+    let pool = &db_state.pool;
+    // 方式が指定されなければ直前に走らせたものを出す（UI にまだ切り替えが無いため）
+    let m = match method.as_deref() {
+        Some(s) => parse_method(Some(s)),
+        None => match crate::suggestion_store::latest_method(pool).await {
+            Some(m) => m,
+            None => return Ok(Vec::new()),
+        },
+    };
+    let tag_map = load_tag_map(pool).await?;
+    build_suggestions_from_store(pool, m, &tag_map).await
+}
+
+/// 提案を却下する。**行は消さない。**
+///
+/// 消すと再実行で同じ提案が戻る。`dismissed` を立てるだけにすると、
+/// 後から新しいメンバーが加わったときにそのメンバーだけが提案に出る。
+#[tauri::command]
+pub async fn dismiss_tag_suggestion(
+    db_state: State<'_, DbState>,
+    method: Option<String>,
+    target_id: i64,
+    member_ids: Vec<i64>,
 ) -> Result<(), String> {
-    save_tag_suggestions_cache_internal(&app_handle, &suggestions)
-}
-
-#[tauri::command]
-pub async fn clear_tag_suggestions_cache(app_handle: AppHandle) -> Result<(), String> {
-    let path = get_cache_path(&app_handle);
-    if path.exists() {
-        let _ = std::fs::remove_file(path);
+    let m = match method.as_deref() {
+        Some(s) => parse_method(Some(s)),
+        None => match crate::suggestion_store::latest_method(&db_state.pool).await {
+            Some(m) => m,
+            None => return Ok(()),
+        },
+    };
+    // target と member はグループの並べ替えで入れ替わりうるので両方向を消す
+    crate::suggestion_store::dismiss(&db_state.pool, m, target_id, &member_ids).await?;
+    for id in &member_ids {
+        crate::suggestion_store::dismiss(&db_state.pool, m, *id, &[target_id]).await?;
     }
     Ok(())
+}
+
+/// 方式の実行状態。UI が「途中で止まっている」を出せるようにする。
+#[tauri::command]
+pub async fn get_suggestion_run_status(
+    db_state: State<'_, DbState>,
+    method: Option<String>,
+) -> Result<Option<crate::suggestion_store::RunStatus>, String> {
+    crate::suggestion_store::run_status(&db_state.pool, parse_method(method.as_deref())).await
+}
+
+/// ルール判定で無視する一般語。固有度の低い語で誤ってペアを作らないためのもの。
+const SYNONYM_STOP_WORDS: &[&str] = &[
+    "photo", "image", "media", "picture", "mobile", "device", "screen", "paper", "plant",
+    "board", "model", "system", "object", "item", "product", "style", "design", "background",
+    "foreground", "color", "light", "dark", "white", "black", "text", "view", "part", "detail",
+    "group", "card", "type", "file", "data", "info", "page", "line", "sign", "wood", "glass",
+    "metal", "app", "application", "icon", "logo", "vector", "art", "graphic", "illustration",
+    "set", "collection", "element", "symbol", "banner", "web", "website", "online", "digital",
+];
+
+/// ルール判定用にタグ1件を前処理した形。総当りで使い回すため事前に作る。
+pub struct TagMeta<'a> {
+    pub item: &'a TagItem,
+    pub norm_name: String,
+    pub words: Vec<&'a str>,
+    pub ja_clean: Option<String>,
+}
+
+pub fn build_tag_meta(t: &TagItem) -> TagMeta<'_> {
+    let norm_name = crate::batch::normalize_tag_en(&t.name);
+    let words: Vec<&str> = t
+        .name
+        .split(&['_', '-'][..])
+        .filter(|w| w.len() >= 3 && !SYNONYM_STOP_WORDS.contains(w))
+        .collect();
+    let ja_clean = t.name_ja.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    TagMeta { item: t, norm_name, words, ja_clean }
+}
+
+/// ルールベースの同義語判定。一致したら理由を返す。
+///
+/// **LLM に期待できるのは、ここが `None` を返すペアだけ。** 本番は LLM の前にこの判定を通し、
+/// 両者の結果を同じ `raw_pairs` にマージする。ルールが既に拾うペアを LLM が出しても価値は 0 なので、
+/// モデルを評価するときは必ずここを通して「ルールで到達できないペア」に絞ること
+/// （`tools/text-check` はこれを `#[ignore]` テスト `classify_rule_pairs` 経由で呼ぶ）。
+///
+/// 呼び出し側で種別（`kind`）が同じことを確認してから渡すこと。
+/// 1つの規則が当たったことを表す
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct RuleHit {
+    /// UI が分類・絞り込みに使う識別子（表示文字列に依存させない）
+    pub rule: String,
+    /// 表示用のラベル。一致した中身を含む
+    pub label: String,
+}
+
+/// どの規則に当たったかを**全部**集める。
+///
+/// 以前は先頭から順に評価して最初に当たった時点で `return` していたため、
+/// **複数の規則が同時に当たったことが分からなかった。**
+/// 複数一致は統合の確度が高い signal なので、優先度に使う。
+///
+/// 併せて**どの規則で出た提案かを UI で見せる**ことで誤爆が問題になりにくくなる。
+/// 「編集距離グループは誤爆が多いが、複数形は当たりやすい」と分かれば、
+/// ユーザーは規則ごとに構えを変えられる（§8.7 の「抽出方法を示す」の延長）。
+pub fn rule_matches(p1: &TagMeta, p2: &TagMeta) -> Vec<RuleHit> {
+    let mut hits = Vec::new();
+    let mut hit = |rule: &str, label: String| hits.push(RuleHit { rule: rule.to_string(), label });
+
+    // 1-A. 日本語訳完全一致 (例:どちらも「猫」)
+    if let (Some(ref ja1), Some(ref ja2)) = (&p1.ja_clean, &p2.ja_clean) {
+        if ja1 == ja2 {
+            hit("ja_exact", format!("同一日本語表記 ({})", ja1));
+        }
+    }
+
+    // 1-B. 単数形正規化一致 (例: cat と cats)
+    if p1.norm_name == p2.norm_name {
+        hit("singular", format!("単数形・表記統一 ({})", p1.norm_name));
+    }
+
+    // 1-C. 共通単語・フレーズ (ストップワードを除外し、固有度が高いフレーズのみ一致とみなす)
+    if !p1.words.is_empty() && !p2.words.is_empty() {
+        let common_words: Vec<String> = p1
+            .words
+            .iter()
+            .filter(|w| p2.words.contains(w))
+            .map(|s| s.to_string())
+            .collect();
+
+        // **「1語でも7文字以上なら一致」は撤廃した（2026-08-06）。**
+        //
+        // `japanese`(8文字) のような頻出語1つで統合を提案してしまい、
+        // `japanese_text` に `japanese_tea` / `japanese_craft_gin` /
+        // `complete_japanese_version` … が延々と並んだ。
+        // 実測でこの条件だけが提案 33,508件中 29,734件（89%）を生んでいた。
+        //
+        // 連結成分にしていた頃はこれらが1つの群に畳まれて見えず、
+        // さらにグループサイズ上限15が群ごと捨てていたので表面化しなかった。
+        // **ペア単位にして初めて質が可視化された。**
+        //
+        // ストップワードで落とし切れない一般語が「長い」だけで一致になるのは
+        // 規則として無理がある。共通語2語以上のみを一致とする。
+        if common_words.len() >= 2 {
+            hit("keyphrase", format!("共通キーフレーズ ({})", common_words.join(", ")));
+        }
+    }
+
+    // 1-D. 日本語の共通プレフィックス・キーワード (例: ESP32開発ボード ↔ ESP32-WROOMボード)
+    if let (Some(ref ja1), Some(ref ja2)) = (&p1.ja_clean, &p2.ja_clean) {
+        if ja1.chars().count() >= 4 && ja2.chars().count() >= 4 {
+            let common_prefix: String = ja1
+                .chars()
+                .zip(ja2.chars())
+                .take_while(|(c1, c2)| c1 == c2)
+                .map(|(c, _)| c)
+                .collect();
+            if common_prefix.chars().count() >= 4 {
+                hit("ja_prefix", format!("類似日本語表記 ({})", common_prefix));
+            }
+        }
+    }
+
+    // 1-E. 編集距離が非常に近い (例: smart_phone と smartphone)
+    if p1.item.name.len() >= 4 && p2.item.name.len() >= 4 {
+        let len_diff = (p1.item.name.len() as isize - p2.item.name.len() as isize).abs();
+        if len_diff <= 3 {
+            let dist = levenshtein_distance(&p1.item.name, &p2.item.name);
+            let max_len = p1.item.name.len().max(p2.item.name.len());
+            if dist == 1 || (dist <= 3 && max_len >= 8) {
+                hit("spelling", format!("類似スペル (編集距離 {})", dist));
+            }
+        }
+    }
+
+    hits
+}
+
+/// 後方互換。最初に当たった規則のラベルだけを返す。
+///
+/// 計測ツール（`classify_rule_pairs`）が「ルールで拾えるか否か」の判定に使う。
+/// **提案の生成には使わない** —— そちらは複数一致を優先度に使うため `rule_matches` を直接呼ぶ。
+pub fn rule_based_match_reason(p1: &TagMeta, p2: &TagMeta) -> Option<String> {
+    rule_matches(p1, p2).into_iter().next().map(|h| h.label)
+}
+
+/// ルール判定に掛ける「候補の組」を索引で集める。**全ペア走査の代わり。**
+///
+/// タグ数はメディア数にほぼ比例して増え続けるので（実測 Heaps β=0.90。
+/// 1万枚で43,300件・9.4億ペア）、全ペア走査は規模的に成立しない。
+///
+/// **判定そのものは変えない。** ここは「判定する必要がある組」を集めるだけで、
+/// 各規則が拾う組は必ずこの網に含まれる:
+///
+/// | 規則 | 拾う条件 | 索引 |
+/// |---|---|---|
+/// | 1-A 同一日本語表記 | `ja_clean` が一致 | `ja_clean` をキーにグループ化 |
+/// | 1-B 単数形正規化 | `norm_name` が一致 | `norm_name` をキーにグループ化 |
+/// | 1-C 共通キーフレーズ | 共通語が2語以上、または1語で7文字以上 | 単語の転置索引（**共通語が1つでもあれば同じ posting に入る**） |
+/// | 1-D 日本語プレフィックス | 先頭4文字が一致 | 先頭4文字をキーにグループ化 |
+/// | 1-E 編集距離 | 距離1、または距離3以下で8文字以上 | 長さ差3以内が必要なので**長さバケット**、さらに文字集合で絞る |
+///
+/// **各索引は「その規則が拾う条件」を包含する。** 緩い代用ではない:
+///
+/// - 1-C は「共通語2語以上」なので**語のペア**を鍵にする。1語ずつを鍵にすると
+///   `black` のような一般語で巨大な posting ができて組み合わせ爆発する
+/// - 1-E の距離1は**1文字削除の変種**を鍵にする。距離1の2語は必ず同じ変種を持つ
+///   （置換なら差異位置を、挿入・削除なら余分な文字を削れば一致する）
+/// - 1-E の距離3以下（8文字以上）は**2-gram**。長さ8以上で2-gram は7個以上あり、
+///   1回の編集が壊す 2-gram は高々2個なので、3回編集しても最低1個は共有される
+fn rule_candidate_pairs(metas: &[TagMeta]) -> Vec<(usize, usize)> {
+    use std::collections::{HashMap, HashSet};
+
+    let mut buckets: HashMap<String, Vec<usize>> = HashMap::new();
+    let push = |key: String, i: usize, b: &mut HashMap<String, Vec<usize>>| {
+        b.entry(key).or_default().push(i);
+    };
+
+    // **規則1-C の癖への対応。**
+    //
+    // `common_words` は重複を許すので、`side_by_side` のように1つのタグ内で
+    // 同じ語が2回出ると、その語を1つ持つだけの相手とも「2語以上一致」になる。
+    // 語のペアを鍵にする索引ではこれを再現できないため、
+    // **どこかで重複している語だけ**は単独でも鍵にする。
+    // 対象は数語しかないので posting が膨らむ心配は無い。
+    let mut dup_words: HashSet<&str> = HashSet::new();
+    for m in metas {
+        let mut seen_w: HashSet<&str> = HashSet::new();
+        for w in &m.words {
+            if !seen_w.insert(w) {
+                dup_words.insert(w);
+            }
+        }
+    }
+
+    for (i, m) in metas.iter().enumerate() {
+        // 1-A: 日本語表記の完全一致
+        if let Some(ja) = &m.ja_clean {
+            push(format!("ja:{}", ja), i, &mut buckets);
+            // 1-D: 先頭4文字
+            let chars: Vec<char> = ja.chars().collect();
+            if chars.len() >= 4 {
+                push(format!("jap:{}", chars[..4].iter().collect::<String>()), i, &mut buckets);
+            }
+        }
+
+        // 1-B: 単数形正規化
+        push(format!("nm:{}", m.norm_name), i, &mut buckets);
+
+        // 1-C(a): 共通語が2語以上 → 語のペアを鍵にする（2語共有なら必ず同じペアを持つ）
+        let mut ws: Vec<&str> = m.words.clone();
+        ws.sort_unstable();
+        ws.dedup();
+        for a in 0..ws.len() {
+            for b in (a + 1)..ws.len() {
+                push(format!("ww:{}|{}", ws[a], ws[b]), i, &mut buckets);
+            }
+        }
+        // 1-C(b): どこかで重複している語は単独でも鍵にする（上記の癖への対応）。
+        //         「1語7文字以上」の条件は規則から撤廃したので、長語の索引は不要
+        for w in &ws {
+            if dup_words.contains(w) {
+                push(format!("w:{}", w), i, &mut buckets);
+            }
+        }
+
+        // 1-E: 編集距離。**規則と同じくバイト長で判定する**
+        // （規則は `name.len()` を見ており、文字数ではない）
+        let name = &m.item.name;
+        if name.len() >= 4 {
+            let cs: Vec<char> = name.chars().collect();
+            // (a) 距離1 → 1文字削除の変種。
+            //     **元の文字列も鍵にする。** 挿入・削除の組（`cat` / `cats`）は
+            //     「短い方の原文」と「長い方の削除変種」で出会うため、
+            //     変種だけを入れると取りこぼす
+            push(format!("d:{}", name), i, &mut buckets);
+            for d in 0..cs.len() {
+                let v: String = cs
+                    .iter()
+                    .enumerate()
+                    .filter(|(k, _)| *k != d)
+                    .map(|(_, c)| *c)
+                    .collect();
+                push(format!("d:{}", v), i, &mut buckets);
+            }
+            // (b) 距離3以下かつ**ペアの長い方**が8以上 → 2文字削除の変種。
+            //
+            //     長さ差は3以内なので、長い方が8以上なら短い方は5以上。
+            //     **自分の長さで8以上に絞ってはいけない**（7文字と9文字の組を落とす）。
+            //
+            //     距離3の2語は、**それぞれから差異のある3箇所を削れば一致する**。
+            //     深さ2では足りない（3箇所とも置換なら1箇所残る。実測で460件取りこぼした）。
+            //
+            //     **2-gram は使わない。** `er` や `in` が数百タグに現れて選択性が無く、
+            //     実測でこの索引だけが候補の99.7%（1,482万ペア）を占めていた。
+            if name.len() >= 5 {
+                let del = |skip: &[usize]| -> String {
+                    cs.iter()
+                        .enumerate()
+                        .filter(|(k, _)| !skip.contains(k))
+                        .map(|(_, c)| *c)
+                        .collect()
+                };
+                for a in 0..cs.len() {
+                    for b in (a + 1)..cs.len() {
+                        push(format!("d:{}", del(&[a, b])), i, &mut buckets);
+                        for c in (b + 1)..cs.len() {
+                            push(format!("d:{}", del(&[a, b, c])), i, &mut buckets);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // どの索引が候補数を支配しているかを見る（`LOMA_INDEX_PROFILE=1`）
+    if std::env::var("LOMA_INDEX_PROFILE").is_ok() {
+        let mut by_kind: HashMap<&str, (usize, usize, usize)> = HashMap::new();
+        for (k, ids) in buckets.iter() {
+            if ids.len() < 2 {
+                continue;
+            }
+            let label = match k.split(':').next().unwrap_or("?") {
+                "ja" => "1-A 日本語一致",
+                "nm" => "1-B 正規化",
+                "ww" => "1-C 語ペア",
+                "w" => "1-C 長語/重複語",
+                "jap" => "1-D 日本語接頭",
+                "d" => "1-E 編集距離",
+                
+                _ => "?",
+            };
+            let e = by_kind.entry(label).or_insert((0, 0, 0));
+            e.0 += 1;
+            e.1 += ids.len() * (ids.len() - 1) / 2;
+            e.2 = e.2.max(ids.len());
+        }
+        let mut v: Vec<_> = by_kind.into_iter().collect();
+        v.sort_by_key(|x| std::cmp::Reverse(x.1 .1));
+        for (name, (nb, np, mx)) in v {
+            println!("INDEX_PROFILE {:<18} バケット{:<7} ペア{:<12} 最大{}", name, nb, np, mx);
+        }
+    }
+
+    let mut seen: HashSet<(usize, usize)> = HashSet::new();
+    let mut out = Vec::new();
+    for ids in buckets.values_mut() {
+        // 同じタグが同一バケットに複数回入ることがある
+        // （削除変種が重複する等）。放置すると自己ペアが出る
+        ids.sort_unstable();
+        ids.dedup();
+        if ids.len() < 2 {
+            continue;
+        }
+        for a in 0..ids.len() {
+            for b in (a + 1)..ids.len() {
+                let (x, y) = (ids[a], ids[b]);
+                if seen.insert((x, y)) {
+                    out.push((x, y));
+                }
+            }
+        }
+    }
+    out
+}
+
+/// 承認された提案1件分。UI から渡される。
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct MergePlanItem {
+    /// 統合先。**既存タグのID**
+    pub target_id: i64,
+    /// 統合されて消えるタグ
+    pub source_ids: Vec<i64>,
+}
+
+/// 同じタグに鎖でつながらない2つの行き先がある状態
+#[derive(Serialize, Deserialize, Debug, Clone, PartialEq)]
+pub struct MergeConflict {
+    pub tag_id: i64,
+    /// 競合する行き先（2つ以上）
+    pub target_ids: Vec<i64>,
+}
+
+/// 解決済みの写像。`source -> 最終的な行き先`
+#[derive(Debug, Clone, PartialEq)]
+pub struct ResolvedPlan {
+    /// タグID → 最終的な統合先
+    pub redirects: std::collections::BTreeMap<i64, i64>,
+}
+
+/// 承認集合を**写像として一括で解決する**。
+///
+/// **提案ごとに `merge_tags` を呼んではいけない。**
+/// `merge_tags` は既に削除されたIDを渡されてもエラーを返さない（INSERT 0行・DELETE 0行）ので、
+/// 順番次第で結果が変わり、しかも**ユーザーには成功と表示されたまま中身だけが変わる**。
+///
+/// 鎖は推移的に畳む: `soup_bowl -> bowl` と `bowl -> container` を両方承認したなら
+/// `soup_bowl -> container`。ユーザーが承認した統合しか経由しないので、
+/// LLM の誤りが勝手に伝播することはない。
+///
+/// 鎖でつながらない2つの行き先があるときだけ**競合**として返す。
+pub fn resolve_merge_plan(items: &[MergePlanItem]) -> Result<ResolvedPlan, Vec<MergeConflict>> {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // source -> 直接の行き先（複数ありうる）
+    let mut direct: BTreeMap<i64, BTreeSet<i64>> = BTreeMap::new();
+    for item in items {
+        for &s in &item.source_ids {
+            if s != item.target_id {
+                direct.entry(s).or_default().insert(item.target_id);
+            }
+        }
+    }
+
+    // 鎖を辿って最終的な行き先を求める。循環は自分自身で打ち切る
+    let final_of = |start: i64| -> i64 {
+        let mut cur = start;
+        let mut seen = BTreeSet::new();
+        while seen.insert(cur) {
+            // 行き先が1つに定まらない間は畳めないので、ここでは最初の1つで辿る
+            match direct.get(&cur).and_then(|s| s.iter().next().copied()) {
+                Some(next) if next != cur => cur = next,
+                _ => break,
+            }
+        }
+        cur
+    };
+
+    let mut conflicts = Vec::new();
+    let mut redirects = BTreeMap::new();
+    for (&src, targets) in &direct {
+        // **すべての行き先が同じ終点に落ちるなら鎖であって競合ではない。**
+        // `A -> B` と `A -> C` でも `B -> C` なら A は C に行くだけ
+        let ends: BTreeSet<i64> = targets.iter().map(|&t| final_of(t)).collect();
+        if ends.len() > 1 {
+            conflicts.push(MergeConflict {
+                tag_id: src,
+                target_ids: targets.iter().copied().collect(),
+            });
+            continue;
+        }
+        let end = ends.into_iter().next().unwrap_or(src);
+        if end != src {
+            redirects.insert(src, end);
+        }
+    }
+
+    if conflicts.is_empty() {
+        Ok(ResolvedPlan { redirects })
+    } else {
+        Err(conflicts)
+    }
+}
+
+/// 隣接リストから連結成分を取り出す。**ルール検出と関連タグの両方が使う。**
+///
+/// 2件未満の成分は提案にならないので落とす。
+/// **サイズの上限は設けない** — 以前は15件で切っていたが、集約でグループを作る方式では
+/// 最大57件が実際に出る（実測）。上限があると最も価値のある提案から消える。
+pub fn connected_components(
+    adj: &std::collections::HashMap<i64, std::collections::HashSet<i64>>,
+) -> Vec<Vec<i64>> {
+    let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
+    let mut groups = Vec::new();
+
+    for &node in adj.keys() {
+        if !visited.insert(node) {
+            continue;
+        }
+        let mut members = Vec::new();
+        let mut queue = std::collections::VecDeque::new();
+        queue.push_back(node);
+
+        while let Some(curr) = queue.pop_front() {
+            members.push(curr);
+            if let Some(neighbors) = adj.get(&curr) {
+                for &n in neighbors {
+                    if visited.insert(n) {
+                        queue.push_back(n);
+                    }
+                }
+            }
+        }
+        if members.len() > 1 {
+            groups.push(members);
+        }
+    }
+    groups
+}
+
+/// 代表タグ（target）の決め方。**方式によって正解が違う。**
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TargetPolicy {
+    /// 使用数が最も多いタグを代表にする。同義語（①③）向け。
+    ///
+    /// 以前は「名前が最も短いタグ」だったが、使用実態と食い違う代表が選ばれていた。
+    MostUsed,
+    /// **グループの先頭を代表として固定する。** ②（包括関係）専用。
+    ///
+    /// 包括語は子より使用数が少ない（実測: 既知の階層16組中13組で
+    /// 親の使用数 < 子の使用数。`furniture`:1 対 `table`:60）。
+    /// `MostUsed` を使うと**必ず親が member に落ちて兄弟が代表に繰り上がり**、
+    /// `nature ⊃ 42件` が `tree <- mountain, ocean, desert` として出る。
+    /// 段1が選んだ包括語という情報を捨ててはいけない。
+    Pinned,
+}
+
+/// タグIDのグループ列から `MergeSuggestion` を組み立てる。
+///
+/// `reason_of` はグループのメンバーIDを受け取り、表示用の理由文字列を返す。
+/// **方式ごとに主張の強さが違う**ので、文言は呼び出し側が決める
+/// （「類似度 0.85 以上」と「AI: 包括関係」では、外れたときの裏切りの大きさが違う）。
+pub async fn build_suggestions<F>(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    groups: &[Vec<i64>],
+    tag_map: &std::collections::HashMap<i64, TagItem>,
+    policy: TargetPolicy,
+    reason_of: F,
+) -> Vec<MergeSuggestion>
+where
+    F: Fn(&[i64]) -> (String, Vec<String>),
+{
+    let mut suggestions = Vec::new();
+
+    for (group_idx, members) in groups.iter().enumerate() {
+        // **代表が消えていたら Pinned は成立しない。**
+        // 統合で親タグ自体が消えることがあり、そのとき先頭は別のタグになっている。
+        // 残りを使用数で並べ直すしかない（提案としては成立する）
+        let pin_first = policy == TargetPolicy::Pinned
+            && members.first().is_some_and(|id| tag_map.contains_key(id));
+        let mut member_ids: Vec<i64> = members
+            .iter()
+            .copied()
+            .filter(|id| tag_map.contains_key(id))
+            .collect();
+        if member_ids.len() < 2 {
+            continue;
+        }
+
+        // 使用数降順。Pinned のときは先頭を外してから並べ替え、あとで戻す
+        let pinned = pin_first.then(|| member_ids.remove(0));
+        member_ids.sort_by(|a, b| {
+            let t_a = &tag_map[a];
+            let t_b = &tag_map[b];
+            t_b.count
+                .cmp(&t_a.count)
+                .then_with(|| t_a.name.len().cmp(&t_b.name.len()))
+        });
+        if let Some(p) = pinned {
+            member_ids.insert(0, p);
+        }
+        if member_ids.len() < 2 {
+            continue;
+        }
+
+        let target_tag = tag_map[&member_ids[0]].clone();
+        let source_tags: Vec<TagItem> = member_ids[1..].iter().map(|id| tag_map[id].clone()).collect();
+
+        // 代表的な画像サムネイルをグループ内から最大5件抽出
+        let ids_str = member_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+        let sample_thumbnails = sqlx::query_scalar::<_, String>(&format!(
+            "SELECT DISTINCT m.thumbnail_path FROM media m JOIN media_tags mt ON m.id = mt.media_id \
+             WHERE mt.tag_id IN ({}) AND m.thumbnail_path != '' LIMIT 5",
+            ids_str
+        ))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+
+        let total_images_count = sqlx::query_scalar::<_, i64>(&format!(
+            "SELECT COUNT(DISTINCT m.id) FROM media m JOIN media_tags mt ON m.id = mt.media_id \
+             WHERE mt.tag_id IN ({})",
+            ids_str
+        ))
+        .fetch_one(pool)
+        .await
+        .unwrap_or(0) as usize;
+
+        let (reason, rules) = reason_of(&member_ids);
+        suggestions.push(MergeSuggestion {
+            id: format!("group-sug-{}", group_idx),
+            target_tag,
+            source_tags,
+            reason,
+            confidence: "high".to_string(),
+            sample_thumbnails,
+            total_images_count,
+            rules,
+        });
+    }
+
+    // 並び順は「複数一致 → 件数 → 使用数」。
+    //
+    // **第一キーが規則の一致数。** 複数の規則が同時に当たった組は確度が高く、
+    // 統合して問題になりにくい。編集距離だけで当たった `grass`/`glass` のような
+    // 弱い提案は自然に下がる（規則を消さずに順序で解決する）。
+    //
+    // 件数は従来どおり降順。ルール検出はペア単位なので全部2件になるが、
+    // 関連タグや包括関係では大きいグループが上に来る。
+    //
+    // 使用数はその次。よく使われているタグの統合ほど効果が大きい。
+    suggestions.sort_by(|a, b| {
+        let usage = |s: &MergeSuggestion| -> i64 {
+            s.target_tag.count + s.source_tags.iter().map(|t| t.count).sum::<i64>()
+        };
+        b.rules
+            .len()
+            .cmp(&a.rules.len())
+            .then_with(|| b.source_tags.len().cmp(&a.source_tags.len()))
+            .then_with(|| usage(b).cmp(&usage(a)))
+    });
+    suggestions
+}
+
+/// 【退役】旧・同義語検出プロンプト。**本番からは呼ばれていない**（2026-08-05 に分離）。
+///
+/// 「タグ一覧 → 同義語ペア」を1回で問い合わせる方式は作り直しで廃止された。
+/// 後継は2つで、いずれも別のプロンプトを持つ:
+///   - 包括関係: 包括語の抽出 → カテゴリへの割り当て
+///   - 関連タグ: 埋め込みクラスタ（LLM は任意の精査のみ）
+///
+/// **残してあるのは `tools/text-check/run.mjs`（旧経路の計測ハーネス）が
+/// `get_synonym_prompt` テスト経由でこれを呼ぶため。**
+/// そのハーネスを畳むときに一緒に削除すること。
+#[allow(dead_code)]
+pub fn build_synonym_prompt(tag_descriptors: &[String]) -> String {
+    format!(
+        "Analyze the following list of tags and find synonymous or duplicate-meaning tag pairs.\nTags: {:?}\nOutput ONLY valid JSON format: {{\"synonyms\": [[\"tagA\", \"tagB\"], ...]}} using exact tag names from the input list.",
+        tag_descriptors
+    )
 }
 
 pub async fn run_suggest_tag_merges_logic(
@@ -1382,340 +2240,180 @@ pub async fn run_suggest_tag_merges_logic(
     let mut raw_pairs: Vec<RawPair> = Vec::new();
     let mut paired_keys = std::collections::HashSet::<(i64, i64)>::new();
 
-    const STOP_WORDS: &[&str] = &[
-        "photo", "image", "media", "picture", "mobile", "device", "screen", "paper", "plant",
-        "board", "model", "system", "object", "item", "product", "style", "design", "background",
-        "foreground", "color", "light", "dark", "white", "black", "text", "view", "part", "detail",
-        "group", "card", "type", "file", "data", "info", "page", "line", "sign", "wood", "glass",
-        "metal", "app", "application", "icon", "logo", "vector", "art", "graphic", "illustration",
-        "set", "collection", "element", "symbol", "banner", "web", "website", "online", "digital"
-    ];
+    let precalculated: Vec<TagMeta> = free_tags.iter().map(build_tag_meta).collect();
 
-    struct TagMeta<'a> {
-        item: &'a TagItem,
-        norm_name: String,
-        words: Vec<&'a str>,
-        ja_clean: Option<String>,
-    }
-
-    let precalculated: Vec<TagMeta> = free_tags
-        .iter()
-        .map(|t| {
-            let norm_name = crate::batch::normalize_tag_en(&t.name);
-            let words: Vec<&str> = t.name.split(&['_', '-'][..]).filter(|w| w.len() >= 3 && !STOP_WORDS.contains(w)).collect();
-            let ja_clean = t.name_ja.as_ref().map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
-            TagMeta {
-                item: t,
-                norm_name,
-                words,
-                ja_clean,
-            }
-        })
-        .collect();
-
-    // 1. 多角的ルール判定: 単複表記揺れ & 同一日本語訳 & 共通単語フレーズ & 編集距離
-    for i in 0..precalculated.len() {
+    // 1. 多角的ルール判定。
+    //
+    // **全ペア走査はしない。** タグ数はメディア数にほぼ比例して増え続けるので
+    // （実測 Heaps β=0.90。1万枚で43,300件）、O(n²) では1万枚で9.4億ペアになる。
+    //
+    // 索引で候補を絞ってから `rule_based_match_reason` に渡す。
+    // **判定そのものは変えていない** —— 索引は「判定する必要がある組」を集めるだけで、
+    // 各規則が拾う組は索引の網に必ず含まれる（下記の対応表）。
+    for (i, j) in rule_candidate_pairs(&precalculated) {
         let p1 = &precalculated[i];
-        for j in (i + 1)..precalculated.len() {
-            let p2 = &precalculated[j];
+        let p2 = &precalculated[j];
 
-            let pair_key = (p1.item.id.min(p2.item.id), p1.item.id.max(p2.item.id));
-            if paired_keys.contains(&pair_key) {
-                continue;
-            }
+        let pair_key = (p1.item.id.min(p2.item.id), p1.item.id.max(p2.item.id));
+        if paired_keys.contains(&pair_key) {
+            continue;
+        }
 
-            // 種別(基本語/記述的)をまたぐペアはマージ候補にしない
-            if p1.item.kind != p2.item.kind {
-                continue;
-            }
+        // 種別(基本語/記述的)をまたぐペアはマージ候補にしない
+        if p1.item.kind != p2.item.kind {
+            continue;
+        }
 
-            let mut matched_reason = None;
-
-            // 1-A. 日本語訳完全一致 (例:どちらも「猫」)
-            if let (Some(ref ja1), Some(ref ja2)) = (&p1.ja_clean, &p2.ja_clean) {
-                if ja1 == ja2 {
-                    matched_reason = Some(format!("同一日本語表記 ({})", ja1));
-                }
-            }
-
-            // 1-B. 単数形正規化一致 (例: cat と cats)
-            if matched_reason.is_none() {
-                if p1.norm_name == p2.norm_name {
-                    matched_reason = Some(format!("単数形・表記統一 ({})", p1.norm_name));
-                }
-            }
-
-            // 1-C. 共通単語・フレーズ (ストップワードを除外し、固有度が高いフレーズのみ一致とみなす)
-            if matched_reason.is_none() && !p1.words.is_empty() && !p2.words.is_empty() {
-                let common_words: Vec<String> = p1.words
-                    .iter()
-                    .filter(|w| p2.words.contains(w))
-                    .map(|s| s.to_string())
-                    .collect();
-
-                if common_words.len() >= 2 || (common_words.len() == 1 && common_words[0].len() >= 7) {
-                    matched_reason = Some(format!("共通キーフレーズ ({})", common_words.join(", ")));
-                }
-            }
-
-            // 1-D. 日本語の共通プレフィックス・キーワード (例: ESP32開発ボード ↔ ESP32-WROOMボード)
-            if matched_reason.is_none() {
-                if let (Some(ref ja1), Some(ref ja2)) = (&p1.ja_clean, &p2.ja_clean) {
-                    if ja1.chars().count() >= 4 && ja2.chars().count() >= 4 {
-                        let common_prefix: String = ja1
-                            .chars()
-                            .zip(ja2.chars())
-                            .take_while(|(c1, c2)| c1 == c2)
-                            .map(|(c, _)| c)
-                            .collect();
-                        if common_prefix.chars().count() >= 4 {
-                            matched_reason = Some(format!("類似日本語表記 ({})", common_prefix));
-                        }
-                    }
-                }
-            }
-
-            // 1-E. 編集距離が非常に近い (例: smart_phone と smartphone)
-            if matched_reason.is_none() && p1.item.name.len() >= 4 && p2.item.name.len() >= 4 {
-                let len_diff = (p1.item.name.len() as isize - p2.item.name.len() as isize).abs();
-                if len_diff <= 3 {
-                    let dist = levenshtein_distance(&p1.item.name, &p2.item.name);
-                    let max_len = p1.item.name.len().max(p2.item.name.len());
-                    if dist == 1 || (dist <= 3 && max_len >= 8) {
-                        matched_reason = Some(format!("類似スペル (編集距離 {})", dist));
-                    }
-                }
-            }
-
-            if let Some(reason) = matched_reason {
-                paired_keys.insert(pair_key);
-                raw_pairs.push(RawPair {
-                    t1: p1.item.clone(),
-                    t2: p2.item.clone(),
-                    reason,
-                });
-            }
+        // **全規則を評価する。**最初の一致で打ち切らない
+        let hits = rule_matches(p1, p2);
+        // **綴りの近さ「だけ」のペアは出さない（2026-08-12 の人手判定）。**
+        //
+        // 層化して測ったところ、`spelling` 単独の層だけが壊れていた:
+        //
+        //   spelling 単独        適合率 23%（n=13 / 95%区間 8〜50%）  母集団 774ペア
+        //   keyphrase + spelling      100%（n=11）                        70ペア
+        //   ja_prefix + spelling      100%（n= 9）                        62ペア
+        //   他の層                92〜100%
+        //
+        // 単独の区間は他のどの層とも重ならない。中身は `chicken ← chickpea`、
+        // `beak ← bear`、`rock ← dock` のように**綴りが近いだけで意味が無関係**。
+        //
+        // **綴りの近さは「裏付け」としては有効で、「根拠」としては無効。**
+        // 他の規則が当たっているペアでは 100% なので、併用のぶんは残す。
+        // これで 8,984 → 8,210ペア、重み付け適合率 89.3% → 95.6%。
+        if hits.len() == 1 && hits[0].rule == "spelling" {
+            continue;
+        }
+        if !hits.is_empty() {
+            paired_keys.insert(pair_key);
+            raw_pairs.push(RawPair {
+                t1: p1.item.clone(),
+                t2: p2.item.clone(),
+                hits,
+            });
         }
     }
 
     let rule_pairs_count = raw_pairs.len();
     crate::logger::log_info(&format!("Rule-based scan found {} candidate pairs.", rule_pairs_count));
 
-    let ollama_url: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_url'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None)
-        .unwrap_or_else(|| "http://localhost:11434".to_string());
+    // **LLM 判定はこの関数から分離した（2026-08-05）。**
+    //
+    // 以前はここで「タグ一覧 → 同義語ペア」を1回のプロンプトで問い合わせていたが、
+    // `free_tags.len() <= 300` の条件付きだったため、実ライブラリ（5,827件）では
+    // **一度も実行されていなかった**。つまり画面に出ていた提案は 100% ルール由来だった。
+    //
+    // 作り直し後、LLM 経路は独立した方式になりユーザーが明示的に起動する:
+    //   - 包括関係の検出（包括語の抽出 → カテゴリへの割り当て → 集約）
+    //   - 関連タグ（埋め込みクラスタ。LLM は任意の追加工程）
+    //
+    // **この関数はルール検出専用になった。**
+    // 設計: `_plan/20260805_tag_organize_rebuild_implementation_plan.md`
 
-    let ollama_text_model: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_text_model'")
-        .fetch_optional(pool)
-        .await
-        .unwrap_or(None)
-        .unwrap_or_else(|| "qwen3:14b".to_string());
-
-    // 2. Ollama LLM による同義語検出
-    if free_tags.len() >= 2 && free_tags.len() <= 300 {
-        let tag_descriptors: Vec<String> = free_tags
-            .iter()
-            .map(|t| {
-                if let Some(ref ja) = t.name_ja {
-                    format!("{} ({})", t.name, ja)
-                } else {
-                    t.name.clone()
-                }
-            })
-            .collect();
-
-        let prompt = format!(
-            "Analyze the following list of tags and find synonymous or duplicate-meaning tag pairs.\nTags: {:?}\nOutput ONLY valid JSON format: {{\"synonyms\": [[\"tagA\", \"tagB\"], ...]}} using exact tag names from the input list.",
-            tag_descriptors
-        );
-
-        let client = reqwest::Client::new();
-        // "format": "json" は指定しないこと。
-        // thinking 対応モデル（既定の qwen3:14b を含む）に対して指定すると応答が `{}` に縮退し、
-        // synonyms が常に空になってLLM同義語判定が丸ごと無効化される（2026-07-29 実測）。
-        // done_reason は "stop"（正常終了）で返るためエラーにもならず静かに壊れる。
-        // JSON の抽出は下の find('{') / rfind('}') が担うので format 指定は不要。
-        // 検証方法: tools/prompt-check/README.md
-        let req_body = serde_json::json!({
-            "model": ollama_text_model,
-            "prompt": prompt,
-            "stream": false
-        });
-
-        if let Ok(res) = client.post(format!("{}/api/generate", ollama_url)).json(&req_body).send().await {
-            if res.status().is_success() {
-                if let Ok(json_res) = res.json::<serde_json::Value>().await {
-                    if let Some(raw_response) = json_res.get("response").and_then(|v| v.as_str()) {
-                        let clean_text = raw_response.trim();
-                        let json_str = if let (Some(start), Some(end)) = (clean_text.find('{'), clean_text.rfind('}')) {
-                            if start < end { &clean_text[start..=end] } else { clean_text }
-                        } else {
-                            clean_text
-                        };
-
-                        if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(json_str) {
-                            if let Some(synonym_list) = parsed.get("synonyms").and_then(|v| v.as_array()) {
-                                let find_tag = |raw_name: &str| -> Option<&TagItem> {
-                                    let clean = raw_name.trim().trim_start_matches('#');
-                                    let key_en = clean.split('(').next().unwrap_or(clean).trim();
-                                    free_tags.iter().find(|t| {
-                                        t.name == key_en ||
-                                        t.name == clean ||
-                                        t.name_ja.as_deref() == Some(clean)
-                                    })
-                                };
-
-                                for pair_arr in synonym_list {
-                                    if let Some(arr) = pair_arr.as_array() {
-                                        if arr.len() == 2 {
-                                            if let (Some(name1), Some(name2)) = (arr[0].as_str(), arr[1].as_str()) {
-                                                if let (Some(t1), Some(t2)) = (find_tag(name1), find_tag(name2)) {
-                                                    if t1.id != t2.id && t1.kind == t2.kind {
-                                                        let pkey = (t1.id.min(t2.id), t1.id.max(t2.id));
-                                                        if !paired_keys.contains(&pkey) {
-                                                            paired_keys.insert(pkey);
-                                                            raw_pairs.push(RawPair {
-                                                                t1: t1.clone(),
-                                                                t2: t2.clone(),
-                                                                reason: "LLM同義語判定".to_string(),
-                                                            });
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
+    // 3. **連結成分にはしない。推移閉包が暴走する。**
+    //
+    // ルール判定は「AとBが似ている」というペアしか作らないのに、連結すると
+    // A-B、B-C、C-D … が全部1つの群になる。実測: 上限15を外したところ
+    // **最大2,792件**（全タグの48%）の群ができ、`wooden_table` に
+    // `cloudy_sky` や `snow_covered_mountain` まで入った。
+    //
+    // 代わりに **target ごとに1ホップだけ集約する**（`group_by_target`）。
+    // 推移閉包は作らないので暴走しない。
+    //
+    // **target は保存時に決める。** 使用数が多い方を target にすることで、
+    // 保存の順序に依存しなくなる（以前は `t1` をそのまま使っており、
+    // 判定した順で「2グループになるか3件1グループになるか」が変わっていた）。
+    crate::suggestion_store::begin_run(pool, crate::suggestion_store::Method::Rules, "rules-v1", crate::suggestion_store::RunMode::Full)
+        .await?;
+    let records: Vec<crate::suggestion_store::PairRecord> = raw_pairs
+        .iter()
+        .map(|p| {
+            let (target, member) = order_pair(&p.t1, &p.t2);
+            crate::suggestion_store::PairRecord {
+                target_id: target,
+                member_id: member,
+                rules: p.hits.iter().map(|h| h.rule.clone()).collect(),
+                score: None,
             }
-        }
+        })
+        .collect();
+    let judged: Vec<i64> = tag_map.keys().copied().collect();
+    crate::suggestion_store::commit_chunk(
+        pool,
+        crate::suggestion_store::Method::Rules,
+        &records,
+        &judged,
+    )
+    .await?;
+    crate::suggestion_store::finish_run(pool, crate::suggestion_store::Method::Rules).await?;
 
-        // 分析終了後にテキストLLMをVRAMから自動アンロード
-        let _ = crate::batch::unload_ollama_model(&ollama_url, &ollama_text_model).await;
-    }
-
-    // 3. BFS による連結成分グラフの抽出
-    let mut adj: std::collections::HashMap<i64, std::collections::HashSet<i64>> = std::collections::HashMap::new();
-    let mut pair_reasons: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
-
-    for pair in &raw_pairs {
-        adj.entry(pair.t1.id).or_default().insert(pair.t2.id);
-        adj.entry(pair.t2.id).or_default().insert(pair.t1.id);
-        pair_reasons.entry(pair.t1.id).or_default().push(pair.reason.clone());
-        pair_reasons.entry(pair.t2.id).or_default().push(pair.reason.clone());
-    }
-
-    let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
-    let mut suggestions: Vec<MergeSuggestion> = Vec::new();
-    let mut group_idx = 0;
-
-    for &node in adj.keys() {
-        if visited.contains(&node) {
-            continue;
-        }
-
-        let mut member_ids = Vec::new();
-        let mut queue = std::collections::VecDeque::new();
-        queue.push_back(node);
-        visited.insert(node);
-
-        while let Some(curr) = queue.pop_front() {
-            member_ids.push(curr);
-            if let Some(neighbors) = adj.get(&curr) {
-                for &neighbor in neighbors {
-                    if !visited.contains(&neighbor) {
-                        visited.insert(neighbor);
-                        queue.push_back(neighbor);
-                    }
-                }
-            }
-        }
-
-        if member_ids.len() > 1 && member_ids.len() <= 15 {
-            // 代表 (Target) の決定: 短い名前のタグを優先マスターとする
-            member_ids.sort_by(|a, b| {
-                let t_a = tag_map.get(a).unwrap();
-                let t_b = tag_map.get(b).unwrap();
-                t_a.name.len().cmp(&t_b.name.len())
-            });
-
-            let target_id = member_ids[0];
-            let target_tag = tag_map.get(&target_id).unwrap().clone();
-            let source_tags: Vec<TagItem> = member_ids[1..]
-                .iter()
-                .map(|id| tag_map.get(id).unwrap().clone())
-                .collect();
-
-            // 代表的な理由メッセージ (最大3件に制限し要約化)
-            let mut reasons: Vec<String> = member_ids
-                .iter()
-                .filter_map(|id| pair_reasons.get(id))
-                .flatten()
-                .cloned()
-                .collect();
-            reasons.sort();
-            reasons.dedup();
-            let main_reason = if reasons.len() > 3 {
-                format!("{} など他{}件", reasons[..3].join(" / "), reasons.len() - 3)
-            } else if !reasons.is_empty() {
-                reasons.join(" / ")
-            } else {
-                "類似タググループ".to_string()
-            };
-
-            // 代表的な画像サムネイルをグループ内から最大5件抽出
-            let ids_str = member_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-            let query_str = format!(
-                "SELECT DISTINCT m.thumbnail_path FROM media m JOIN media_tags mt ON m.id = mt.media_id WHERE mt.tag_id IN ({}) AND m.thumbnail_path != '' LIMIT 5",
-                ids_str
-            );
-            let sample_thumbnails = sqlx::query_scalar::<_, String>(&query_str)
-                .fetch_all(pool)
-                .await
-                .unwrap_or_default();
-
-            let count_query = format!(
-                "SELECT COUNT(DISTINCT m.id) FROM media m JOIN media_tags mt ON m.id = mt.media_id WHERE mt.tag_id IN ({})",
-                ids_str
-            );
-            let total_images_count = sqlx::query_scalar::<_, i64>(&count_query)
-                .fetch_one(pool)
-                .await
-                .unwrap_or(0) as usize;
-
-            suggestions.push(MergeSuggestion {
-                id: format!("group-sug-{}", group_idx),
-                target_tag,
-                source_tags,
-                reason: main_reason,
-                confidence: "high".to_string(),
-                sample_thumbnails,
-                total_images_count,
-            });
-            group_idx += 1;
-        }
-    }
-
-    suggestions.sort_by(|a, b| (b.source_tags.len() + 1).cmp(&(a.source_tags.len() + 1)));
-
-    Ok(suggestions)
+    // **保存済みの判定から組み立てる。** 新規スキャンと読み出しで別の経路を通すと、
+    // 同じ判定なのに件数も中身も変わる（実測 8,984件 と 2,460件）。経路を1本にする。
+    build_suggestions_from_store(pool, crate::suggestion_store::Method::Rules, &tag_map).await
 }
 
+/// ペアの代表を決める。**使用数が多い方。** 同数なら名前が短い方、それも同じならID順。
+///
+/// 保存時にここを通すことで、判定した順序に依存しない安定した集約になる。
+fn order_pair(a: &TagItem, b: &TagItem) -> (i64, i64) {
+    let a_first = (b.count, b.name.len(), b.id) < (a.count, a.name.len(), a.id);
+    if a_first {
+        (a.id, b.id)
+    } else {
+        (b.id, a.id)
+    }
+}
+
+/// ① ルール検出。表記の規則だけで候補を出す。即時。
 #[tauri::command]
 pub async fn suggest_tag_merges(
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+) -> Result<Vec<MergeSuggestion>, String> {
+    // 保存は `run_suggest_tag_merges_logic` の中で行う（判定と同じ場所で確定させる）
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    run_suggest_tag_merges_logic(&db_state.pool).await
+}
+
+/// ② 包括関係。段1で包括語を集め、段2で割り当てて集約する。**LLM を使うので長い。**
+///
+/// 既定では**未判定のタグだけ**を処理するので、中断からの再開も、
+/// タグが増えたあとの追加分も、この呼び出し1つで済む。
+/// `full_rescan` を立てたときだけ段1からやり直す（却下の記録は残る）。
+#[tauri::command]
+pub async fn suggest_hypernyms(
+    db_state: State<'_, DbState>,
+    scan_state: State<'_, ScanState>,
+    app_handle: AppHandle,
+    full_rescan: Option<bool>,
+) -> Result<Vec<MergeSuggestion>, String> {
+    let _guard = try_acquire_task_lock(&scan_state)?;
+    scan_state.cancel_flag.store(false, Ordering::Relaxed);
+    let mode = if full_rescan.unwrap_or(false) {
+        crate::suggestion_store::RunMode::Full
+    } else {
+        crate::suggestion_store::RunMode::Incremental
+    };
+    crate::tag_organize::suggest_hypernyms(
+        &db_state.pool,
+        Some(&app_handle),
+        Some(&scan_state.cancel_flag),
+        mode,
+    )
+    .await
+}
+
+/// ③ 関連タグ。埋め込みクラスタで意味が近い組を出す。LLM 不要・即時。
+///
+/// ベクトルが未生成なら自動で生成する。
+#[tauri::command]
+pub async fn suggest_related_tags(
     db_state: State<'_, DbState>,
     scan_state: State<'_, ScanState>,
     app_handle: AppHandle,
 ) -> Result<Vec<MergeSuggestion>, String> {
     let _guard = try_acquire_task_lock(&scan_state)?;
-    let suggestions = run_suggest_tag_merges_logic(&db_state.pool).await?;
-    let _ = save_tag_suggestions_cache_internal(&app_handle, &suggestions);
-    Ok(suggestions)
+    crate::tag_organize::suggest_related_tags(&db_state.pool, Some(&app_handle)).await
 }
 
 #[tauri::command]
@@ -1860,4 +2558,576 @@ pub fn get_system_vram_gb() -> Result<f64, String> {
     Ok(0.0)
 }
 
+#[cfg(test)]
+mod target_policy_tests {
+    use super::*;
+
+    async fn pool_with_tags(tags: &[(i64, &str, i64)]) -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE media (id INTEGER PRIMARY KEY, thumbnail_path TEXT);
+             CREATE TABLE media_tags (media_id INTEGER, tag_id INTEGER);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let _ = tags;
+        pool
+    }
+
+    fn map(tags: &[(i64, &str, i64)]) -> std::collections::HashMap<i64, TagItem> {
+        tags.iter()
+            .map(|(id, name, count)| {
+                (
+                    *id,
+                    TagItem {
+                        id: *id,
+                        name: name.to_string(),
+                        name_ja: None,
+                        is_category: false,
+                        count: *count,
+                        kind: "basic".to_string(),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// **包括語は子より使用数が少ない。** 使用数で代表を選び直すと親が member に落ち、
+    /// `nature ⊃ 42件` が `tree <- mountain, ocean` として出る（2026-08-07 実データで発生）。
+    #[tokio::test]
+    async fn pinned_keeps_the_hypernym_as_target_even_when_barely_used() {
+        // furniture は使用数1、table は60
+        let tags = [(1i64, "furniture", 1i64), (2, "table", 60), (3, "chair", 14)];
+        let pool = pool_with_tags(&tags).await;
+        let tag_map = map(&tags);
+        let groups = vec![vec![1, 2, 3]];
+
+        let pinned = build_suggestions(&pool, &groups, &tag_map, TargetPolicy::Pinned, |_| {
+            (String::new(), vec![])
+        })
+        .await;
+        assert_eq!(pinned[0].target_tag.name, "furniture", "段1が選んだ包括語が代表");
+        assert_eq!(pinned[0].source_tags[0].name, "table", "member は使用数降順");
+
+        let most_used = build_suggestions(&pool, &groups, &tag_map, TargetPolicy::MostUsed, |_| {
+            (String::new(), vec![])
+        })
+        .await;
+        assert_eq!(most_used[0].target_tag.name, "table", "同義語ではこちらが正しい");
+    }
+
+    fn sug(id: &str, target: i64, sources: &[i64], rule: &str) -> MergeSuggestion {
+        let mk = |i: i64| TagItem {
+            id: i,
+            name: format!("t{}", i),
+            name_ja: None,
+            is_category: false,
+            count: 1,
+            kind: "basic".to_string(),
+        };
+        MergeSuggestion {
+            id: id.to_string(),
+            target_tag: mk(target),
+            source_tags: sources.iter().copied().map(mk).collect(),
+            reason: String::new(),
+            confidence: String::new(),
+            sample_thumbnails: vec![],
+            total_images_count: 0,
+            rules: vec![rule.to_string()],
+        }
+    }
+
+    /// **綴りの近さ「だけ」のペアは提案にしない。**
+    ///
+    /// 層化して測ったところ `spelling` 単独の層だけ適合率23%（他は92〜100%）で、
+    /// 中身は `chicken ← chickpea`、`beak ← bear` のように意味が無関係だった。
+    /// 併用（`keyphrase + spelling` 等）は100%なので、そちらは残す。
+    #[test]
+    fn spelling_alone_is_not_a_proposal() {
+        let item = |name: &str, ja: Option<&str>| TagItem {
+            id: 1,
+            name: name.to_string(),
+            name_ja: ja.map(|s| s.to_string()),
+            is_category: false,
+            count: 1,
+            kind: "basic".to_string(),
+        };
+        let rules_for = |a: &str, b: &str, ja_a: Option<&str>, ja_b: Option<&str>| {
+            let (ia, ib) = (item(a, ja_a), item(b, ja_b));
+            rule_matches(&build_tag_meta(&ia), &build_tag_meta(&ib))
+                .iter()
+                .map(|h| h.rule.clone())
+                .collect::<Vec<_>>()
+        };
+
+        // 実際に × と判定された組。**規則としては当たるが提案にしてはいけない**
+        for (a, b) in [("chicken", "chickpea"), ("beak", "bear"), ("rock", "dock"), ("card", "cord")] {
+            let r = rules_for(a, b, None, None);
+            assert_eq!(r, vec!["spelling"], "{a}/{b} は spelling 単独で当たる（提案からは除外される）");
+        }
+
+        // 併用は残す。日本語名が同じなら ja_exact も当たる
+        let r = rules_for("smartphone", "smart_phone", Some("スマートフォン"), Some("スマートフォン"));
+        assert!(r.contains(&"spelling".to_string()), "綴りの近さは当たる: {r:?}");
+        assert!(r.len() > 1, "他の規則も当たるので提案として残る: {r:?}");
+    }
+
+    /// **適用すると、適用した提案そのものが表示できなくなる。**
+    /// ペア単位の①では必ず起きるので、件数が0になることは実質ない。
+    /// 「0件だから確認を出さない」経路に落ちていないかを固定する。
+    #[test]
+    fn applying_a_pair_invalidates_at_least_itself() {
+        let suggestions = vec![
+            sug("a", 1, &[2], "ja_exact"),
+            sug("b", 2, &[3], "singular"), // タグ2 を共有する別の提案
+            sug("c", 7, &[8], "spelling"), // 無関係
+        ];
+        let items = vec![MergePlanItem { target_id: 1, source_ids: vec![2] }];
+
+        let out = count_invalidated_suggestions(items, suggestions);
+        let total: usize = out.iter().map(|(_, n)| n).sum();
+        assert_eq!(total, 2, "適用したペア自身と、タグ2を含む別のペアが消える: {:?}", out);
+        assert!(out.iter().any(|(r, _)| r == "ja_exact"));
+        assert!(out.iter().any(|(r, _)| r == "singular"));
+        assert!(!out.iter().any(|(r, _)| r == "spelling"), "無関係な提案は数えない");
+    }
+
+    /// 大きなグループでも、代表以外が全部消えれば残りは1件になり表示できない
+    #[test]
+    fn applying_a_hypernym_group_invalidates_it() {
+        let suggestions = vec![sug("h", 1, &[2, 3, 4, 5], "hypernym")];
+        let items = vec![MergePlanItem { target_id: 1, source_ids: vec![2, 3, 4, 5] }];
+        let out = count_invalidated_suggestions(items, suggestions);
+        assert_eq!(out, vec![("hypernym".to_string(), 1)]);
+    }
+
+    /// 一部のメンバーだけ統合した場合は、残りが2件以上あるので提案は生きる
+    #[test]
+    fn partially_applied_group_survives() {
+        let suggestions = vec![sug("h", 1, &[2, 3, 4, 5], "hypernym")];
+        let items = vec![MergePlanItem { target_id: 1, source_ids: vec![2] }];
+        let out = count_invalidated_suggestions(items, suggestions);
+        assert!(out.is_empty(), "target + 残り3件で成立するので消えない: {:?}", out);
+    }
+
+    /// 統合で包括語そのものが消えた場合。**提案は成立させる**（残りを使用数順に）
+    #[tokio::test]
+    async fn pinned_falls_back_when_the_target_is_gone() {
+        let tags = [(2i64, "table", 60i64), (3, "chair", 14)];
+        let pool = pool_with_tags(&tags).await;
+        let tag_map = map(&tags);
+        // 1 (furniture) は削除済み
+        let groups = vec![vec![1, 2, 3]];
+        let s = build_suggestions(&pool, &groups, &tag_map, TargetPolicy::Pinned, |_| {
+            (String::new(), vec![])
+        })
+        .await;
+        assert_eq!(s.len(), 1, "残り2件で提案は成立する");
+        assert_eq!(s[0].target_tag.name, "table", "使用数順にフォールバック");
+    }
+}
+
+#[cfg(test)]
+mod text_prompt_tests {
+    use super::{
+        build_synonym_prompt, build_tag_meta, rule_based_match_reason, rule_candidate_pairs, TagItem,
+    };
+
+    fn tag(id: i64, name: &str, ja: Option<&str>) -> TagItem {
+        TagItem {
+            id,
+            name: name.to_string(),
+            name_ja: ja.map(|s| s.to_string()),
+            is_category: false,
+            count: 1,
+            kind: "basic".to_string(),
+        }
+    }
+
+    /// **索引は判定結果を落としてはいけない。**
+    ///
+    /// 全ペアを判定した結果と、索引で絞ってから判定した結果が一致することを確かめる。
+    /// 索引は「判定する必要がある組」を集めるだけなので、
+    /// ここが割れたら索引の網に穴がある。
+    #[test]
+    fn index_does_not_lose_any_rule_match() {
+        let tags = vec![
+            // 1-A 同一日本語表記
+            tag(1, "cat", Some("猫")),
+            tag(2, "kitty", Some("猫")),
+            // 1-B 単数形正規化
+            tag(3, "bench", None),
+            tag(4, "benches", None),
+            // 1-C 共通キーフレーズ（2語共有）
+            tag(5, "dry_leaf", None),
+            tag(6, "dry_brown_leaf", None),
+            // 1-C 共通キーフレーズ（1語だが7文字以上）
+            tag(7, "printed_document", None),
+            tag(8, "printed_document_page", None),
+            // 1-D 日本語プレフィックス
+            tag(9, "esp32_board", Some("ESP32開発ボード")),
+            tag(10, "esp32_wroom", Some("ESP32ウルーム")),
+            // 1-E 編集距離1
+            tag(11, "streetlamp", None),
+            tag(12, "streetlight", None),
+            // 1-E 編集距離1（短い語）
+            tag(13, "bear", None),
+            tag(14, "bean", None),
+            // どの規則にも当たらない
+            tag(15, "zebra", Some("シマウマ")),
+            tag(16, "helicopter", Some("ヘリコプター")),
+        ];
+        let metas: Vec<_> = tags.iter().map(build_tag_meta).collect();
+
+        // 全ペアを判定（索引を使わない基準）
+        let mut expected = Vec::new();
+        for i in 0..metas.len() {
+            for j in (i + 1)..metas.len() {
+                if let Some(r) = rule_based_match_reason(&metas[i], &metas[j]) {
+                    expected.push((i, j, r));
+                }
+            }
+        }
+        assert!(!expected.is_empty(), "基準となる一致が0件ではテストにならない");
+
+        // 索引で絞ってから判定
+        let mut actual = Vec::new();
+        for (i, j) in rule_candidate_pairs(&metas) {
+            let (i, j) = (i.min(j), i.max(j));
+            if let Some(r) = rule_based_match_reason(&metas[i], &metas[j]) {
+                actual.push((i, j, r));
+            }
+        }
+        actual.sort();
+        let mut expected_sorted = expected.clone();
+        expected_sorted.sort();
+
+        for e in &expected_sorted {
+            assert!(
+                actual.contains(e),
+                "索引が取りこぼした: {} / {} ({})",
+                metas[e.0].item.name,
+                metas[e.1].item.name,
+                e.2
+            );
+        }
+        assert_eq!(actual, expected_sorted, "索引経由と全ペアで結果が一致すること");
+    }
+
+    /// 候補の数が全ペアより十分少ないこと（索引が効いていること）
+    #[test]
+    fn index_reduces_the_candidate_count() {
+        // **互いに規則が発火しないタグを並べる。**
+        // `unrelated0` / `unrelated1` のような連番は編集距離1で実際に発火するので、
+        // それを「無関係」として使うとテストが成立しない（最初にこれで間違えた）。
+        let mut seed: u64 = 12345;
+        let mut rand_name = || {
+            let mut s = String::new();
+            for _ in 0..7 {
+                seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                s.push((b'a' + ((seed >> 33) % 26) as u8) as char);
+            }
+            s
+        };
+        let tags: Vec<TagItem> = (0..200).map(|i| tag(i, &rand_name(), None)).collect();
+        let metas: Vec<_> = tags.iter().map(build_tag_meta).collect();
+
+        // 前提: この集合では規則が1件も発火しない
+        let mut matches = 0;
+        for i in 0..metas.len() {
+            for j in (i + 1)..metas.len() {
+                if rule_based_match_reason(&metas[i], &metas[j]).is_some() {
+                    matches += 1;
+                }
+            }
+        }
+        assert_eq!(matches, 0, "無関係なはずの集合で規則が発火している");
+
+        let all_pairs = metas.len() * (metas.len() - 1) / 2;
+        let candidates = rule_candidate_pairs(&metas).len();
+        assert!(
+            candidates < all_pairs / 10,
+            "候補 {} が全ペア {} に対して十分減っていない",
+            candidates,
+            all_pairs
+        );
+    }
+
+    fn plan(target: i64, sources: &[i64]) -> super::MergePlanItem {
+        super::MergePlanItem { target_id: target, source_ids: sources.to_vec() }
+    }
+
+    /// **適用の順序で結果が変わってはいけない。**
+    ///
+    /// 以前は提案ごとに `merge_tags` を呼んでおり、`merge_tags` は削除済みIDを
+    /// 渡されてもエラーを返さないので、順番次第で中身だけが黙って変わっていた。
+    #[test]
+    fn resolution_is_independent_of_order() {
+        let a = vec![plan(1, &[2, 3]), plan(4, &[5])];
+        let b = vec![plan(4, &[5]), plan(1, &[3, 2])];
+        let ra = super::resolve_merge_plan(&a).expect("競合しない");
+        let rb = super::resolve_merge_plan(&b).expect("競合しない");
+        assert_eq!(ra, rb, "並び順で結果が変わっている");
+        assert_eq!(ra.redirects.get(&2), Some(&1));
+        assert_eq!(ra.redirects.get(&3), Some(&1));
+        assert_eq!(ra.redirects.get(&5), Some(&4));
+    }
+
+    /// 鎖は推移的に畳む（`soup_bowl -> bowl -> container` なら container へ）
+    #[test]
+    fn chains_are_folded_transitively() {
+        // 10=soup_bowl -> 20=bowl、20=bowl -> 30=container
+        let items = vec![plan(20, &[10]), plan(30, &[20])];
+        let r = super::resolve_merge_plan(&items).expect("鎖は競合ではない");
+        assert_eq!(r.redirects.get(&10), Some(&30), "推移的に畳まれていない");
+        assert_eq!(r.redirects.get(&20), Some(&30));
+    }
+
+    /// 同じ鎖の上にある複数の行き先は競合ではない
+    #[test]
+    fn multiple_targets_on_the_same_chain_are_not_a_conflict() {
+        // 10 -> 20 と 10 -> 30、かつ 20 -> 30。どちらを辿っても 30 に落ちる
+        let items = vec![plan(20, &[10]), plan(30, &[10]), plan(30, &[20])];
+        let r = super::resolve_merge_plan(&items).expect("同じ終点なら競合しない");
+        assert_eq!(r.redirects.get(&10), Some(&30));
+    }
+
+    /// 鎖でつながらない2つの行き先は競合として返す
+    #[test]
+    fn genuinely_divergent_targets_are_reported() {
+        // bowl(10) を container(20) と tableware(30) の両方に入れようとしている
+        let items = vec![plan(20, &[10]), plan(30, &[10])];
+        let err = super::resolve_merge_plan(&items).expect_err("競合するはず");
+        assert_eq!(err.len(), 1);
+        assert_eq!(err[0].tag_id, 10);
+        assert_eq!(err[0].target_ids, vec![20, 30]);
+    }
+
+    /// 循環しても止まる（提案が矛盾していても無限ループしない）
+    #[test]
+    fn cycles_terminate() {
+        let items = vec![plan(1, &[2]), plan(2, &[1])];
+        // 結果の中身は問わない。**落ちないこと**が要件
+        let _ = super::resolve_merge_plan(&items);
+    }
+
+    /// 自分自身への統合は無視する
+    #[test]
+    fn self_merge_is_ignored() {
+        let items = vec![plan(1, &[1, 2])];
+        let r = super::resolve_merge_plan(&items).expect("競合しない");
+        assert!(!r.redirects.contains_key(&1), "自分自身が行き先になっている");
+        assert_eq!(r.redirects.get(&2), Some(&1));
+    }
+
+    /// 索引が自己ペアを作らないこと（同じタグが同一バケットに複数回入る経路がある）
+    #[test]
+    fn index_never_emits_self_pairs() {
+        let tags = vec![
+            tag(1, "aaaa", None),        // 削除変種が全部同じ "aaa" になる
+            tag(2, "aaaaa", None),
+            tag(3, "banana_banana", None), // 同じ語が2回出る
+        ];
+        let metas: Vec<_> = tags.iter().map(build_tag_meta).collect();
+        for (i, j) in rule_candidate_pairs(&metas) {
+            assert_ne!(i, j, "自己ペアが出た: {}", metas[i].item.name);
+        }
+    }
+
+    /// 計測ツール（`tools/text-check/baseline.mjs`）が**現行の提案を丸ごと**取得するための出力。
+    ///
+    /// ```bash
+    ///   LOMA_BASELINE_DB=/path/to/snapshot.db \
+    ///     cargo test --release generate_merge_baseline -- --ignored --nocapture
+    /// ```
+    ///
+    /// `run_suggest_tag_merges_logic` を**そのまま**呼ぶので、ルール判定・BFS・代表タグ選定の
+    /// すべてが本番と同一。タグが301件以上のライブラリでは LLM ブロックがスキップされるため、
+    /// 結果は**純粋なルールベースのベースライン**になる（これが比較の分母）。
+    ///
+    /// **必ずスナップショットを渡すこと。** この関数は先頭で孤立タグの DELETE を実行するので、
+    /// 稼働中のユーザー DB を直接渡してはいけない（`tools/embedding-check/snapshot.mjs` 参照）。
+    #[test]
+    #[ignore]
+    fn generate_merge_baseline() {
+        let Ok(db_path) = std::env::var("LOMA_BASELINE_DB") else {
+            eprintln!("LOMA_BASELINE_DB が未設定のためスキップ");
+            return;
+        };
+        let rt = tokio::runtime::Runtime::new().expect("tokio ランタイムを作れませんでした");
+        rt.block_on(async {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect(&format!("sqlite:{}", db_path))
+                .await
+                .expect("スナップショットDBに接続できませんでした");
+            // テストは `init_db` を通らないので、テーブルを足したときに
+            // 「アプリでは動くのに検証で落ちる」が起きる
+            sqlx::query("PRAGMA foreign_keys = ON;").execute(&pool).await.unwrap();
+            crate::db::create_tables(&pool).await.expect("スキーマを揃えられません");
+            let suggestions = super::run_suggest_tag_merges_logic(&pool)
+                .await
+                .expect("run_suggest_tag_merges_logic が失敗しました");
+            println!("LOMA_BASELINE_BEGIN");
+            println!("{}", serde_json::to_string(&suggestions).unwrap());
+            println!("LOMA_BASELINE_END");
+        });
+    }
+
+    /// 計測ツール（`tools/text-check`）が**ルールベース判定そのもの**を使うための出力。
+    ///
+    /// ```bash
+    ///   LOMA_RULE_PAIRS='[[{"id":1,"name":"cat","name_ja":"猫","kind":"basic"},
+    ///                      {"id":2,"name":"cats","name_ja":"猫","kind":"basic"}]]' \
+    ///     cargo test --release classify_rule_pairs -- --ignored --nocapture
+    /// ```
+    ///
+    /// LLM に価値があるのは**ルールが拾えないペアだけ**なので、モデル評価では必ずここを通す。
+    /// 判定を JS に書き写すと必ず乖離するため、ミラーもフォールバックも用意しない。
+    ///
+    /// 実データで索引の削減効果と結果の同一性を測る。
+    ///
+    /// ```bash
+    ///   LOMA_BASELINE_DB='C:/Users/.../loma.db' \
+    ///     cargo test --release index_effect_on_real_data -- --ignored --nocapture
+    /// ```
+    ///
+    /// **全ペア走査との結果一致も確認する。** 索引は候補を絞るだけで
+    /// 判定結果を変えてはいけない。単体テストの16件では網羅できない
+    /// 実データの分布（共通接頭辞を持つタグ群など）で確かめる。
+    #[test]
+    #[ignore]
+    fn index_effect_on_real_data() {
+        let Ok(db_path) = std::env::var("LOMA_BASELINE_DB") else {
+            eprintln!("LOMA_BASELINE_DB が未設定のためスキップ");
+            return;
+        };
+        let rt = tokio::runtime::Runtime::new().expect("tokio runtime");
+        let tags: Vec<TagItem> = rt.block_on(async {
+            let pool = sqlx::SqlitePool::connect(&format!("sqlite:{}?mode=ro", db_path))
+                .await
+                .expect("DB を開けない");
+            sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(
+                "SELECT t.id, t.name, t.name_ja, COUNT(mt.media_id), t.tag_kind
+                 FROM tags t LEFT JOIN media_tags mt ON t.id = mt.tag_id
+                 WHERE t.is_category = 0 GROUP BY t.id",
+            )
+            .fetch_all(&pool)
+            .await
+            .expect("タグを読めない")
+            .into_iter()
+            .map(|(id, name, name_ja, count, kind)| TagItem {
+                id,
+                name,
+                name_ja,
+                is_category: false,
+                count,
+                kind,
+            })
+            .collect()
+        });
+
+        let metas: Vec<_> = tags.iter().map(super::build_tag_meta).collect();
+        let n = metas.len();
+        let all_pairs = n * (n - 1) / 2;
+
+        let t0 = std::time::Instant::now();
+        let candidates = rule_candidate_pairs(&metas);
+        let index_ms = t0.elapsed().as_millis();
+
+        println!("タグ {} 件 / 全ペア {} / 候補 {}", n, all_pairs, candidates.len());
+        println!(
+            "削減率 {:.2}%  索引の構築 {}ms",
+            (1.0 - candidates.len() as f64 / all_pairs as f64) * 100.0,
+            index_ms
+        );
+
+        // 索引経由の判定結果
+        let mut via_index: Vec<(i64, i64, String)> = Vec::new();
+        for &(i, j) in &candidates {
+            if metas[i].item.kind != metas[j].item.kind {
+                continue;
+            }
+            if let Some(r) = rule_based_match_reason(&metas[i], &metas[j]) {
+                let (a, b) = (metas[i].item.id, metas[j].item.id);
+                via_index.push((a.min(b), a.max(b), r));
+            }
+        }
+        via_index.sort();
+        via_index.dedup();
+
+        // 全ペア走査の判定結果（基準）
+        let t1 = std::time::Instant::now();
+        let mut via_all: Vec<(i64, i64, String)> = Vec::new();
+        for i in 0..n {
+            for j in (i + 1)..n {
+                if metas[i].item.kind != metas[j].item.kind {
+                    continue;
+                }
+                if let Some(r) = rule_based_match_reason(&metas[i], &metas[j]) {
+                    let (a, b) = (metas[i].item.id, metas[j].item.id);
+                    via_all.push((a.min(b), a.max(b), r));
+                }
+            }
+        }
+        via_all.sort();
+        via_all.dedup();
+        println!("全ペア走査 {}ms", t1.elapsed().as_millis());
+        println!("一致ペア: 索引 {} / 全ペア {}", via_index.len(), via_all.len());
+
+        let missing: Vec<_> = via_all.iter().filter(|x| !via_index.contains(x)).take(10).collect();
+        for m in &missing {
+            println!("**取りこぼし** {} / {} : {}", m.0, m.1, m.2);
+        }
+        assert_eq!(via_index, via_all, "索引が判定結果を変えている");
+    }
+
+    /// 出力は 1 行 1 ペアの TSV: `LOMA_RULE_PAIR\t<index>\t<rule|none>\t<reason>`
+    #[test]
+    #[ignore]
+    fn classify_rule_pairs() {
+        let Ok(raw) = std::env::var("LOMA_RULE_PAIRS") else {
+            eprintln!("LOMA_RULE_PAIRS が未設定のためスキップ");
+            return;
+        };
+        let pairs: Vec<(TagItem, TagItem)> =
+            serde_json::from_str(&raw).expect("LOMA_RULE_PAIRS は [[TagItem, TagItem], ...] である必要があります");
+
+        for (i, (a, b)) in pairs.iter().enumerate() {
+            // 本番は種別をまたぐペアを判定前に落とす。ここでも同じ順序で確認する
+            let verdict = if a.kind != b.kind {
+                Some(("none".to_string(), "種別違い（本番では判定前に除外）".to_string()))
+            } else {
+                rule_based_match_reason(&build_tag_meta(a), &build_tag_meta(b))
+                    .map(|reason| ("rule".to_string(), reason))
+            }
+            .unwrap_or_else(|| ("none".to_string(), String::new()));
+            println!("LOMA_RULE_PAIR\t{}\t{}\t{}", i, verdict.0, verdict.1);
+        }
+    }
+
+    /// 計測ツール（`tools/text-check`）が本番と同じプロンプト文面を得るための出力。
+    ///
+    /// ```bash
+    ///   LOMA_TEXT_TAGS='["cat (猫)", "cats", "dog"]' \
+    ///     cargo test --release get_synonym_prompt -- --ignored --nocapture
+    /// ```
+    ///
+    /// タグ一覧を JSON 配列（`name (name_ja)` 形式の記述子）で渡すと、本番と同じ
+    /// `build_synonym_prompt` を通した結果を出す。JS 側に文面を書き写さない。
+    #[test]
+    #[ignore]
+    fn get_synonym_prompt() {
+        let Ok(raw) = std::env::var("LOMA_TEXT_TAGS") else {
+            eprintln!("LOMA_TEXT_TAGS が未設定のためスキップ");
+            return;
+        };
+        let descriptors: Vec<String> =
+            serde_json::from_str(&raw).expect("LOMA_TEXT_TAGS は文字列のJSON配列である必要があります");
+        let prompt = build_synonym_prompt(&descriptors);
+        println!("LOMA_TEXT_PROMPT_BEGIN");
+        println!("{}", prompt);
+        println!("LOMA_TEXT_PROMPT_END");
+    }
+}
 

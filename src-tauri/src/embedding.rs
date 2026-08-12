@@ -309,7 +309,7 @@ impl Library {
 }
 
 /// 指定モデルの全タグベクトルを読み込む（正規化済みで返す）。
-async fn load_tag_vectors(pool: &Pool<Sqlite>, model: &str) -> Result<HashMap<i64, Vec<f32>>, String> {
+pub async fn load_tag_vectors(pool: &Pool<Sqlite>, model: &str) -> Result<HashMap<i64, Vec<f32>>, String> {
     let rows = sqlx::query_as::<_, (i64, Vec<u8>)>(
         "SELECT tag_id, vector FROM tag_embeddings WHERE model = ?1",
     )
@@ -660,28 +660,64 @@ pub async fn generate_tag_embeddings(
     scan_state: State<'_, ScanState>,
 ) -> Result<GenerateResult, String> {
     let _guard = try_acquire_task_lock(&scan_state)?;
-    let pool = &db_state.pool;
+    generate_missing_tag_embeddings(&db_state.pool, Some(&app_handle)).await
+}
+
+/// 未生成のタグベクトルだけを埋める。**タスクロックは取らない。**
+///
+/// コマンド版（`generate_tag_embeddings`）と、関連タグ検出のような
+/// **既にロックを持っている呼び出し元**の両方から使う。
+/// ロックをここで取ると、呼び出し元が持っている場合に自分で自分を弾いてしまう。
+///
+/// `app_handle` を渡すと進捗イベントを emit する。内部呼び出しでは `None` でよい。
+pub async fn generate_missing_tag_embeddings(
+    pool: &Pool<Sqlite>,
+    app_handle: Option<&AppHandle>,
+) -> Result<GenerateResult, String> {
     let cfg = load_spectrum_config(pool).await;
+    generate_missing_for(pool, app_handle, &cfg.ollama_url, &cfg.model, None).await
+}
+
+/// 指定したモデル・指定した種別のぶんだけ埋め込みを埋める。
+///
+/// **③ 関連タグは種別ごとに違うモデルを使う**（basic と descriptive で
+/// 最良のモデルが違う。実測は計画書 §4）。種別をまたぐ比較をしないので成立する。
+/// 逆に概念スペクトラム検索は**種別をまたいでベクトルを平均する**ため
+/// （[`build_library`] の重心計算）、1つのモデルで揃っている必要がある。
+///
+/// `kind` が `None` なら全タグ。`Some("basic")` などで絞る。
+pub async fn generate_missing_for(
+    pool: &Pool<Sqlite>,
+    app_handle: Option<&AppHandle>,
+    ollama_url: &str,
+    model: &str,
+    kind: Option<&str>,
+) -> Result<GenerateResult, String> {
     let started = std::time::Instant::now();
 
-    let pending = sqlx::query_as::<_, (i64, String, Option<String>)>(
+    let sql = format!(
         r#"
         SELECT t.id, t.name, t.name_ja
         FROM tags t
         LEFT JOIN tag_embeddings e ON e.tag_id = t.id AND e.model = ?1
-        WHERE e.tag_id IS NULL
+        WHERE e.tag_id IS NULL {}
         ORDER BY t.id
         "#,
-    )
-    .bind(&cfg.model)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| cmd_err("generate_tag_embeddings", e))?;
+        if kind.is_some() { "AND t.tag_kind = ?2" } else { "" }
+    );
+    let mut q = sqlx::query_as::<_, (i64, String, Option<String>)>(&sql).bind(model);
+    if let Some(k) = kind {
+        q = q.bind(k);
+    }
+    let pending = q
+        .fetch_all(pool)
+        .await
+        .map_err(|e| cmd_err("generate_tag_embeddings", e))?;
 
     let total = pending.len();
     if total == 0 {
         return Ok(GenerateResult {
-            model: cfg.model,
+            model: model.to_string(),
             generated: 0,
             dim: 0,
             elapsed_ms: 0,
@@ -698,32 +734,28 @@ pub async fn generate_tag_embeddings(
     let mut dim = 0usize;
 
     for chunk in pending.chunks(EMBED_BATCH_SIZE) {
-        let _ = app_handle.emit(
-            "embedding_progress",
-            EmbeddingProgress {
-                total,
-                current: generated,
-                status: "running".to_string(),
-            },
-        );
+        if let Some(h) = app_handle {
+            let _ = h.emit(
+                "embedding_progress",
+                EmbeddingProgress { total, current: generated, status: "running".to_string() },
+            );
+        }
 
         let texts: Vec<String> = chunk
             .iter()
             .map(|(_, name, name_ja)| embedding_text(name, name_ja.as_deref()))
             .collect();
 
-        let vectors = match fetch_embeddings(&client, &cfg.ollama_url, &cfg.model, &texts).await {
+        let vectors = match fetch_embeddings(&client, ollama_url, model, &texts).await {
             Ok(v) => v,
             Err(e) => {
-                let _ = app_handle.emit(
-                    "embedding_progress",
-                    EmbeddingProgress {
-                        total,
-                        current: generated,
-                        status: "error".to_string(),
-                    },
-                );
-                let _ = crate::batch::unload_ollama_model(&cfg.ollama_url, &cfg.model).await;
+                if let Some(h) = app_handle {
+                    let _ = h.emit(
+                        "embedding_progress",
+                        EmbeddingProgress { total, current: generated, status: "error".to_string() },
+                    );
+                }
+                let _ = crate::batch::unload_ollama_model(ollama_url, model).await;
                 return Err(cmd_err("generate_tag_embeddings", e));
             }
         };
@@ -739,7 +771,7 @@ pub async fn generate_tag_embeddings(
                  ON CONFLICT(tag_id, model) DO UPDATE SET dim = ?3, vector = ?4",
             )
             .bind(tag_id)
-            .bind(&cfg.model)
+            .bind(model)
             .bind(v.len() as i64)
             .bind(to_blob(&v))
             .execute(pool)
@@ -751,19 +783,17 @@ pub async fn generate_tag_embeddings(
     }
 
     // 生成後は VRAM を解放する（タグマージ提案と同じ後始末）
-    let _ = crate::batch::unload_ollama_model(&cfg.ollama_url, &cfg.model).await;
+    let _ = crate::batch::unload_ollama_model(ollama_url, model).await;
 
-    let _ = app_handle.emit(
-        "embedding_progress",
-        EmbeddingProgress {
-            total,
-            current: generated,
-            status: "done".to_string(),
-        },
-    );
+    if let Some(h) = app_handle {
+        let _ = h.emit(
+            "embedding_progress",
+            EmbeddingProgress { total, current: generated, status: "done".to_string() },
+        );
+    }
 
     Ok(GenerateResult {
-        model: cfg.model,
+        model: model.to_string(),
         generated,
         dim,
         elapsed_ms: started.elapsed().as_millis() as u64,
@@ -1071,6 +1101,23 @@ pub struct EmbeddingStorageInfo {
     pub reclaimable_bytes: i64,
 }
 
+/// 現在どのモデルのベクトルが使われているか。**1つとは限らない。**
+///
+/// 概念スペクトラム検索は1モデル（種別をまたいで重心を取るため揃っている必要がある）、
+/// ③ 関連タグは種別ごとに別モデル。ここを1つだと思って扱うと、
+/// **使用中のベクトルを「未使用」として削除できてしまう**（再生成が要る）。
+pub async fn models_in_use(pool: &Pool<Sqlite>) -> Vec<String> {
+    let related = crate::tag_organize::RelatedConfig::load(pool).await;
+    let mut v = vec![
+        load_spectrum_config(pool).await.model,
+        related.basic_model,
+        related.descriptive_model,
+    ];
+    v.sort();
+    v.dedup();
+    v
+}
+
 /// モデル別のベクトル保有状況を返す。
 #[tauri::command]
 pub async fn get_embedding_storage_info(
@@ -1078,6 +1125,7 @@ pub async fn get_embedding_storage_info(
 ) -> Result<EmbeddingStorageInfo, String> {
     let pool = &db_state.pool;
     let cfg = load_spectrum_config(pool).await;
+    let in_use = models_in_use(pool).await;
 
     let total_tags: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tags")
         .fetch_one(pool)
@@ -1095,7 +1143,7 @@ pub async fn get_embedding_storage_info(
     let models: Vec<EmbeddingModelStorage> = rows
         .into_iter()
         .map(|(model, tag_count, dim, bytes)| EmbeddingModelStorage {
-            in_use: model == cfg.model,
+            in_use: in_use.contains(&model),
             model,
             tag_count,
             dim,
@@ -1132,18 +1180,30 @@ pub async fn cleanup_unused_embeddings(
     // 削除中に重心算出やベクトル生成が走らないよう、他の処理と同じロックを取る
     let _guard = try_acquire_task_lock(&scan_state)?;
     let pool = &db_state.pool;
-    let cfg = load_spectrum_config(pool).await;
+    // **使用中は1つとは限らない。** ③ が種別ごとに別モデルを使うので、
+    // スペクトラム検索のモデルだけを残すと ③ のベクトルが消えて再生成になる
+    let keep = models_in_use(pool).await;
+    let placeholders = keep.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let size_sql = format!(
+        "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model NOT IN ({})",
+        placeholders
+    );
+    let delete_sql = format!(
+        "DELETE FROM tag_embeddings WHERE model NOT IN ({})",
+        placeholders
+    );
 
-    let freed_bytes: i64 = sqlx::query_scalar(
-        "SELECT COALESCE(SUM(LENGTH(vector)), 0) FROM tag_embeddings WHERE model != ?1",
-    )
-    .bind(&cfg.model)
-    .fetch_one(pool)
-    .await
-    .unwrap_or(0);
+    let mut q = sqlx::query_scalar::<_, i64>(&size_sql);
+    for m in &keep {
+        q = q.bind(m);
+    }
+    let freed_bytes: i64 = q.fetch_one(pool).await.unwrap_or(0);
 
-    let deleted = sqlx::query("DELETE FROM tag_embeddings WHERE model != ?1")
-        .bind(&cfg.model)
+    let mut d = sqlx::query(&delete_sql);
+    for m in &keep {
+        d = d.bind(m);
+    }
+    let deleted = d
         .execute(pool)
         .await
         .map_err(|e| cmd_err("cleanup_unused_embeddings", e))?
@@ -1604,6 +1664,48 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(remaining, vec!["in-use".to_string()]);
+    }
+
+    /// **使用中のモデルは1つとは限らない。**
+    /// ③ 関連タグが種別ごとに別モデルを使うので、スペクトラム検索のモデルだけを
+    /// 残す実装だと ③ のベクトルが毎回消えて作り直しになる。
+    #[tokio::test]
+    async fn cleanup_keeps_every_model_in_use() {
+        let pool = storage_test_pool().await;
+        for (tag_id, model) in [(4i64, "related-basic"), (5, "related-descriptive")] {
+            sqlx::query("INSERT INTO tag_embeddings (tag_id, model, dim, vector) VALUES (?1,?2,2,?3)")
+                .bind(tag_id)
+                .bind(model)
+                .bind(vec![0u8; 8])
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+
+        // 本番と同じ組み立て（プレースホルダ数は使用中モデルの数で決まる）
+        let keep = ["in-use", "related-basic", "related-descriptive"];
+        let placeholders = keep.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+        let sql = format!(
+            "DELETE FROM tag_embeddings WHERE model NOT IN ({})",
+            placeholders
+        );
+        let mut d = sqlx::query(&sql);
+        for m in keep {
+            d = d.bind(m);
+        }
+        assert_eq!(d.execute(&pool).await.unwrap().rows_affected(), 1, "old だけ消える");
+
+        let mut remaining: Vec<String> =
+            sqlx::query_scalar("SELECT DISTINCT model FROM tag_embeddings")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        remaining.sort();
+        assert_eq!(
+            remaining,
+            vec!["in-use", "related-basic", "related-descriptive"],
+            "③のモデルが巻き込まれない"
+        );
     }
 
     #[tokio::test]
