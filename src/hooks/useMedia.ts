@@ -33,6 +33,14 @@ export function useMedia() {
   // 現在適用中のフィルター条件を保持する Ref
   const activeFiltersRef = useRef<FilterState>({});
 
+  // batch_progress を受けての DB 再取得を間引く間隔 (ms)。
+  // 進捗バーの更新は間引かず、DB を叩く fetchMedia / fetchMasterData だけを対象にする。
+  const PROGRESS_REFRESH_DEBOUNCE_MS = 1000;
+
+  const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const refreshInFlightRef = useRef(false);
+  const refreshPendingRef = useRef(false);
+
   const fetchMedia = useCallback(async (filters?: FilterState) => {
     // 引数でフィルターが渡された場合はアクティブフィルターを更新
     if (filters !== undefined) {
@@ -93,6 +101,43 @@ export function useMedia() {
       console.error('Failed to fetch master data:', e);
     }
   }, []);
+
+  // fetchMedia + fetchMasterData を「同時に 1 組だけ」実行する。
+  // 実行中に来た要求は refreshPendingRef に畳んで、完了後にまとめて 1 回だけ追加実行する。
+  const runRefresh = useCallback(async () => {
+    if (refreshInFlightRef.current) {
+      refreshPendingRef.current = true;
+      return;
+    }
+    refreshInFlightRef.current = true;
+    try {
+      do {
+        refreshPendingRef.current = false;
+        await fetchMedia();
+        await fetchMasterData();
+      } while (refreshPendingRef.current);
+    } finally {
+      refreshInFlightRef.current = false;
+    }
+  }, [fetchMedia, fetchMasterData]);
+
+  const scheduleRefresh = useCallback(
+    (immediate: boolean) => {
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
+      if (immediate) {
+        void runRefresh();
+        return;
+      }
+      refreshTimerRef.current = setTimeout(() => {
+        refreshTimerRef.current = null;
+        void runRefresh();
+      }, PROGRESS_REFRESH_DEBOUNCE_MS);
+    },
+    [runRefresh]
+  );
 
   const fetchModels = useCallback(async () => {
     try {
@@ -437,15 +482,24 @@ export function useMedia() {
         (statusText.includes('Stopped') && !event.payload.is_paused);
 
       setScanning(!isFinished);
-      // 進行中イベントの際も、アクティブなフィルター条件を確実に適用してメディア更新
-      fetchMedia();
-      fetchMasterData();
+      // 進行中イベントの際も、アクティブなフィルター条件を確実に適用してメディア更新。
+      // ただし batch_progress は登録フェーズで 5 ファイルごと、解析フェーズで 1 ファイルごとに
+      // 飛んでくる。毎回そのまま呼ぶと get_media / get_all_tags / get_parent_folders /
+      // get_scan_folders / get_settings の 5 本が積み上がり、max_connections(5) の
+      // SQLite プールを食い潰して get_media が
+      // "pool timed out while waiting for an open connection" で失敗する。
+      // 終了イベントだけは即時、進行中は間引いて取得する。
+      scheduleRefresh(isFinished);
     });
 
     return () => {
       unlistenPromise.then((unlisten) => unlisten());
+      if (refreshTimerRef.current !== null) {
+        clearTimeout(refreshTimerRef.current);
+        refreshTimerRef.current = null;
+      }
     };
-  }, [fetchMedia, fetchMasterData, checkScanStatus]);
+  }, [fetchMedia, fetchMasterData, checkScanStatus, scheduleRefresh]);
 
   return {
     media,

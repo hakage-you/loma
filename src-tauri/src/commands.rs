@@ -1176,7 +1176,7 @@ pub async fn open_file(file_path: String) -> Result<(), String> {
 
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("cmd")
+        crate::proc::hidden_command("cmd")
             .args(["/C", "start", "", &file_path])
             .spawn()
             .map_err(|e| e.to_string())?;
@@ -1761,7 +1761,7 @@ pub async fn reanalyze_single_media(
 
 #[tauri::command]
 pub async fn check_ffmpeg_installed() -> Result<bool, String> {
-    let output = std::process::Command::new("ffmpeg")
+    let output = crate::proc::hidden_command("ffmpeg")
         .arg("-version")
         .output();
     match output {
@@ -1797,13 +1797,11 @@ pub async fn sync_folders(
 pub fn get_system_vram_gb() -> Result<f64, String> {
     #[cfg(target_os = "windows")]
     {
-        use std::process::Command;
-        use std::os::windows::process::CommandExt;
+        use crate::proc::hidden_command;
 
         // 1. Try nvidia-smi (Most accurate for NVIDIA GPUs like RTX 5070 Ti / 40xx / 30xx)
-        if let Ok(out) = Command::new("nvidia-smi")
+        if let Ok(out) = hidden_command("nvidia-smi")
             .args(&["--query-gpu=memory.total", "--format=csv,noheader,nounits"])
-            .creation_flags(0x08000000)
             .output()
         {
             if out.status.success() {
@@ -1835,9 +1833,8 @@ pub fn get_system_vram_gb() -> Result<f64, String> {
         if ($vram -gt 0) { [math]::Round($vram / 1GB, 1) } else { 0 }
         "#;
 
-        if let Ok(out) = Command::new("powershell")
+        if let Ok(out) = hidden_command("powershell")
             .args(&["-NoProfile", "-Command", ps_cmd])
-            .creation_flags(0x08000000)
             .output()
         {
             let stdout = String::from_utf8_lossy(&out.stdout);

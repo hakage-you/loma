@@ -5,6 +5,7 @@ mod db;
 mod embedding;
 mod llm;
 mod logger;
+mod proc;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;

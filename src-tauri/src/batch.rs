@@ -202,7 +202,7 @@ pub fn generate_thumbnail(
             }
         }
         // FFmpegがインストールされている場合のフォールバックコマンド実行
-        let mut output = std::process::Command::new("ffmpeg")
+        let mut output = crate::proc::hidden_command("ffmpeg")
             .args([
                 "-ss",
                 "00:00:01",
@@ -219,7 +219,7 @@ pub fn generate_thumbnail(
 
         if !(output.is_ok() && thumb_path.exists()) {
             // 00:00:01 で失敗した場合は 00:00:00 (先頭フレーム) で再試行
-            output = std::process::Command::new("ffmpeg")
+            output = crate::proc::hidden_command("ffmpeg")
                 .args([
                     "-ss",
                     "00:00:00",
@@ -1192,7 +1192,7 @@ pub async fn custom_analyze_video_media(
     // FFmpeg でメインフレームおよび前後サブフレームの抽出
     let extract_frame = |time_sec: f64, out_path: &Path| -> bool {
         let time_str = format!("{:.2}", time_sec);
-        let output = std::process::Command::new("ffmpeg")
+        let output = crate::proc::hidden_command("ffmpeg")
             .args([
                 "-ss",
                 &time_str,
@@ -1341,7 +1341,7 @@ pub async fn custom_analyze_video_media(
 
 // 補助: FFmpeg を使って動画の再生時間 (秒) を取得
 fn get_video_duration(file_path: &Path) -> Result<f64> {
-    let output = std::process::Command::new("ffprobe")
+    let output = crate::proc::hidden_command("ffprobe")
         .args([
             "-v",
             "error",
