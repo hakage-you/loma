@@ -6,6 +6,8 @@ mod embedding;
 mod llm;
 mod logger;
 mod proc;
+/// 【一時】OOM 調査用の計測。原因が分かったら消すこと
+mod probe;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -93,6 +95,8 @@ pub fn run() {
             embedding::get_embedding_storage_info,
             embedding::cleanup_unused_embeddings,
             embedding::discard_embeddings,
+            // 【一時】OOM 調査用。原因が分かったら消すこと
+            probe::append_mem_probe,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
