@@ -6,9 +6,21 @@ interface LogBottomConsoleProps {
   open: boolean;
   onToggle: () => void;
   onOpenFullModal: () => void;
-  onGetLogs: () => Promise<string>;
+  onGetLogs: (maxBytes?: number) => Promise<string>;
   onClearLogs: () => Promise<void>;
 }
+
+/**
+ * 1回の取得で受け取るログの上限。**末尾しか受け取らない。**
+ *
+ * このコンソールは最大 1,000 行しか描画しないので、それ以上を受け取る意味が無い。
+ * 1行 140 バイト程度なので 256KB あれば 1,000 行を十分まかなえる。
+ *
+ * 上限が無かったときの実測（2026-08-17）: ログ 5MB の状態で無操作放置すると、
+ * 1.5 秒ごとの全文取得で renderer プロセスが 400MB/分 増え、JS ヒープ上限
+ * 4,192MB に当たって Out of Memory で落ちた。
+ */
+const LOG_TAIL_BYTES = 256 * 1024;
 
 export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
   open,
@@ -28,17 +40,23 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const fetchLogs = async () => {
-    const text = await onGetLogs();
+    const text = await onGetLogs(LOG_TAIL_BYTES);
     setLogs(text);
   };
 
+  // **閉じている間はポーリングしない。** 以前は依存配列が [] で `open` を見ておらず、
+  // 32px のバーに畳んだ状態でも 1.5 秒ごとにログを取り続けていた。
+  // このコンポーネントは App.tsx から常にマウントされるため、
+  // 事実上アプリの起動中ずっと回りっぱなしで、これが無操作 OOM の原因だった。
+  //
+  // 畳んだバーにも行数・エラー件数・最新行を出しているので、
+  // マウント時と開閉時には1回だけ取る。回し続けるのは開いている間だけ。
   useEffect(() => {
     fetchLogs();
+    if (!open) return;
     const interval = setInterval(fetchLogs, 1500);
-    return () => {
-      if (interval) clearInterval(interval);
-    };
-  }, []);
+    return () => clearInterval(interval);
+  }, [open]);
 
   // 新しいログ受信時の自動追従判定
   useEffect(() => {

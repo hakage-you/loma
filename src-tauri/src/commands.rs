@@ -1157,8 +1157,16 @@ pub async fn unload_model(db_state: State<'_, DbState>) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn get_app_logs(app_handle: AppHandle) -> Result<String, String> {
-    Ok(crate::logger::read_logs(&app_handle))
+/// ログの末尾を返す。`max_bytes` を省略すると `DEFAULT_LOG_READ_BYTES`。
+///
+/// **定期的に呼ぶ側は必ず小さい `max_bytes` を渡すこと。** 返した文字列は
+/// そのまま WebView の JS ヒープに載る（詳細は `logger::read_logs`）。
+pub async fn get_app_logs(
+    app_handle: AppHandle,
+    max_bytes: Option<u64>,
+) -> Result<String, String> {
+    let cap = max_bytes.unwrap_or(crate::logger::DEFAULT_LOG_READ_BYTES);
+    Ok(crate::logger::read_logs(&app_handle, cap))
 }
 
 #[tauri::command]

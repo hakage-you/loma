@@ -379,9 +379,15 @@ export function useMedia() {
     }
   };
 
-  const getLogs = async (): Promise<string> => {
+  /**
+   * ログの末尾を取得する。
+   *
+   * **定期的に呼ぶ場合は必ず `maxBytes` を渡すこと。** 返り値はそのまま
+   * WebView の JS ヒープに載る。省略時はバックエンドの既定（8MB）まで読む。
+   */
+  const getLogs = async (maxBytes?: number): Promise<string> => {
     try {
-      return await invoke<string>('get_app_logs');
+      return await invoke<string>('get_app_logs', { maxBytes });
     } catch (e: any) {
       console.error('Failed to get logs:', e);
       return '';
