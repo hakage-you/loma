@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 // **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
@@ -51,6 +52,128 @@ const RULE_LABELS: Record<string, string> = {
 };
 
 const ruleLabel = (rule: string) => RULE_LABELS[rule] ?? rule;
+
+/**
+ * 一度に DOM へ出す件数。**上限ではない** —— 末尾まで来たら足していくので全件に到達できる
+ * （提案の件数を絞らないこと自体は仕様 / 計画 §6）。
+ *
+ * 提案カードは1枚あたり約72要素（規則チップ・メンバー全員ぶんの `<option>`・
+ * メンバーチップ2ボタン・サムネ最大5枚）で、一覧の行の約4倍重い。実測 2,460枚で
+ * 177,512要素・描画10.0秒だったため、初期値を一覧より小さく取る。
+ *
+ * **提案だけ初回と追加で数を変える。** `sortedSuggestions` はグループの大きい順なので
+ * 先頭ほど重く、実測で先頭50枚が 13,525要素（1枚270要素＝全体平均の約4倍）・1.7秒だった。
+ * 初回だけ 20 に絞り、以降は 50 ずつ足す。
+ */
+const TAG_PAGE = 200;
+const SUGGESTION_FIRST = 20;
+const SUGGESTION_PAGE = 50;
+
+/**
+ * リスト末尾に置いた番兵が見えたら `onMore` を呼ぶ。
+ *
+ * `active` はタブの出し分けで DOM ごと入れ替わるため、購読を張り直す引き金として渡す
+ * （タブが非表示の間は ref が null で、購読を張れない）。
+ */
+function useLoadMoreOnScroll(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  sentinelRef: React.RefObject<HTMLDivElement | null>,
+  active: boolean,
+  hasMore: boolean,
+  /** いま出ている件数。**購読を張り直すためだけに要る** ——
+   *  交差したままだと IntersectionObserver は二度目を通知しないので、
+   *  1回足すごとに張り直して、画面が埋まるまで続けさせる */
+  loadedCount: number,
+  onMore: () => void
+) {
+  useEffect(() => {
+    if (!active || !hasMore) return;
+    const root = rootRef.current;
+    const target = sentinelRef.current;
+    if (!root || !target) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onMore();
+      },
+      // 末尾に着く前に足す。スクロールが止まって見えないようにするため
+      { root, rootMargin: '600px' }
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [rootRef, sentinelRef, active, hasMore, loadedCount, onMore]);
+}
+
+/**
+ * 提案カードのサンプルサムネと、ホバー時の拡大表示。
+ *
+ * **ホバーの状態をここに閉じ込めるためだけに切り出してある。**
+ * モーダル直下に持つと、サムネの上をマウスが通るたびにモーダル全体が再描画される。
+ *
+ * 拡大表示は `document.body` へ portal する。モーダルの内側は
+ * `backdrop-blur` と `zoom-in-95` が position:fixed の基準を作るため、
+ * その場に置くとスクロール領域で切られる。
+ */
+const SampleThumbStack: React.FC<{
+  thumbnails: string[];
+  totalImagesCount?: number;
+}> = ({ thumbnails, totalImagesCount }) => {
+  const [hovered, setHovered] = useState<{ src: string; x: number; y: number } | null>(null);
+
+  return (
+    <div className="flex items-center gap-1 shrink-0 ml-1">
+      <div className="flex items-center -space-x-2 p-0.5" title="Group sample media">
+        {thumbnails.slice(0, 5).map((thumbPath, idx) => (
+          <img
+            key={idx}
+            src={convertFileSrc(thumbPath)}
+            alt="sample"
+            width={28}
+            height={28}
+            loading="lazy"
+            decoding="async"
+            className="w-7 h-7 rounded-md object-cover border-2 border-slate-900 shadow-md cursor-pointer transition-transform hover:scale-110 relative"
+            onMouseEnter={(e) => {
+              const rect = e.currentTarget.getBoundingClientRect();
+              setHovered({
+                src: convertFileSrc(thumbPath),
+                x: rect.left + rect.width / 2,
+                y: rect.top,
+              });
+            }}
+            onMouseLeave={() => setHovered(null)}
+            onError={(e) => {
+              (e.target as HTMLElement).style.display = 'none';
+            }}
+          />
+        ))}
+      </div>
+
+      {/* 最大枚数以上の画像がある場合の「続きあり (+N / ...)」インジケーター */}
+      {totalImagesCount !== undefined && totalImagesCount > thumbnails.length && (
+        <span
+          className="px-1.5 py-0.5 bg-slate-800/90 text-slate-300 border border-white/10 rounded-md text-[10px] font-mono font-bold tracking-tight shrink-0 shadow-sm"
+          title={`${totalImagesCount} total images (${totalImagesCount - thumbnails.length} more)`}
+        >
+          +{totalImagesCount - thumbnails.length}…
+        </span>
+      )}
+
+      {hovered &&
+        createPortal(
+          <div
+            style={{
+              left: `${hovered.x}px`,
+              top: hovered.y < 160 ? `${hovered.y + 36}px` : `${hovered.y - 136}px`,
+            }}
+            className="fixed -translate-x-1/2 w-32 h-32 rounded-2xl overflow-hidden border-2 border-indigo-500 bg-slate-950 shadow-2xl z-[120] pointer-events-none animate-in fade-in zoom-in-95 duration-100 flex items-center justify-center select-none"
+          >
+            <img src={hovered.src} alt="floating preview" className="w-full h-full object-cover" />
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+};
 
 interface TagManagementModalProps {
   open: boolean;
@@ -176,18 +299,77 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
   const [rejectedIds, setRejectedIds] = useState<Set<string>>(new Set());
   const [previewMediaItem, setPreviewMediaItem] = useState<MediaItem | null>(null);
-  const [hoveredThumb, setHoveredThumb] = useState<{ src: string; x: number; y: number } | null>(null);
+
+  /**
+   * いま DOM に出している件数。**全件に到達できる**（末尾で足していく）。
+   * 検索・並べ替え・種別・方式・タブが変わったら先頭に戻す。
+   */
+  const [visibleTagCount, setVisibleTagCount] = useState<number>(TAG_PAGE);
+  const [visibleSuggestionCount, setVisibleSuggestionCount] = useState<number>(SUGGESTION_FIRST);
+  const tagScrollRef = React.useRef<HTMLDivElement>(null);
+  const tagSentinelRef = React.useRef<HTMLDivElement>(null);
+  const sugScrollRef = React.useRef<HTMLDivElement>(null);
+  const sugSentinelRef = React.useRef<HTMLDivElement>(null);
+  const loadMoreTags = React.useCallback(() => setVisibleTagCount((n) => n + TAG_PAGE), []);
+  const loadMoreSuggestions = React.useCallback(
+    () => setVisibleSuggestionCount((n) => n + SUGGESTION_PAGE),
+    []
+  );
+
+  // 【一時】計測ログの解釈に要る値。**どのタブを描画したかが要る** ——
+  // タブが 'all' のときの render は一覧の行数、'suggestions' のときは提案カードの枚数を指す。
+  // reloadSuggestions の依存に足すと読み直しが走るので参照で持つ
+  const perfRef = React.useRef({ tags: 0, tab: '' as string, suggestions: 0 });
+  perfRef.current = { tags: tags.length, tab: activeTab, suggestions: suggestions.length };
+
+  /**
+   * 【一時】描画だけの計測。タブや方式のボタンで印を付け、ペイント後に経過を出す。
+   * バックエンドを挟まない切り替え（タブ）はこれでしか測れない。
+   */
+  const perfMarkRef = React.useRef<{ label: string; t0: number } | null>(null);
+  const markPerf = (label: string) => {
+    perfMarkRef.current = { label, t0: performance.now() };
+  };
 
   useEffect(() => {
-    if (open) invoke('cleanup_missing_media').catch(() => {});
+    const mark = perfMarkRef.current;
+    if (!mark) return;
+    perfMarkRef.current = null;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const { tags: tagCount, tab, suggestions: sugCount } = perfRef.current;
+        console.log(
+          `[tag-perf] ${mark.label} render=${Math.round(performance.now() - mark.t0)}ms ` +
+            `tab=${tab} tags=${tagCount} suggestions=${sugCount} ` +
+            `dom=${document.querySelectorAll('.fixed.inset-0.z-50 *').length}`
+        );
+      })
+    );
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    // 【一時】暫定対処の計測用（計画 §4）。開くたびに全メディアの存在確認が走るので、
+    // その所要時間を提案の読み込みと分けて出す
+    const t0 = performance.now();
+    invoke('cleanup_missing_media')
+      .then(() =>
+        console.log(`[tag-perf] cleanup_missing_media=${Math.round(performance.now() - t0)}ms`)
+      )
+      .catch(() => {});
   }, [open]);
 
   /** 保存済みの判定と実行状態を読み直す */
   const reloadSuggestions = React.useCallback(async () => {
+    // 【一時】暫定対処の計測用（計画 §4）。バックエンドの応答と描画を分けて出す。
+    // backend が支配的なら、残りの重さは Rust 側（build_suggestions がグループごとに
+    // 2クエリを逐次で投げている）にある
+    const t0 = performance.now();
     const [cached, status] = await Promise.all([
       invoke<MergeSuggestion[]>('load_tag_suggestions_cache', { method }),
       invoke<typeof runStatus>('get_suggestion_run_status', { method }),
     ]);
+    const backendMs = performance.now() - t0;
     setSuggestions(cached ?? []);
     const initMasterMap: Record<string, number> = {};
     (cached ?? []).forEach((s) => {
@@ -198,6 +380,19 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     // 既定はどれも未承認。ユーザーは上から見て良いものだけ採る
     setAcceptedIds(new Set());
     setRejectedIds(new Set());
+
+    // 【一時】rAF を2段にしてペイント後まで待つ。1段目はコミット後・描画前に走るため
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() =>
+        console.log(
+          `[tag-perf] reload:${method} backend=${Math.round(backendMs)}ms ` +
+            `render=${Math.round(performance.now() - t0 - backendMs)}ms ` +
+            `tab=${perfRef.current.tab} tags=${perfRef.current.tags} ` +
+            `suggestions=${(cached ?? []).length} ` +
+            `dom=${document.querySelectorAll('.fixed.inset-0.z-50 *').length}`
+        )
+      )
+    );
   }, [method]);
 
   // 保存済みの判定から提案を復元する。**方式を切り替えたら読み直す**
@@ -266,15 +461,58 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     };
   }, []);
 
-  if (!open) return null;
+  // 一覧の絞り込みと並べ替え。**早期 return より前に置く。**
+  // 以前はここが素の式で、提案タブを見ている間も 5,840 件の filter と
+  // localeCompare が毎レンダー走っていた
+  const freeTags = React.useMemo(() => tags.filter((t) => !t.is_category), [tags]);
+  const filteredTags = React.useMemo(() => {
+    const q = search.toLowerCase();
+    return freeTags.filter(
+      (t) =>
+        (kindFilter === 'all' || t.kind === kindFilter) &&
+        (t.name.toLowerCase().includes(q) || (t.name_ja && t.name_ja.toLowerCase().includes(q)))
+    );
+  }, [freeTags, kindFilter, search]);
+  const sortedTags = React.useMemo(() => {
+    const list = [...filteredTags];
+    if (sortBy === 'count_desc') return list.sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
+    if (sortBy === 'count_asc') return list.sort((a, b) => (a.count ?? 0) - (b.count ?? 0));
+    if (sortBy === 'alpha_asc') return list.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortBy === 'ja_asc') {
+      return list.sort((a, b) =>
+        (a.name_ja || a.name).localeCompare(b.name_ja || b.name, 'ja')
+      );
+    }
+    return list;
+  }, [filteredTags, sortBy]);
 
-  const freeTags = tags.filter((t) => !t.is_category);
-  const filteredTags = freeTags.filter(
-    (t) =>
-      (kindFilter === 'all' || t.kind === kindFilter) &&
-      (t.name.toLowerCase().includes(search.toLowerCase()) ||
-        (t.name_ja && t.name_ja.toLowerCase().includes(search.toLowerCase())))
+  // 表示件数を先頭に戻す条件。母集団や並びが変わったのに途中から出ていると、
+  // 上に何が来たのかが分からなくなる
+  useEffect(() => {
+    setVisibleTagCount(TAG_PAGE);
+  }, [search, sortBy, kindFilter, activeTab]);
+  useEffect(() => {
+    setVisibleSuggestionCount(SUGGESTION_FIRST);
+  }, [sortedSuggestions, activeTab]);
+
+  useLoadMoreOnScroll(
+    tagScrollRef,
+    tagSentinelRef,
+    activeTab === 'all',
+    visibleTagCount < sortedTags.length,
+    visibleTagCount,
+    loadMoreTags
   );
+  useLoadMoreOnScroll(
+    sugScrollRef,
+    sugSentinelRef,
+    activeTab === 'suggestions',
+    visibleSuggestionCount < sortedSuggestions.length,
+    visibleSuggestionCount,
+    loadMoreSuggestions
+  );
+
+  if (!open) return null;
 
   // タグをクリックしてメイン画面で即座に絞り込み検索
   const handleTriggerSearchFilter = (tagName: string) => {
@@ -574,18 +812,6 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     }
   };
 
-  const sortedTags = [...filteredTags].sort((a, b) => {
-    if (sortBy === 'count_desc') return (b.count ?? 0) - (a.count ?? 0);
-    if (sortBy === 'count_asc') return (a.count ?? 0) - (b.count ?? 0);
-    if (sortBy === 'alpha_asc') return a.name.localeCompare(b.name);
-    if (sortBy === 'ja_asc') {
-      const nameA = a.name_ja || a.name;
-      const nameB = b.name_ja || b.name;
-      return nameA.localeCompare(nameB, 'ja');
-    }
-    return 0;
-  });
-
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
       <div className="bg-slate-900 border border-white/10 rounded-2xl w-full max-w-3xl max-h-[85vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150 relative">
@@ -615,8 +841,11 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         <div className="px-4 py-2.5 bg-slate-900 border-b border-white/10 flex items-center justify-between gap-3">
           <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
             <button
-              onClick={() => setActiveTab('all')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+              onClick={() => {
+                markPerf('tab:all');
+                setActiveTab('all');
+              }}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer whitespace-nowrap ${
                 activeTab === 'all'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-slate-200'
@@ -625,56 +854,64 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               {t('tag_modal.tab_all', 'All Free Tags')} ({freeTags.length})
             </button>
             <button
-              onClick={() => setActiveTab('suggestions')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+              onClick={() => {
+                markPerf('tab:suggestions');
+                setActiveTab('suggestions');
+              }}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                 activeTab === 'suggestions'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              {t('tag_modal.tab_proposals', 'AI Merge Proposals')} ({suggestions.length})
+              {t('tag_modal.tab_proposals', 'AI Suggestions')} ({suggestions.length})
             </button>
           </div>
 
-          {/* 方式の切り替え。**結果は方式ごとに別に保存されている**ので、
-              切り替えても回し直しは要らない（保存済みの判定から組み直す） */}
-          <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
-              {METHODS.map((m) => (
-                <button
-                  key={m.id}
-                  onClick={() => setMethod(m.id)}
-                  disabled={scanningSuggestions}
-                  title={m.hint}
-                  className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer disabled:opacity-50 ${
-                    method === m.id
-                      ? 'bg-slate-700 text-white shadow'
-                      : 'text-slate-400 hover:text-slate-200'
-                  }`}
-                >
-                  {m.label}
-                </button>
-              ))}
+          {/* 方式の切り替えと実行は **AI提案タブのものだけ**。
+              一覧タブにも出ていると、一覧の表示に効く切り替えに見える。
+              結果は方式ごとに別に保存されているので、切り替えても回し直しは要らない
+              （保存済みの判定から組み直す） */}
+          {activeTab === 'suggestions' && (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
+                {METHODS.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setMethod(m.id)}
+                    disabled={scanningSuggestions}
+                    title={m.hint}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer disabled:opacity-50 whitespace-nowrap ${
+                      method === m.id
+                        ? 'bg-slate-700 text-white shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {m.label}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={() => handleScanSuggestions(false)}
+                disabled={scanningSuggestions || applyingMerges || isScanning}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+              >
+                {scanningSuggestions ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5" />
+                )}
+                <span>{t('tag_modal.btn_scan', 'Scan Similar Tags')}</span>
+              </button>
             </div>
-
-            <button
-              onClick={() => handleScanSuggestions(false)}
-              disabled={scanningSuggestions || applyingMerges || isScanning}
-              className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50"
-            >
-              {scanningSuggestions ? (
-                <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-              ) : (
-                <Sparkles className="w-3.5 h-3.5" />
-              )}
-              <span>{t('tag_modal.btn_scan', 'Scan Similar Tags')}</span>
-            </button>
-          </div>
+          )}
         </div>
 
-        {/* 実行中の表示。② は数分かかるので、進捗が無いと止まって見える */}
-        {(scanningSuggestions || scanProgress) && (
+        {/* 実行中の表示。② は数分かかるので、進捗が無いと止まって見える。
+            方式の切り替えと同じく **AI提案タブのものだけ** 出す */}
+        {activeTab === 'suggestions' && (scanningSuggestions || scanProgress) && (
           <div className="mx-4 mt-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl px-3 py-2 text-indigo-200 text-xs flex items-center gap-2 shrink-0">
             {scanningSuggestions && <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />}
             <span className="truncate">
@@ -687,7 +924,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         {/* 未判定の提示。
             **「見たが該当なし」と「まだ見ていない」は結果から区別できない。**
             中断で残ったぶん・実行後に増えたタグ・失敗したチャンクがここに出る。 */}
-        {!scanningSuggestions && runStatus && runStatus.unjudged_count > 0 && (
+        {activeTab === 'suggestions' && !scanningSuggestions && runStatus && runStatus.unjudged_count > 0 && (
           <div className="mx-4 mt-3 bg-amber-500/10 border border-amber-500/30 rounded-xl px-3 py-2 text-amber-200 text-xs flex items-center justify-between gap-3 shrink-0">
             <span>
               未判定のタグが <b>{runStatus.unjudged_count}件</b> あります
@@ -705,7 +942,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         )}
 
         {/* 全件やり直し。段1のカテゴリごと引き直したいときの唯一の手段 */}
-        {!scanningSuggestions && method === 'hypernym' && runStatus && (
+        {activeTab === 'suggestions' && !scanningSuggestions && method === 'hypernym' && runStatus && (
           <div className="mx-4 mt-2 flex justify-end shrink-0">
             <button
               onClick={() => handleScanSuggestions(true)}
@@ -806,8 +1043,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
             </div>
 
             {/* List */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
-              {sortedTags.map((t) => {
+            <div ref={tagScrollRef} className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
+              {sortedTags.slice(0, visibleTagCount).map((t) => {
                 const isEditing = editingTagId === t.id;
                 const isSelected = selectedTagIds.includes(t.id);
                 return (
@@ -937,6 +1174,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   </div>
                 );
               })}
+              {/* 末尾に来たら次を足す。上限ではないので全件に到達できる */}
+              <div ref={tagSentinelRef} className="h-px" />
             </div>
           </div>
         )}
@@ -978,8 +1217,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
-                  {sortedSuggestions.map((sug) => {
+                <div ref={sugScrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+                  {sortedSuggestions.slice(0, visibleSuggestionCount).map((sug) => {
                     if (!sug || !sug.target_tag) return null;
                     const sources = Array.isArray(sug.source_tags)
                       ? sug.source_tags.filter(Boolean)
@@ -1044,38 +1283,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
                             {/* サンプルサムネイルのアバタースタック表示 & ホバーフローティング拡大 & 続きありインジケーター */}
                             {sug.sample_thumbnails && sug.sample_thumbnails.length > 0 && (
-                              <div className="flex items-center gap-1 shrink-0 ml-1">
-                                <div className="flex items-center -space-x-2 p-0.5" title="Group sample media">
-                                  {sug.sample_thumbnails.slice(0, 5).map((thumbPath, idx) => (
-                                    <img
-                                      key={idx}
-                                      src={convertFileSrc(thumbPath)}
-                                      alt="sample"
-                                      className="w-7 h-7 rounded-md object-cover border-2 border-slate-900 shadow-md cursor-pointer transition-transform hover:scale-110 relative"
-                                      onMouseEnter={(e) => {
-                                        const rect = e.currentTarget.getBoundingClientRect();
-                                        setHoveredThumb({
-                                          src: convertFileSrc(thumbPath),
-                                          x: rect.left + rect.width / 2,
-                                          y: rect.top,
-                                        });
-                                      }}
-                                      onMouseLeave={() => setHoveredThumb(null)}
-                                      onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
-                                    />
-                                  ))}
-                                </div>
-
-                                {/* 最大枚数以上の画像がある場合の「続きあり (+N / ...)」インジケーター */}
-                                {sug.total_images_count !== undefined && sug.total_images_count > sug.sample_thumbnails.length && (
-                                  <span
-                                    className="px-1.5 py-0.5 bg-slate-800/90 text-slate-300 border border-white/10 rounded-md text-[10px] font-mono font-bold tracking-tight shrink-0 shadow-sm"
-                                    title={`${sug.total_images_count} total images (${sug.total_images_count - sug.sample_thumbnails.length} more)`}
-                                  >
-                                    +{sug.total_images_count - sug.sample_thumbnails.length}…
-                                  </span>
-                                )}
-                              </div>
+                              <SampleThumbStack
+                                thumbnails={sug.sample_thumbnails}
+                                totalImagesCount={sug.total_images_count}
+                              />
                             )}
                           </div>
 
@@ -1225,6 +1436,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                       </div>
                     );
                   })}
+                  {/* 末尾に来たら次を足す。上限ではないので全件に到達できる */}
+                  <div ref={sugSentinelRef} className="h-px" />
                 </div>
               </>
             )}
@@ -1337,22 +1550,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         </div>
       )}
 
-      {/* Floating Hover Preview Tooltip (Always fully visible above all modal scrollports) */}
-      {hoveredThumb && (
-        <div
-          style={{
-            left: `${hoveredThumb.x}px`,
-            top: hoveredThumb.y < 160 ? `${hoveredThumb.y + 36}px` : `${hoveredThumb.y - 136}px`,
-          }}
-          className="fixed -translate-x-1/2 w-32 h-32 rounded-2xl overflow-hidden border-2 border-indigo-500 bg-slate-950 shadow-2xl z-[120] pointer-events-none animate-in fade-in zoom-in-95 duration-100 flex items-center justify-center select-none"
-        >
-          <img
-            src={hoveredThumb.src}
-            alt="floating preview"
-            className="w-full h-full object-cover"
-          />
-        </div>
-      )}
+      {/* ホバー時の拡大表示は SampleThumbStack が body へ portal する。
+          ここに置くと、サムネの上をマウスが通るたびにモーダル全体が再描画される */}
     </div>
   );
 };

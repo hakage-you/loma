@@ -81,8 +81,8 @@
   },
   "tag_modal": {
     "title": "タグ管理・グループ統合",
-    "tab_all": "すべての自由タグ",
-    "tab_proposals": "類似タグの統合(AI解析による提案)",
+    "tab_all": "すべてのタグ",
+    "tab_proposals": "AI提案",
     "btn_scan": "類似タグを検出",
     "sort_count_desc": "件数 (多い順)",
     "sort_count_asc": "件数 (少ない順)",

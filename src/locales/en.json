@@ -81,8 +81,8 @@
   },
   "tag_modal": {
     "title": "Tag Management & Group Consolidation",
-    "tab_all": "All Free Tags",
-    "tab_proposals": "AI Merge Proposals",
+    "tab_all": "All Tags",
+    "tab_proposals": "AI Suggestions",
     "btn_scan": "Scan Similar Tags",
     "sort_count_desc": "Count (High → Low)",
     "sort_count_asc": "Count (Low → High)",
