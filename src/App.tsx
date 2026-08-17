@@ -20,8 +20,6 @@ import { AboutModal } from './components/AboutModal';
 import { SearchModal } from './components/SearchModal';
 import { SpectrumModal } from './components/SpectrumModal';
 import { STATUS_TAG_INSUFFICIENT } from './constants/spectrum';
-// 【一時】OOM 調査用の計測。原因が分かったら消すこと
-import { useMemProbe } from './debug/memProbe';
 
 function AppContent() {
   const { t } = useTranslation();
@@ -63,9 +61,6 @@ function AppContent() {
     updateSetting,
     reanalyzeSingleMedia,
   } = useMedia();
-
-  // 【一時】OOM 調査用の計測。原因が分かったら消すこと
-  useMemProbe({ media: media.length, tags: tags.length });
 
   const [globalDownloadProgress, setGlobalDownloadProgress] = useState<OllamaPullProgressPayload | null>(null);
   /** 概念スペクトラム探索の起点。null で閉じる */
