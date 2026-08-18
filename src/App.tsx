@@ -33,6 +33,7 @@ function AppContent() {
     scanning,
     settings,
     availableModels,
+    visionModels,
     errorModal,
     setErrorModal,
     fetchMasterData,
@@ -564,6 +565,7 @@ function AppContent() {
         open={isSettingsOpen}
         settings={settings}
         availableModels={availableModels}
+        visionModels={visionModels}
         onClose={() => setIsSettingsOpen(false)}
         onUpdateSetting={updateSetting}
         onFetchModels={fetchModels}

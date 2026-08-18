@@ -5,6 +5,7 @@ import {
   MOCK_SCAN_FOLDERS,
   MOCK_SETTINGS,
   MOCK_AVAILABLE_MODELS,
+  MOCK_VISION_MODELS,
   MOCK_VRAM_GB,
   MOCK_LOGS,
 } from './data';
@@ -54,6 +55,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_scan_folders: () => scanFoldersState,
   get_settings: () => settingsState,
   get_available_models: () => MOCK_AVAILABLE_MODELS,
+  get_vision_capable_models: () => MOCK_VISION_MODELS,
   // `?debugScan=mid` では「起動時点で既にスキャン実行中」を再現する
   get_scan_status: () => scanning || isMockScanRunning(),
   get_app_logs: () => MOCK_LOGS,

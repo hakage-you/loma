@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -29,9 +29,12 @@ interface SettingsModalProps {
   open: boolean;
   settings: Record<string, string>;
   availableModels: string[];
+  /** `availableModels` のうち vision を宣言しているモデル。null は「判定できていない」 */
+  visionModels: string[] | null;
   onClose: () => void;
   onUpdateSetting: (key: string, value: string) => Promise<void>;
-  onFetchModels: () => Promise<void>;
+  /** `refresh` を true にすると vision 宣言のキャッシュを捨てて取り直す */
+  onFetchModels: (refresh?: boolean) => Promise<void>;
   onUnloadModel?: () => Promise<void>;
 }
 
@@ -71,6 +74,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
   settings,
   availableModels,
+  visionModels,
   onClose,
   onUpdateSetting,
   onFetchModels,
@@ -183,6 +187,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [ffmpegNoticeEnabled, setFfmpegNoticeEnabled] = useState<boolean>(settings.ffmpeg_notice_enabled !== 'false');
 
   const [loadingModels, setLoadingModels] = useState(false);
+  /** VLM プルダウンで vision 未宣言のモデルも出すか。既定は絞り込んだ状態 */
+  const [showNonVisionModels, setShowNonVisionModels] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [savedStatus, setSavedStatus] = useState(false);
   const [unloadedStatus, setUnloadedStatus] = useState(false);
@@ -252,6 +258,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       .catch(() => setEffectivePromptType(null));
   }, [open, provider, selectedVlmModel, geminiModel, openaiModel, claudeModel, forceDetailedPrompt]);
 
+  /** null は「判定できていない」。その場合は絞り込みも表記も行わない */
+  const visionModelSet = useMemo(() => (visionModels ? new Set(visionModels) : null), [visionModels]);
+
+  /**
+   * VLM プルダウンに出す選択肢。
+   *
+   * 既定は vision 宣言のあるものだけ。ただし**現在選択中のモデルは宣言が無くても必ず残す**。
+   * 消してしまうと `<select>` の value が選択肢に無くなり、
+   * 保存済みのモデルがあるのに何も選んでいないように見える。
+   */
+  const vlmModelOptions = useMemo(() => {
+    if (!visionModelSet || showNonVisionModels) return availableModels;
+    const filtered = availableModels.filter((m) => visionModelSet.has(m));
+    if (selectedVlmModel && availableModels.includes(selectedVlmModel) && !filtered.includes(selectedVlmModel)) {
+      return [selectedVlmModel, ...filtered];
+    }
+    return filtered;
+  }, [availableModels, visionModelSet, showNonVisionModels, selectedVlmModel]);
+
+  /** 絞り込みで隠れうる件数。0 件ならトグルを出しても何も起きない */
+  const nonVisionModelCount = useMemo(
+    () => (visionModelSet ? availableModels.filter((m) => !visionModelSet.has(m)).length : 0),
+    [availableModels, visionModelSet]
+  );
+
+  // フックは早期 return より前にすべて並べる（`if (!open) return null` の後ろに置くと
+  // 閉じている間だけ呼ばれず、React が「フックの順序が変わった」で描画ごと落とす）
   if (!open) return null;
 
   const isGranularityDisabled = effectivePromptType === 'LIGHT';
@@ -296,9 +329,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     }
   };
 
+  /** vision 宣言のキャッシュを捨てて取り直す。明示的な取得はこのボタンだけ */
   const handleRefreshModels = async () => {
     setLoadingModels(true);
-    await onFetchModels();
+    await onFetchModels(true);
     setLoadingModels(false);
   };
 
@@ -762,16 +796,47 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onChange={(e) => setSelectedVlmModel(e.target.value)}
                   className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                 >
-                  {availableModels.length === 0 ? (
+                  {vlmModelOptions.length === 0 ? (
                     <option value={selectedVlmModel}>{selectedVlmModel} (Current)</option>
                   ) : (
-                    availableModels.map((m) => (
+                    vlmModelOptions.map((m) => (
                       <option key={m} value={m}>
-                        {m} {m.includes('qwen3-vl') || m.includes('llava') || m.includes('vision') || m.includes('gemma4') ? '⭐ [Vision VLM]' : ''}
+                        {m}
+                        {/* 印を付けるのは「宣言が無い」側だけ。宣言があることを強調すると
+                            動作確認済みのように読めるが、宣言は候補に出す根拠でしかない */}
+                        {visionModelSet && !visionModelSet.has(m)
+                          ? ` — ${t('settings.label_model_vision_undeclared', 'vision 未宣言')}`
+                          : ''}
                       </option>
                     ))
                   )}
                 </select>
+
+                {/* vision 宣言による絞り込みの状態。判定できていない（null）ときは何も出さない */}
+                {visionModelSet && (
+                  <div className="mt-1.5 space-y-1">
+                    {!showNonVisionModels && vlmModelOptions.length === 0 && availableModels.length > 0 && (
+                      <div className="p-2 bg-amber-500/10 border border-amber-500/30 rounded-lg text-amber-300 text-[11px] leading-relaxed">
+                        {t('settings.no_vision_models', 'vision 対応を宣言しているモデルが見つかりませんでした。下のチェックを入れると、宣言が無いモデルも選べます。')}
+                      </div>
+                    )}
+                    {nonVisionModelCount > 0 && (
+                      <label className="flex items-center gap-1.5 text-[11px] text-slate-400 cursor-pointer w-fit">
+                        <input
+                          type="checkbox"
+                          checked={showNonVisionModels}
+                          onChange={(e) => setShowNonVisionModels(e.target.checked)}
+                          className="accent-indigo-500 cursor-pointer"
+                        />
+                        {t('settings.label_show_non_vision_models', 'vision 未宣言のモデルも表示')}
+                        <span className="font-mono text-slate-500">({nonVisionModelCount})</span>
+                      </label>
+                    )}
+                    <p className="text-[10px] text-slate-500 leading-relaxed">
+                      {t('settings.vision_filter_note', 'vision の対応状況は Ollama の宣言で判定しています。宣言があっても解析が安定するとは限りません。')}
+                    </p>
+                  </div>
+                )}
 
                 {/* VLM Recommended Preset Cards */}
                 <div className="mt-3 space-y-1.5">

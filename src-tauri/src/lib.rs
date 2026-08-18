@@ -54,6 +54,7 @@ pub fn run() {
             commands::get_settings,
             commands::update_setting,
             commands::get_available_models,
+            commands::get_vision_capable_models,
             commands::get_all_tags,
             commands::get_parent_folders,
             commands::get_scan_folders,

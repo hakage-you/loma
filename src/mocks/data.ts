@@ -147,6 +147,10 @@ export const MOCK_SETTINGS: Record<string, string> = {
 // 混在した表示を mock モードでも確認できるようにする
 export const MOCK_AVAILABLE_MODELS: string[] = ['qwen3-vl:8b-instruct', 'qwen2.5:7b'];
 
+// vision を宣言しているのは片方だけ。VLM プルダウンの絞り込みと
+// 「vision 未宣言のモデルも表示」トグルを mock モードで確認できるようにする
+export const MOCK_VISION_MODELS: string[] = ['qwen3-vl:8b-instruct'];
+
 export const MOCK_VRAM_GB = 12.0;
 
 export const MOCK_LOGS = [

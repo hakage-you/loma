@@ -1,4 +1,4 @@
-use crate::batch::{fetch_ollama_models, run_scan_and_batch};
+use crate::batch::{fetch_ollama_models, fetch_vision_capable_models, run_scan_and_batch};
 use crate::db::DbState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -596,6 +596,27 @@ pub async fn get_available_models(db_state: State<'_, DbState>) -> Result<Vec<St
         .unwrap_or_else(|| "http://localhost:11434".to_string());
 
     fetch_ollama_models(&url).await.map_err(|e| e.to_string())
+}
+
+/// `get_available_models` のうち、Ollama が `vision` を宣言しているモデルの名前だけを返す。
+///
+/// VLM のプルダウンはこれで絞り込む。**宣言があっても解析が安定する保証は無い**ため、
+/// 呼び出し側で「動作確認済み」と読めるラベルを付けないこと。
+/// `refresh` を true にすると `/api/show` の結果を取り直す（「モデル一覧を取得」ボタン用）。
+#[tauri::command]
+pub async fn get_vision_capable_models(
+    db_state: State<'_, DbState>,
+    refresh: bool,
+) -> Result<Vec<String>, String> {
+    let url: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_url'")
+        .fetch_optional(&db_state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    fetch_vision_capable_models(&url, refresh)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]

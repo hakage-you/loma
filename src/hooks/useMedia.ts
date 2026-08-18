@@ -26,6 +26,13 @@ export function useMedia() {
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   /**
+   * `availableModels` のうち Ollama が `vision` を宣言しているモデルの名前。
+   *
+   * `null` は「まだ取れていない / 取得に失敗した」であって「0件」ではない。
+   * 表示側はこの2つを区別すること（判定できないときに選択肢を消してはいけない）。
+   */
+  const [visionModels, setVisionModels] = useState<string[] | null>(null);
+  /**
    * エラー表示。**ここで文言を組み立てない。**
    * `useMedia` は I18nProvider の外側でも呼ばれるため `useTranslation` を使えない。
    * 何が失敗したかは `messageKey` で渡し、文言の解決は表示側で行う。
@@ -152,12 +159,27 @@ export function useMedia() {
     [runRefresh]
   );
 
-  const fetchModels = useCallback(async () => {
+  /**
+   * モデル一覧と vision 宣言の一覧を取り直す。
+   *
+   * `refresh` は vision 宣言のキャッシュ（Rust 側でプロセス内に持っている）を捨てるかどうか。
+   * 明示的な「モデル一覧を取得」ボタンからのみ true にする。
+   * 一覧の取得と vision の取得は別々に握り潰す —— vision 側が落ちても、
+   * モデル一覧そのものは表示できるため。
+   */
+  const fetchModels = useCallback(async (refresh = false) => {
     try {
       const models = await invoke<string[]>('get_available_models');
       setAvailableModels(models);
     } catch (e) {
       console.error('Failed to fetch available models:', e);
+    }
+    try {
+      const vision = await invoke<string[]>('get_vision_capable_models', { refresh });
+      setVisionModels(vision);
+    } catch (e) {
+      console.error('Failed to fetch vision capabilities:', e);
+      setVisionModels(null);
     }
   }, []);
 
@@ -514,6 +536,7 @@ export function useMedia() {
     scanning,
     settings,
     availableModels,
+    visionModels,
     errorModal,
     setErrorModal,
     fetchMedia,

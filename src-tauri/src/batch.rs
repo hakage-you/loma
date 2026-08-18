@@ -4,11 +4,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
@@ -55,6 +56,20 @@ struct OllamaTagsResponse {
 pub struct OllamaModel {
     pub name: String,
 }
+
+/// `/api/show` の応答。使うのは `capabilities` だけ。
+#[derive(Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+/// モデル名 → `vision` を宣言しているか。
+///
+/// `/api/show` はモデル1件につき1リクエストで、モデル一覧の取得は設定画面を開くたびに走る
+/// （`fetch_ollama_models` のコメント参照）。同じ名前のモデルで宣言が変わることはまず無いので、
+/// プロセスが生きている間は使い回す。取り直しは `refresh` を渡したときだけ。
+static VISION_CAPABILITY_CACHE: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
 
 /// 動画マルチフレーム解析の Ollama オプション。
 ///
@@ -289,6 +304,94 @@ pub async fn fetch_ollama_models(base_url: &str) -> Result<Vec<String>> {
     let res = client.get(format!("{}/api/tags", base_url)).send().await?;
     let tags_res: OllamaTagsResponse = res.json().await?;
     Ok(tags_res.models.into_iter().map(|m| m.name).collect())
+}
+
+/// `/api/tags` のモデルのうち、`/api/show` の `capabilities` に `"vision"` を含むものを返す。
+///
+/// **宣言は「選択肢に出してよい」の根拠でしかない。** `gemma4:e4b` は vision を宣言していながら
+/// 解析の成否が大きくばらつく（2026-07-30 に tools/prompt-check で実測。同一12枚で LIGHT 6/12）。
+/// 呼び出し側でこれを「動く保証」として見せないこと。
+///
+/// `/api/show` が失敗したモデルは vision 無しとして扱うが、**キャッシュには入れない**
+/// （一時的な失敗を焼き付けず、次の取得でやり直せるようにするため）。
+pub async fn fetch_vision_capable_models(base_url: &str, refresh: bool) -> Result<Vec<String>> {
+    let names = fetch_ollama_models(base_url).await?;
+
+    if refresh {
+        if let Ok(mut cache) = VISION_CAPABILITY_CACHE.lock() {
+            *cache = None;
+        }
+    }
+
+    // キャッシュ済みと未取得をここで仕分けし、ロックは await をまたぐ前に手放す
+    let mut known: HashMap<String, bool> = HashMap::new();
+    let mut unknown: Vec<String> = Vec::new();
+    {
+        let guard = VISION_CAPABILITY_CACHE.lock().ok();
+        let cached = guard.as_ref().and_then(|c| c.as_ref());
+        for name in &names {
+            match cached.and_then(|c| c.get(name)) {
+                Some(&vision) => {
+                    known.insert(name.clone(), vision);
+                }
+                None => unknown.push(name.clone()),
+            }
+        }
+    }
+
+    if !unknown.is_empty() {
+        // 逐次で回すとモデル数に比例して設定画面が待たされる。
+        // 接続プールは Client が持つので、clone しても TCP 接続は使い回される。
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        let endpoint = format!("{}/api/show", base_url.trim_end_matches('/'));
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for name in unknown {
+            let client = client.clone();
+            let endpoint = endpoint.clone();
+            tasks.spawn(async move {
+                let vision = match client
+                    .post(&endpoint)
+                    .json(&serde_json::json!({ "model": name }))
+                    .send()
+                    .await
+                {
+                    Ok(res) => res
+                        .json::<OllamaShowResponse>()
+                        .await
+                        .ok()
+                        .map(|show| show.capabilities.iter().any(|c| c == "vision")),
+                    Err(_) => None,
+                };
+                (name, vision)
+            });
+        }
+
+        let mut fetched: Vec<(String, bool)> = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            if let Ok((name, Some(vision))) = joined {
+                fetched.push((name, vision));
+            }
+        }
+
+        if let Ok(mut guard) = VISION_CAPABILITY_CACHE.lock() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            for (name, vision) in &fetched {
+                cache.insert(name.clone(), *vision);
+            }
+        }
+        for (name, vision) in fetched {
+            known.insert(name, vision);
+        }
+    }
+
+    Ok(names
+        .into_iter()
+        .filter(|name| known.get(name).copied().unwrap_or(false))
+        .collect())
 }
 
 // Ollamaモデルの明示的アンロード（VRAM即時解放）
