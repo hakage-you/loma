@@ -92,6 +92,6 @@
   "apply_failed": "統合に失敗しました。\n{error}",
   "label_loading_suggestions": "提案を読み込み中...",
   "status_interrupted": "前回の検出は途中で終了しました（{when}）。未判定のタグが {n}件 残っています。",
-  "status_stale": "前回の検出（{when}）以降に、まだ見ていないタグが {n}件 増えています。",
+  "status_stale": "前回の検出（{when}）以降に、未判定のタグが {n}件 増えています。",
   "status_fresh": "前回の検出は {when} です。{n}件を判定済みで、未判定はありません。"
 }
