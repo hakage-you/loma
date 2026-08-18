@@ -50,6 +50,14 @@ export interface MergeSuggestion {
   confidence: string;
   sample_thumbnails?: string[];
   total_images_count?: number;
+  /**
+   * 当たった規則の識別子（`ja_exact` / `singular` / `keyphrase` / `ja_prefix` /
+   * `spelling` / `hypernym` / `embedding`）。
+   *
+   * **UI はこれで「なぜ候補になったか」を出す。** 表示文字列（`reason`）に
+   * 依存した判定をしないため別に持つ。**複数入っていれば確度が高い。**
+   */
+  rules?: string[];
 }
 
 export interface OllamaPullProgressPayload {

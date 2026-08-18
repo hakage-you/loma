@@ -84,6 +84,11 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     scanning = false;
   },
   suggest_tag_merges: () => [],
+  suggest_hypernyms: () => [],
+  suggest_related_tags: () => [],
+  load_tag_suggestions_cache: () => [],
+  dismiss_tag_suggestion: () => {},
+  get_suggestion_run_status: () => null,
   get_provider_api_key: () => '',
   check_ffmpeg_installed: () => true,
   get_effective_prompt_type: (args) => {

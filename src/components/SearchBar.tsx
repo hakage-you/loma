@@ -107,25 +107,25 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       const minutes = Math.floor((etaSec % 3600) / 60);
       const seconds = etaSec % 60;
 
-      const etaLabel = t('progress.eta', '残り時間');
-      const secUnit = t('progress.sec_per_item', '秒/件');
+      const etaLabel = t('progress.label_eta', '残り時間');
+      const secUnit = t('progress.label_sec_per_item', '秒/件');
 
       if (days > 0) {
-        etaText = `${etaLabel}: ${days}日 ${hours}時間 ${minutes}分`;
+        etaText = `${etaLabel}: ${t('progress.label_eta_dhm', '{d}d {h}h {m}m', { d: days, h: hours, m: minutes })}`;
       } else if (hours > 0) {
-        etaText = `${etaLabel}: ${hours}時間 ${minutes}分`;
+        etaText = `${etaLabel}: ${t('progress.label_eta_hm', '{h}h {m}m', { h: hours, m: minutes })}`;
       } else if (minutes > 0) {
-        etaText = `${etaLabel}: ${minutes}分 ${seconds}秒`;
+        etaText = `${etaLabel}: ${t('progress.label_eta_ms', '{m}m {s}s', { m: minutes, s: seconds })}`;
       } else {
-        etaText = `${etaLabel}: ${seconds}秒`;
+        etaText = `${etaLabel}: ${t('progress.label_eta_s', '{s}s', { s: seconds })}`;
       }
 
       speedText = `${secPerItem.toFixed(1)} ${secUnit}`;
     } else {
       // 1件目が完了するまでは平均速度を出せないため、その旨を明示する
       // （従来の "--:--" は不具合と区別がつかなかった）
-      speedText = t('progress.calculating', '計算中...');
-      etaText = `${t('progress.eta', '残り時間')}: ${t('progress.measuring', '計測中')}`;
+      speedText = t('progress.label_calculating', '計算中...');
+      etaText = `${t('progress.label_eta', '残り時間')}: ${t('progress.label_measuring', '計測中')}`;
     }
   }
 
@@ -173,18 +173,18 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                 className="flex-1 text-xs text-indigo-200 font-medium cursor-pointer hover:text-white transition truncate"
                 title={advancedSearchSummary}
               >
-                {t('search.advanced_active', '詳細検索条件')}: {advancedSearchSummary || '...'}
+                {t('search.label_advanced_active', '詳細検索条件')}: {advancedSearchSummary || '...'}
               </span>
               <button
                 onClick={() => onOpenAdvancedSearch && onOpenAdvancedSearch()}
                 className="px-2 py-0.5 bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 rounded-lg text-[11px] font-semibold transition cursor-pointer border border-indigo-500/30 shrink-0"
               >
-                {t('search.edit_advanced', '編集')}
+                {t('search.label_edit_advanced', '編集')}
               </button>
               <button
                 onClick={() => onClearAdvancedSearch && onClearAdvancedSearch()}
                 className="p-0.5 text-slate-400 hover:text-red-400 transition cursor-pointer shrink-0 ml-1"
-                title={t('search.clear_advanced', '解除')}
+                title={t('search.label_clear_advanced', '解除')}
               >
                 <X className="w-4 h-4" />
               </button>
@@ -219,8 +219,8 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                   onKeyDown={handleKeyDown}
                   placeholder={
                     selectedTags.length === 0
-                      ? t('search.placeholder_empty', 'Search tags by English or Japanese (e.g. #cat, #sunset)...')
-                      : t('search.placeholder_add', 'Add filter tag...')
+                      ? t('search.label_placeholder_empty', 'Search tags by English or Japanese (e.g. #cat, #sunset)...')
+                      : t('search.label_placeholder_add', 'Add filter tag...')
                   }
                   className="bg-transparent text-xs text-white placeholder-slate-500 focus:outline-none flex-1 min-w-[180px]"
                 />
@@ -230,7 +230,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
               {isFocused && (
                 <div className="absolute z-50 top-full left-0 right-0 mt-2 bg-slate-900 border border-indigo-500/40 rounded-xl shadow-2xl overflow-hidden max-h-60 overflow-y-auto animate-in fade-in zoom-in-95 duration-150">
                   <div className="px-3 py-1.5 bg-slate-950/80 border-b border-white/10 text-[11px] font-semibold text-slate-400 uppercase tracking-wider flex items-center justify-between">
-                    <span>{t('search.matching_tags', 'Matching Tags')}</span>
+                    <span>{t('search.label_matching_tags', 'Matching Tags')}</span>
 
                     {/* Advanced Search Link */}
                     {onOpenAdvancedSearch && (
@@ -242,7 +242,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                         className="flex items-center gap-1 text-indigo-400 hover:text-indigo-200 transition cursor-pointer text-[11px] font-bold"
                       >
                         <Sliders className="w-3 h-3" />
-                        <span>[{t('search.advanced_search', 'Advanced Search')}]</span>
+                        <span>[{t('search.label_advanced_search', 'Advanced Search')}]</span>
                       </button>
                     )}
                   </div>
@@ -317,11 +317,11 @@ export const SearchBar: React.FC<SearchBarProps> = ({
             <div className="flex items-center gap-2 truncate">
               {progress.is_paused ? (
                 <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full font-bold text-[11px] shrink-0 animate-pulse">
-                  <Pause className="w-3 h-3 fill-current" /> {t('progress.paused', '一時停止中')}
+                  <Pause className="w-3 h-3 fill-current" /> {t('progress.label_paused', '一時停止中')}
                 </span>
               ) : (
                 <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/40 rounded-full font-bold text-[11px] shrink-0">
-                  <RefreshCw className="w-3 h-3 animate-spin" /> {t('progress.processing', '解析処理中')}
+                  <RefreshCw className="w-3 h-3 animate-spin" /> {t('progress.label_processing', '解析処理中')}
                 </span>
               )}
               <span className="font-semibold text-slate-200">{progress.status}</span>

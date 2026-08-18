@@ -1,0 +1,23 @@
+{
+  "label_tags_categories": "Tags & Categories",
+  "no_tags": "No tags assigned yet",
+  "label_file_size": "File Size",
+  "label_folder": "Folder",
+  "label_open_folder": "Open Folder",
+  "label_open_file": "Open File",
+  "label_retry_analysis": "Retry Analysis",
+  "label_reanalyze_image": "Re-analyze Image",
+  "label_reanalyze_image_btn": "Re-analyze this image",
+  "label_video_time_thumbnail": "Timestamp Thumbnail & Deep VLM Analysis",
+  "label_video_time_btn": "📍 Change Thumbnail & Analyze at this Scene",
+  "label_cancel": "Cancel",
+  "label_tag_placeholder_en": "English tag (a-Z, _)",
+  "label_tag_placeholder_ja": "Japanese translation",
+  "label_add_tag_btn": "Add",
+  "label_title_search_tag": "Click to search tag in gallery",
+  "label_title_remove_tag": "Remove this tag from media",
+  "codec_unsupported": "This codec cannot be played by HTML5. Use the timestamp field below instead.",
+  "label_seconds_input": "Timestamp",
+  "label_seconds_unit": "s",
+  "label_title_custom_analyze": "Change the thumbnail from the current frame (or the given timestamp) and run multi-frame analysis"
+}

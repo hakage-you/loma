@@ -1,0 +1,13 @@
+{
+  "label_processing": "Processing",
+  "label_paused": "Paused",
+  "label_calculating": "Calculating...",
+  "label_eta": "ETA",
+  "label_sec_per_item": "s/item",
+  "label_measuring": "measuring",
+  "label_item_count": "items",
+  "label_eta_dhm": "{d}d {h}h {m}m",
+  "label_eta_hm": "{h}h {m}m",
+  "label_eta_ms": "{m}m {s}s",
+  "label_eta_s": "{s}s"
+}

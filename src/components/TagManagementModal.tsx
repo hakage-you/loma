@@ -1,10 +1,199 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useTransition } from 'react';
+import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+// **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
+// confirm は false 相当になるため、確認を出したつもりで何も起きない状態になる。
+import { ask, message as showMessage } from '@tauri-apps/plugin-dialog';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { X, Edit2, Check, GitMerge, Search, Sparkles, ThumbsUp, ThumbsDown, RefreshCw, Eye, Image as ImageIcon, PlusCircle, CheckCircle2, Filter, Film, AlertCircle } from 'lucide-react';
+import { X, Edit2, Check, GitMerge, Search, Sparkles, ThumbsUp, ThumbsDown, RefreshCw, Eye, Image as ImageIcon, PlusCircle, CheckCircle2, Filter, Film, AlertCircle, Info } from 'lucide-react';
 import { TagItem, MergeSuggestion, MediaItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
+import { TooltipHelp } from './TooltipHelp';
+import { placeFloating, FloatingPlacement } from '../utils/floatingPosition';
+
+/**
+ * 提案の生成方式。**混ぜない。** リストには選んだ方式の結果だけを出す。
+ * ルール検出の誤爆が LLM の結果に混ざると質を下げるため（計画 §1）。
+ */
+type SuggestMethod = 'rules' | 'hypernym' | 'related';
+
+/**
+ * 表示文字列はここに持たず、キーと既定値の組で持つ。
+ * モジュール定数なので `t()` を呼べない —— 描画時に解決する。
+ */
+const METHODS: {
+  id: SuggestMethod;
+  command: string;
+  labelKey: string;
+  labelDefault: string;
+  hintKey: string;
+  hintDefault: string;
+}[] = [
+  {
+    id: 'rules',
+    command: 'suggest_tag_merges',
+    labelKey: 'tag_modal.label_method_rules',
+    labelDefault: 'Spelling variants',
+    hintKey: 'tag_modal.label_method_rules_hint',
+    hintDefault: 'Detected from spelling, singular/plural and Japanese notation rules',
+  },
+  {
+    id: 'hypernym',
+    command: 'suggest_hypernyms',
+    labelKey: 'tag_modal.label_method_hypernym',
+    labelDefault: 'Hypernyms',
+    hintKey: 'tag_modal.label_method_hypernym_hint',
+    hintDefault: 'AI decides "is a kind of" and groups them',
+  },
+  {
+    id: 'related',
+    command: 'suggest_related_tags',
+    labelKey: 'tag_modal.label_method_related',
+    labelDefault: 'Close in meaning',
+    hintKey: 'tag_modal.label_method_related_hint',
+    hintDefault: 'Pairs by vector similarity. Includes words an LLM merely judged to be close',
+  },
+];
+
+/**
+ * 規則の識別子 → 表示名のキー。
+ * バックエンドは識別子で返す（表示文字列に依存した判定をしないため）。
+ * 未知の識別子はそのまま出せるよう、呼ぶ側が既定値に識別子を渡す。
+ */
+const ruleLabelKey = (rule: string) => `tag_modal.label_rule_${rule}`;
+
+/**
+ * 一度に DOM へ出す件数。**上限ではない** —— 末尾まで来たら足していくので全件に到達できる
+ * （提案の件数を絞らないこと自体は仕様 / 計画 §6）。
+ *
+ * 提案カードは1枚あたり約72要素（規則チップ・メンバー全員ぶんの `<option>`・
+ * メンバーチップ2ボタン・サムネ最大5枚）で、一覧の行の約4倍重い。実測 2,460枚で
+ * 177,512要素・描画10.0秒だったため、初期値を一覧より小さく取る。
+ *
+ * **提案だけ初回と追加で数を変える。** `sortedSuggestions` はグループの大きい順なので
+ * 先頭ほど重く、実測で先頭50枚が 13,525要素（1枚270要素＝全体平均の約4倍）・1.7秒だった。
+ * 初回だけ 20 に絞り、以降は 50 ずつ足す。
+ */
+const TAG_PAGE = 200;
+const SUGGESTION_FIRST = 20;
+const SUGGESTION_PAGE = 50;
+
+/**
+ * リスト末尾に置いた番兵が見えたら `onMore` を呼ぶ。
+ *
+ * `active` はタブの出し分けで DOM ごと入れ替わるため、購読を張り直す引き金として渡す
+ * （タブが非表示の間は ref が null で、購読を張れない）。
+ */
+function useLoadMoreOnScroll(
+  rootRef: React.RefObject<HTMLDivElement | null>,
+  sentinelRef: React.RefObject<HTMLDivElement | null>,
+  active: boolean,
+  hasMore: boolean,
+  /** いま出ている件数。**購読を張り直すためだけに要る** ——
+   *  交差したままだと IntersectionObserver は二度目を通知しないので、
+   *  1回足すごとに張り直して、画面が埋まるまで続けさせる */
+  loadedCount: number,
+  onMore: () => void
+) {
+  useEffect(() => {
+    if (!active || !hasMore) return;
+    const root = rootRef.current;
+    const target = sentinelRef.current;
+    if (!root || !target) return;
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) onMore();
+      },
+      // 末尾に着く前に足す。スクロールが止まって見えないようにするため
+      { root, rootMargin: '600px' }
+    );
+    io.observe(target);
+    return () => io.disconnect();
+  }, [rootRef, sentinelRef, active, hasMore, loadedCount, onMore]);
+}
+
+/**
+ * 提案カードのサンプルサムネと、ホバー時の拡大表示。
+ *
+ * **ホバーの状態をここに閉じ込めるためだけに切り出してある。**
+ * モーダル直下に持つと、サムネの上をマウスが通るたびにモーダル全体が再描画される。
+ *
+ * 拡大表示は `document.body` へ portal する。モーダルの内側は
+ * `backdrop-blur` と `zoom-in-95` が position:fixed の基準を作るため、
+ * その場に置くとスクロール領域で切られる。
+ */
+/** 拡大表示の一辺。位置決めに実寸が要るので定数で持つ */
+const THUMB_PREVIEW_SIZE = 128;
+
+const SampleThumbStack: React.FC<{
+  thumbnails: string[];
+  totalImagesCount?: number;
+}> = ({ thumbnails, totalImagesCount }) => {
+  const { t } = useTranslation();
+  const [hovered, setHovered] = useState<{ src: string; pos: FloatingPlacement } | null>(null);
+
+  return (
+    <div className="flex items-center gap-1 shrink-0 ml-1">
+      <div
+        className="flex items-center -space-x-2 p-0.5"
+        title={t('tag_modal.label_title_sample_media', 'Group sample media')}
+      >
+        {thumbnails.slice(0, 5).map((thumbPath, idx) => (
+          <img
+            key={idx}
+            src={convertFileSrc(thumbPath)}
+            alt="sample"
+            width={28}
+            height={28}
+            loading="lazy"
+            decoding="async"
+            className="w-7 h-7 rounded-md object-cover border-2 border-slate-900 shadow-md cursor-pointer transition-transform hover:scale-110 relative"
+            onMouseEnter={(e) => {
+              setHovered({
+                src: convertFileSrc(thumbPath),
+                // 端のサムネでも切れないよう、位置はツールチップと同じ関数で出す
+                pos: placeFloating(
+                  e.currentTarget.getBoundingClientRect(),
+                  { width: THUMB_PREVIEW_SIZE, height: THUMB_PREVIEW_SIZE },
+                  'center'
+                ),
+              });
+            }}
+            onMouseLeave={() => setHovered(null)}
+            onError={(e) => {
+              (e.target as HTMLElement).style.display = 'none';
+            }}
+          />
+        ))}
+      </div>
+
+      {/* 最大枚数以上の画像がある場合の「続きあり (+N / ...)」インジケーター */}
+      {totalImagesCount !== undefined && totalImagesCount > thumbnails.length && (
+        <span
+          className="px-1.5 py-0.5 bg-slate-800/90 text-slate-300 border border-white/10 rounded-md text-[10px] font-mono font-bold tracking-tight shrink-0 shadow-sm"
+          title={`${t('tag_modal.label_title_total_media', 'Media with this tag')}: ${totalImagesCount}${t(
+            'tag_modal.label_tag_count_unit',
+            ''
+          )}`}
+        >
+          +{totalImagesCount - thumbnails.length}…
+        </span>
+      )}
+
+      {hovered &&
+        createPortal(
+          <div
+            style={{ left: `${hovered.pos.left}px`, top: `${hovered.pos.top}px` }}
+            className="fixed w-32 h-32 rounded-2xl overflow-hidden border-2 border-indigo-500 bg-slate-950 shadow-2xl z-[120] pointer-events-none animate-in fade-in zoom-in-95 duration-100 flex items-center justify-center select-none"
+          >
+            <img src={hovered.src} alt="floating preview" className="w-full h-full object-cover" />
+          </div>,
+          document.body
+        )}
+    </div>
+  );
+};
 
 interface TagManagementModalProps {
   open: boolean;
@@ -13,7 +202,8 @@ interface TagManagementModalProps {
   onClose: () => void;
   onRenameTag: (tagId: number, newName: string, newNameJa?: string) => Promise<void>;
   onMergeTags: (targetTagId: number, sourceTagIds: number[]) => Promise<void>;
-  onSuggestMerges?: () => Promise<MergeSuggestion[]>;
+  /** 統合を適用した後の再読込。タグ一覧とメディアを取り直す */
+  onDataChanged?: () => Promise<void>;
   onSelectTagFilter?: (tagName: string) => void;
 }
 
@@ -21,6 +211,7 @@ const TagPreviewCard: React.FC<{
   media: MediaItem;
   onClick: () => void;
 }> = ({ media, onClick }) => {
+  const { t } = useTranslation();
   const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv)$/i.test(media.file_path);
   const primarySrc = media.thumbnail_path
     ? convertFileSrc(media.thumbnail_path)
@@ -64,7 +255,7 @@ const TagPreviewCard: React.FC<{
             <AlertCircle className="w-6 h-6 text-amber-400/80" />
           )}
           <span className="text-[10px] font-mono text-slate-300 truncate max-w-full px-1">{fileName}</span>
-          <span className="text-[9px] text-indigo-300 font-semibold">{isVideo ? '動画ファイル' : '画像ファイル'}</span>
+          <span className="text-[9px] text-indigo-300 font-semibold">{isVideo ? t('tag_modal.label_video_file', 'Video') : t('tag_modal.label_image_file', 'Image')}</span>
         </div>
       )}
 
@@ -79,7 +270,7 @@ const TagPreviewCard: React.FC<{
       {/* Hover Overlay */}
       <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition p-2 flex flex-col justify-end pointer-events-none">
         <p className="text-[10px] text-white font-medium truncate">{fileName}</p>
-        <p className="text-[9px] text-indigo-300 font-semibold">{isVideo ? 'クリックで再生' : 'クリックで拡大'}</p>
+        <p className="text-[9px] text-indigo-300 font-semibold">{isVideo ? t('tag_modal.label_click_play', 'Click to play') : t('tag_modal.label_click_zoom', 'Click to enlarge')}</p>
       </div>
     </div>
   );
@@ -92,7 +283,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   onClose,
   onRenameTag,
   onMergeTags,
-  onSuggestMerges,
+  onDataChanged,
   onSelectTagFilter,
 }) => {
   // タグ一覧の map では変数名 `t` がタグを指すため、翻訳関数に別名を用意しておく
@@ -109,7 +300,31 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
   // AI自動提案用の状態
   const [suggestions, setSuggestions] = useState<MergeSuggestion[]>([]);
+  const [method, setMethod] = useState<SuggestMethod>('rules');
+  // ② は数分かかる。何も出ないと止まって見えるので進捗を出す
+  const [scanProgress, setScanProgress] = useState<string>('');
+  /**
+   * 保存済みの実行状態。**未判定の件数を出すために要る。**
+   * 中断で残ったぶん・実行後に増えたタグ・失敗したチャンクが同じ数に入る。
+   */
+  const [runStatus, setRunStatus] = useState<{
+    started_at: number;
+    finished_at: number | null;
+    pair_count: number;
+    judged_count: number;
+    unjudged_count: number;
+  } | null>(null);
   const [scanningSuggestions, setScanningSuggestions] = useState<boolean>(false);
+
+  /**
+   * タブの切り替えは**同期描画なので、素直に state を変えると押した瞬間に固まる**
+   * （実測: 提案タブ 590ms）。transition にすると React が新しい木を裏で作り、
+   * その間はブラウザに描画を返せるので「読み込み中」が実際に出る。
+   * 切り替え前のタブは、新しい木が用意できるまで表示されたまま残る。
+   */
+  const [isTabPending, startTabTransition] = useTransition();
+  /** 方式の切り替え。バックエンド待ちと描画の両方を含む区間 */
+  const [loadingSuggestions, setLoadingSuggestions] = useState<boolean>(false);
   const [applyingMerges, setApplyingMerges] = useState<boolean>(false);
   const [applyProgressText, setApplyProgressText] = useState<string>('');
   const [successToast, setSuccessToast] = useState<string | null>(null);
@@ -117,46 +332,144 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
   const [rejectedIds, setRejectedIds] = useState<Set<string>>(new Set());
   const [previewMediaItem, setPreviewMediaItem] = useState<MediaItem | null>(null);
-  const [hoveredThumb, setHoveredThumb] = useState<{ src: string; x: number; y: number } | null>(null);
 
-  // アプリ起動・モーダル開口時に AppData キャッシュから自動復元 ＆ 不整合ファイルのクリーンアップ
+  /**
+   * いま DOM に出している件数。**全件に到達できる**（末尾で足していく）。
+   * 検索・並べ替え・種別・方式・タブが変わったら先頭に戻す。
+   */
+  const [visibleTagCount, setVisibleTagCount] = useState<number>(TAG_PAGE);
+  const [visibleSuggestionCount, setVisibleSuggestionCount] = useState<number>(SUGGESTION_FIRST);
+  const tagScrollRef = React.useRef<HTMLDivElement>(null);
+  const tagSentinelRef = React.useRef<HTMLDivElement>(null);
+  const sugScrollRef = React.useRef<HTMLDivElement>(null);
+  const sugSentinelRef = React.useRef<HTMLDivElement>(null);
+  /**
+   * 一覧に出すタグごとのサンプルサムネイル。**表示中のぶんだけ取りに行く。**
+   * 5,840件ぶんを先に取ると、開いた瞬間に無駄な往復と保持が増える。
+   */
+  const [tagThumbs, setTagThumbs] = useState<Record<number, string[]>>({});
+  /** 取得済み（0枚だったものを含む）のタグID。同じIDを何度も取りに行かないため */
+  const fetchedThumbIdsRef = React.useRef<Set<number>>(new Set());
+
+  const loadMoreTags = React.useCallback(() => setVisibleTagCount((n) => n + TAG_PAGE), []);
+  const loadMoreSuggestions = React.useCallback(
+    () => setVisibleSuggestionCount((n) => n + SUGGESTION_PAGE),
+    []
+  );
+
+  // 【一時】計測ログの解釈に要る値。**どのタブを描画したかが要る** ——
+  // タブが 'all' のときの render は一覧の行数、'suggestions' のときは提案カードの枚数を指す。
+  // reloadSuggestions の依存に足すと読み直しが走るので参照で持つ
+  const perfRef = React.useRef({ tags: 0, tab: '' as string, suggestions: 0 });
+  perfRef.current = { tags: tags.length, tab: activeTab, suggestions: suggestions.length };
+
+  /**
+   * 【一時】描画だけの計測。タブや方式のボタンで印を付け、ペイント後に経過を出す。
+   * バックエンドを挟まない切り替え（タブ）はこれでしか測れない。
+   */
+  const perfMarkRef = React.useRef<{ label: string; t0: number } | null>(null);
+  const markPerf = (label: string) => {
+    perfMarkRef.current = { label, t0: performance.now() };
+  };
+
   useEffect(() => {
-    if (open) {
-      invoke('cleanup_missing_media').catch(() => {});
-      invoke<MergeSuggestion[]>('load_tag_suggestions_cache')
-        .then((cached) => {
-          if (cached && cached.length > 0) {
-            setSuggestions(cached);
-            const initMasterMap: Record<string, number> = {};
-            cached.forEach((s) => {
-              initMasterMap[s.id] = s.target_tag.id;
-            });
-            setSelectedMasterTagIds(initMasterMap);
-            setAcceptedIds(new Set()); // デフォルトは未選択 (0 accepted)
-          }
-        })
-        .catch((e) => console.error('Failed to load tag suggestions cache:', e));
-    }
+    const mark = perfMarkRef.current;
+    if (!mark) return;
+    perfMarkRef.current = null;
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        const { tags: tagCount, tab, suggestions: sugCount } = perfRef.current;
+        console.log(
+          `[tag-perf] ${mark.label} render=${Math.round(performance.now() - mark.t0)}ms ` +
+            `tab=${tab} tags=${tagCount} suggestions=${sugCount} ` +
+            `dom=${document.querySelectorAll('.fixed.inset-0.z-50 *').length}`
+        );
+      })
+    );
+  });
+
+  useEffect(() => {
+    if (!open) return;
+    // 【一時】暫定対処の計測用（計画 §4）。開くたびに全メディアの存在確認が走るので、
+    // その所要時間を提案の読み込みと分けて出す
+    const t0 = performance.now();
+    invoke('cleanup_missing_media')
+      .then(() =>
+        console.log(`[tag-perf] cleanup_missing_media=${Math.round(performance.now() - t0)}ms`)
+      )
+      .catch(() => {});
   }, [open]);
 
-  // バックエンドからの自動タグ解析完了イベントを受信
-  useEffect(() => {
-    const unlistenPromise = listen<MergeSuggestion[]>('tag_suggestions_updated', (event) => {
-      if (event.payload) {
-        setSuggestions(event.payload);
-        const initMasterMap: Record<string, number> = {};
-        event.payload.forEach((s) => {
-          initMasterMap[s.id] = s.target_tag.id;
-        });
-        setSelectedMasterTagIds(initMasterMap);
-        setAcceptedIds(new Set()); // デフォルトは未選択 (0 accepted)
-      }
+  /** 保存済みの判定と実行状態を読み直す */
+  const reloadSuggestions = React.useCallback(async () => {
+    // 【一時】暫定対処の計測用（計画 §4）。バックエンドの応答と描画を分けて出す。
+    // backend が支配的なら、残りの重さは Rust 側（build_suggestions がグループごとに
+    // 2クエリを逐次で投げている）にある
+    const t0 = performance.now();
+    const [cached, status] = await Promise.all([
+      invoke<MergeSuggestion[]>('load_tag_suggestions_cache', { method }),
+      invoke<typeof runStatus>('get_suggestion_run_status', { method }),
+    ]);
+    const backendMs = performance.now() - t0;
+    setSuggestions(cached ?? []);
+    const initMasterMap: Record<string, number> = {};
+    (cached ?? []).forEach((s) => {
+      initMasterMap[s.id] = s.target_tag.id;
     });
+    setSelectedMasterTagIds(initMasterMap);
+    setRunStatus(status ?? null);
+    // 既定はどれも未承認。ユーザーは上から見て良いものだけ採る
+    setAcceptedIds(new Set());
+    setRejectedIds(new Set());
 
+    // 【一時】rAF を2段にしてペイント後まで待つ。1段目はコミット後・描画前に走るため。
+    // 読み込み中の表示も、描画が終わったここで初めて下ろす
+    requestAnimationFrame(() =>
+      requestAnimationFrame(() => {
+        setLoadingSuggestions(false);
+        console.log(
+          `[tag-perf] reload:${method} backend=${Math.round(backendMs)}ms ` +
+            `render=${Math.round(performance.now() - t0 - backendMs)}ms ` +
+            `tab=${perfRef.current.tab} tags=${perfRef.current.tags} ` +
+            `suggestions=${(cached ?? []).length} ` +
+            `dom=${document.querySelectorAll('.fixed.inset-0.z-50 *').length}`
+        );
+      })
+    );
+  }, [method]);
+
+  // 保存済みの判定から提案を復元する。**方式を切り替えたら読み直す**
+  // （方式ごとに独立した枠を持つので、①を回しても②③の結果は残っている）
+  useEffect(() => {
+    if (!open) return;
+    // **描画が終わるまで下ろさない。** バックエンドの応答で下ろすと、
+    // 一番長い区間（提案カードの描画）が無表示のまま残る
+    setLoadingSuggestions(true);
+    reloadSuggestions().catch((e) => {
+      setLoadingSuggestions(false);
+      console.error('Failed to load tag suggestions cache:', e);
+    });
+  }, [open, reloadSuggestions]);
+
+  // ② の進捗。段1/段2 とチャンク数が飛んでくる
+  useEffect(() => {
+    const p = listen<{ phase: string; done: number; total: number; failed: number }>(
+      'tag_hypernym_progress',
+      (e) => {
+        const { phase, done, total, failed } = e.payload;
+        setScanProgress(
+          `${phase} ${done}/${total}${failed > 0 ? t('tag_modal.label_progress_failed', ' ({n} failed)', { n: failed }) : ''}`
+        );
+      }
+    );
     return () => {
-      unlistenPromise.then((unlisten) => unlisten());
+      p.then((un) => un());
     };
   }, []);
+
+  // `tag_suggestions_updated` の購読は削除した。
+  // スキャン後に提案を自動生成する処理をやめたため、このイベントを送る側が存在しない
+  // （提案の生成は常にユーザーが起動する）。
 
   // 提案ごとの選択された Master Tag ID (-1 は手入力カスタム)
   const [selectedMasterTagIds, setSelectedMasterTagIds] = useState<Record<string, number>>({});
@@ -187,6 +500,36 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     });
   }, [suggestions]);
 
+  /**
+   * 実行状態の1行表示。**「いつの結果を見ているか」を出す。**
+   *
+   * `unjudged_count` は中断ぶん・実行後に増えたタグ・失敗したチャンクを
+   * 区別せず合算した数（バックエンドの設計）。区別できるのは `finished_at` だけなので、
+   * 「途中で終わった」のか「終わった後にタグが増えた」のかはそこで分ける。
+   */
+  const runStatusText = React.useMemo(() => {
+    if (scanningSuggestions || scanProgress) {
+      const m = METHODS.find((x) => x.id === method);
+      const hint = m ? t(m.hintKey, m.hintDefault) : '';
+      return scanProgress ? `${hint} — ${scanProgress}` : hint;
+    }
+    if (!runStatus) return '';
+
+    const when = new Date((runStatus.finished_at ?? runStatus.started_at) * 1000).toLocaleString(
+      language === 'ja' ? 'ja-JP' : 'en-US',
+      { year: 'numeric', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }
+    );
+
+    if (runStatus.finished_at === null) {
+      return t('tag_modal.status_interrupted', '', { when, n: runStatus.unjudged_count });
+    }
+    if (runStatus.unjudged_count > 0) {
+      // 完走したあとに残っている未判定＝実行後に増えたタグ。これが陳腐化の実体
+      return t('tag_modal.status_stale', '', { when, n: runStatus.unjudged_count });
+    }
+    return t('tag_modal.status_fresh', '', { when, n: runStatus.judged_count });
+  }, [scanningSuggestions, scanProgress, runStatus, method, language, t]);
+
   const rejectTimersRef = React.useRef<Record<string, ReturnType<typeof setTimeout>>>({});
 
   React.useEffect(() => {
@@ -195,15 +538,85 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     };
   }, []);
 
-  if (!open) return null;
+  // 一覧の絞り込みと並べ替え。**早期 return より前に置く。**
+  // 以前はここが素の式で、提案タブを見ている間も 5,840 件の filter と
+  // localeCompare が毎レンダー走っていた
+  const freeTags = React.useMemo(() => tags.filter((t) => !t.is_category), [tags]);
+  const filteredTags = React.useMemo(() => {
+    const q = search.toLowerCase();
+    return freeTags.filter(
+      (t) =>
+        (kindFilter === 'all' || t.kind === kindFilter) &&
+        (t.name.toLowerCase().includes(q) || (t.name_ja && t.name_ja.toLowerCase().includes(q)))
+    );
+  }, [freeTags, kindFilter, search]);
+  const sortedTags = React.useMemo(() => {
+    const list = [...filteredTags];
+    if (sortBy === 'count_desc') return list.sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
+    if (sortBy === 'count_asc') return list.sort((a, b) => (a.count ?? 0) - (b.count ?? 0));
+    if (sortBy === 'alpha_asc') return list.sort((a, b) => a.name.localeCompare(b.name));
+    if (sortBy === 'ja_asc') {
+      return list.sort((a, b) =>
+        (a.name_ja || a.name).localeCompare(b.name_ja || b.name, 'ja')
+      );
+    }
+    return list;
+  }, [filteredTags, sortBy]);
 
-  const freeTags = tags.filter((t) => !t.is_category);
-  const filteredTags = freeTags.filter(
-    (t) =>
-      (kindFilter === 'all' || t.kind === kindFilter) &&
-      (t.name.toLowerCase().includes(search.toLowerCase()) ||
-        (t.name_ja && t.name_ja.toLowerCase().includes(search.toLowerCase())))
+  // 表示件数を先頭に戻す条件。母集団や並びが変わったのに途中から出ていると、
+  // 上に何が来たのかが分からなくなる
+  useEffect(() => {
+    setVisibleTagCount(TAG_PAGE);
+  }, [search, sortBy, kindFilter, activeTab]);
+  useEffect(() => {
+    setVisibleSuggestionCount(SUGGESTION_FIRST);
+  }, [sortedSuggestions, activeTab]);
+
+  // いま一覧に出ているタグのサムネイルを、まだ取っていないぶんだけまとめて取る。
+  // 段階描画で件数が増えるたびに差分だけを1往復で引く
+  useEffect(() => {
+    if (!open || activeTab !== 'all') return;
+    const need = sortedTags
+      .slice(0, visibleTagCount)
+      .map((tg) => tg.id)
+      .filter((id) => !fetchedThumbIdsRef.current.has(id));
+    if (need.length === 0) return;
+    need.forEach((id) => fetchedThumbIdsRef.current.add(id));
+    invoke<Record<string, string[]>>('get_tag_sample_thumbnails', { tagIds: need })
+      .then((map) => {
+        setTagThumbs((prev) => {
+          const next = { ...prev };
+          for (const [k, v] of Object.entries(map)) next[Number(k)] = v;
+          return next;
+        });
+      })
+      .catch((e) => console.error('Failed to fetch tag sample thumbnails:', e));
+  }, [open, activeTab, sortedTags, visibleTagCount]);
+
+  // タグ一覧が入れ替わったら取得済みの記録を捨てる（統合や改名でIDの中身が変わる）
+  useEffect(() => {
+    fetchedThumbIdsRef.current = new Set();
+    setTagThumbs({});
+  }, [tags]);
+
+  useLoadMoreOnScroll(
+    tagScrollRef,
+    tagSentinelRef,
+    activeTab === 'all',
+    visibleTagCount < sortedTags.length,
+    visibleTagCount,
+    loadMoreTags
   );
+  useLoadMoreOnScroll(
+    sugScrollRef,
+    sugSentinelRef,
+    activeTab === 'suggestions',
+    visibleSuggestionCount < sortedSuggestions.length,
+    visibleSuggestionCount,
+    loadMoreSuggestions
+  );
+
+  if (!open) return null;
 
   // タグをクリックしてメイン画面で即座に絞り込み検索
   const handleTriggerSearchFilter = (tagName: string) => {
@@ -262,29 +675,32 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     }
   };
 
-  // 自動提案のスキャン
-  const handleScanSuggestions = async () => {
-    if (!onSuggestMerges || isScanning) return;
+  // 選んだ方式で提案を作り直す。
+  // **方式ごとに独立**なので、これを回しても他の方式の結果は消えない。
+  // ② は未判定のタグだけを処理するので、中断しても次回は続きから走る。
+  const handleScanSuggestions = async (fullRescan = false) => {
+    if (isScanning || scanningSuggestions) return;
+    const spec = METHODS.find((m) => m.id === method)!;
+    if (fullRescan) {
+      const ok = await ask(
+        t('tag_modal.rescan_confirm', ''),
+        { title: t('tag_modal.label_rescan_title', 'Rebuild from scratch'), kind: 'warning' }
+      );
+      if (!ok) return;
+    }
     setScanningSuggestions(true);
+    setScanProgress('');
+    setActiveTab('suggestions');
     try {
-      await invoke('clear_tag_suggestions_cache');
       setSuggestions([]);
-      const results = await onSuggestMerges();
-      setSuggestions(results);
-
-      const initMasterMap: Record<string, number> = {};
-      results.forEach((s) => {
-        initMasterMap[s.id] = s.target_tag.id;
-      });
-
-      setSelectedMasterTagIds(initMasterMap);
       setCustomMasterTags({});
       setExcludedTagIds({});
-      setAcceptedIds(new Set()); // デフォルトは未選択
-      setRejectedIds(new Set());
-      setActiveTab('suggestions');
+      await invoke<MergeSuggestion[]>(spec.command, fullRescan ? { fullRescan: true } : {});
+      // 実行結果は保存されているので、読み出し経路に一本化する
+      await reloadSuggestions();
     } catch (e) {
       console.error('Failed to scan suggestions:', e);
+      setScanProgress(String(e));
     } finally {
       setScanningSuggestions(false);
     }
@@ -372,11 +788,17 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
       rejectTimersRef.current[suggestionId] = setTimeout(() => {
         setSuggestions((prev) => {
-          const updated = prev.filter((s) => s.id !== suggestionId);
-          invoke('save_tag_suggestions_cache', { suggestions: updated }).catch((e) =>
-            console.error('Failed to update cache on reject:', e)
-          );
-          return updated;
+          // 却下はペア単位で記録する。**提案の一覧を保存し直すのではない。**
+          // 一覧を保存すると、再実行のたびに却下が消えて同じ提案が戻る。
+          const rejected = prev.find((s) => s.id === suggestionId);
+          if (rejected) {
+            invoke('dismiss_tag_suggestion', {
+              method,
+              targetId: rejected.target_tag.id,
+              memberIds: rejected.source_tags.map((t) => t.id),
+            }).catch((e) => console.error('Failed to dismiss suggestion:', e));
+          }
+          return prev.filter((s) => s.id !== suggestionId);
         });
         setRejectedIds((prev) => {
           const next = new Set(prev);
@@ -389,80 +811,109 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   };
 
   // 承認されたグループ提案を一括適用
-  const handleApplySelectedSuggestions = async () => {
-    const toApply = suggestions.filter((s) => acceptedIds.has(s.id) && !rejectedIds.has(s.id));
-    if (toApply.length === 0) return;
-
-    setApplyingMerges(true);
-    let successCount = 0;
-
-    for (let i = 0; i < toApply.length; i++) {
-      const sug = toApply[i];
-      setApplyProgressText(`Applying merge (${i + 1}/${toApply.length})...`);
-
-      const sources = Array.isArray(sug.source_tags)
-        ? sug.source_tags
-        : (sug as any).source_tag
-        ? [(sug as any).source_tag]
-        : [];
-      const allMembers = [sug.target_tag, ...sources];
-
+  /** 承認された提案を `{ target_id, source_ids }` の並びに変換する */
+  const buildMergePlan = async (
+    toApply: MergeSuggestion[]
+  ): Promise<{ target_id: number; source_ids: number[] }[]> => {
+    const items: { target_id: number; source_ids: number[] }[] = [];
+    for (const sug of toApply) {
       let masterId = selectedMasterTagIds[sug.id] ?? sug.target_tag.id;
 
-      // 手入力カスタムマスタータグが選択されている場合 (-1)
+      // 手入力のマスタータグ (-1) は先に作る
       if (masterId === -1) {
         const customInfo = customMasterTags[sug.id];
         if (customInfo && customInfo.name.trim()) {
-          try {
-            const createdTag = await invoke<TagItem>('get_or_create_tag', {
-              name: customInfo.name.trim(),
-              nameJa: customInfo.nameJa.trim() || undefined,
-            });
-            masterId = createdTag.id;
-          } catch (e) {
-            console.error('Failed to create custom master tag:', e);
-            continue;
-          }
+          const createdTag = await invoke<TagItem>('get_or_create_tag', {
+            name: customInfo.name.trim(),
+            nameJa: customInfo.nameJa.trim() || undefined,
+          });
+          masterId = createdTag.id;
         } else {
           masterId = sug.target_tag.id;
         }
       }
 
-      const excludedSet = excludedTagIds[sug.id] || new Set();
-      const sourceIds = allMembers
+      const excludedSet = excludedTagIds[sug.id] || new Set<number>();
+      const sourceIds = [sug.target_tag, ...sug.source_tags]
         .filter((t) => t.id !== masterId && !excludedSet.has(t.id))
         .map((t) => t.id);
-
-      if (sourceIds.length > 0) {
-        try {
-          await onMergeTags(masterId, sourceIds);
-          successCount++;
-        } catch (err) {
-          console.error('Merge failed for suggestion:', sug.id, err);
-        }
-      }
+      if (sourceIds.length > 0) items.push({ target_id: masterId, source_ids: sourceIds });
     }
-
-    setSuggestions((prev) => prev.filter((s) => !acceptedIds.has(s.id)));
-    setAcceptedIds(new Set());
-    setApplyingMerges(false);
-    setApplyProgressText('');
-
-    setSuccessToast(`✓ Successfully applied ${successCount} group merges!`);
-    setTimeout(() => setSuccessToast(null), 3000);
+    return items;
   };
 
-  const sortedTags = [...filteredTags].sort((a, b) => {
-    if (sortBy === 'count_desc') return (b.count ?? 0) - (a.count ?? 0);
-    if (sortBy === 'count_asc') return (a.count ?? 0) - (b.count ?? 0);
-    if (sortBy === 'alpha_asc') return a.name.localeCompare(b.name);
-    if (sortBy === 'ja_asc') {
-      const nameA = a.name_ja || a.name;
-      const nameB = b.name_ja || b.name;
-      return nameA.localeCompare(nameB, 'ja');
+  /**
+   * 承認された提案をまとめて適用する。
+   *
+   * **提案ごとに `merge_tags` を呼んではいけない。** 呼ぶ順で結果が変わるうえ、
+   * `merge_tags` は削除済みIDを渡されてもエラーを返さないので、
+   * ユーザーには成功と出たまま中身だけが変わる。
+   * `apply_tag_merges` は写像を解決してから最終的な統合先ごとに1回だけ実行する。
+   */
+  const handleApplySelectedSuggestions = async () => {
+    const toApply = suggestions.filter((s) => acceptedIds.has(s.id) && !rejectedIds.has(s.id));
+    if (toApply.length === 0) return;
+
+    setApplyingMerges(true);
+    try {
+      setApplyProgressText(t('tag_modal.label_building_plan', 'Building the plan...'));
+      const items = await buildMergePlan(toApply);
+      if (items.length === 0) return;
+
+      // **取り消せない操作なので、消える提案の数を先に見せる。**
+      // 適用後に知らせても手遅れになる
+      const invalidated = await invoke<[string, number][]>('count_invalidated_suggestions', {
+        items,
+        suggestions,
+      });
+      const lost = invalidated.reduce((n, [, c]) => n + c, 0);
+      if (lost > 0) {
+        const detail = invalidated.map(([rule, c]) => `${t(ruleLabelKey(rule), rule)}: ${c}${t('tag_modal.label_tag_count_unit', '')}`).join('\n');
+        const ok = await ask(
+          t('tag_modal.apply_confirm', '', { count: items.length, lost }) + `\n${detail}`,
+          { title: t('tag_modal.label_apply_title', 'Apply consolidation'), kind: 'warning' }
+        );
+        if (!ok) return;
+      }
+
+      setApplyProgressText(t('tag_modal.label_applying_count', 'Applying {n}...', { n: items.length }));
+      const result = await invoke<{
+        merged_tags: number;
+        targets: number;
+        conflicts: { tag_id: number; target_ids: number[] }[];
+      }>('apply_tag_merges', { items });
+
+      // **競合があると何も適用されない。** どのタグが競合したかを名前で見せる
+      if (result.conflicts.length > 0) {
+        const nameOf = (id: number) => tags.find((t) => t.id === id)?.name ?? `#${id}`;
+        const lines = result.conflicts.map(
+          (c) => `・${nameOf(c.tag_id)} → ${c.target_ids.map(nameOf).join(' / ')}`
+        );
+        await showMessage(
+          t('tag_modal.conflict_message', '', { list: lines.join('\n') }),
+          { title: t('tag_modal.label_conflict_title', 'Conflicting targets'), kind: 'error' }
+        );
+        return;
+      }
+
+      // タグ一覧を読み直し、保存済みの判定から提案を組み直す。
+      // **必ず読み直すこと** — 統合処理は使われなくなったタグも消すので、
+      // 手元のタグ一覧は適用後に必ず古くなる
+      await onDataChanged?.();
+      await reloadSuggestions();
+
+      setSuccessToast(
+        t('tag_modal.toast_merged', '', { merged: result.merged_tags, targets: result.targets })
+      );
+      setTimeout(() => setSuccessToast(null), 3000);
+    } catch (e) {
+      console.error('Failed to apply merges:', e);
+      await showMessage(t('tag_modal.apply_failed', '', { error: String(e) }), { title: t('tag_modal.label_apply_title', 'Apply consolidation'), kind: 'error' });
+    } finally {
+      setApplyingMerges(false);
+      setApplyProgressText('');
     }
-    return 0;
-  });
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-black/70 backdrop-blur-md flex items-center justify-center p-4">
@@ -479,7 +930,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         <div className="p-4 bg-slate-950/80 border-b border-white/10 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <GitMerge className="w-5 h-5 text-indigo-400" />
-            <h2 className="text-sm font-bold text-white">{t('tag_modal.title', 'Tag Management & Group Consolidation')}</h2>
+            <h2 className="text-sm font-bold text-white">{t('tag_modal.label_title', 'Tag Management & Group Consolidation')}</h2>
+            {/* この画面で何が起きるか。**統合の代償（多様性が減る・取り消せない）まで書く。**
+                得だけを書くと、戻せない操作を軽い気持ちで実行させることになる */}
+            <TooltipHelp text={t('tag_modal.screen_help', '')} width="w-96" />
           </div>
           <button
             onClick={onClose}
@@ -493,41 +947,150 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         <div className="px-4 py-2.5 bg-slate-900 border-b border-white/10 flex items-center justify-between gap-3">
           <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
             <button
-              onClick={() => setActiveTab('all')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer ${
+              onClick={() => {
+                markPerf('tab:all');
+                startTabTransition(() => setActiveTab('all'));
+              }}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer whitespace-nowrap ${
                 activeTab === 'all'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
-              {t('tag_modal.tab_all', 'All Free Tags')} ({freeTags.length})
+              {t('tag_modal.label_tab_all', 'All Free Tags')} ({freeTags.length})
             </button>
             <button
-              onClick={() => setActiveTab('suggestions')}
-              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 ${
+              onClick={() => {
+                markPerf('tab:suggestions');
+                startTabTransition(() => setActiveTab('suggestions'));
+              }}
+              className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                 activeTab === 'suggestions'
                   ? 'bg-indigo-600 text-white shadow'
                   : 'text-slate-400 hover:text-slate-200'
               }`}
             >
               <Sparkles className="w-3.5 h-3.5 text-amber-400" />
-              {t('tag_modal.tab_proposals', 'AI Merge Proposals')} ({suggestions.length})
+              {t('tag_modal.label_tab_proposals', 'AI Suggestions')} ({suggestions.length})
             </button>
           </div>
 
-          <button
-            onClick={handleScanSuggestions}
-            disabled={scanningSuggestions || applyingMerges || isScanning}
-            className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50"
-          >
-            {scanningSuggestions ? (
-              <RefreshCw className="w-3.5 h-3.5 animate-spin" />
-            ) : (
-              <Sparkles className="w-3.5 h-3.5" />
-            )}
-            <span>{t('tag_modal.btn_scan', 'Scan Similar Tags')}</span>
-          </button>
+          {/* 方式の切り替えと実行は **AI提案タブのものだけ**。
+              一覧タブにも出ていると、一覧の表示に効く切り替えに見える。
+              結果は方式ごとに別に保存されているので、切り替えても回し直しは要らない
+              （保存済みの判定から組み直す） */}
+          {activeTab === 'suggestions' && (
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
+                {METHODS.map((m) => (
+                  <button
+                    key={m.id}
+                    onClick={() => setMethod(m.id)}
+                    disabled={scanningSuggestions || loadingSuggestions}
+                    title={t(m.hintKey, m.hintDefault)}
+                    className={`px-2.5 py-1 text-xs font-semibold rounded-lg transition cursor-pointer disabled:opacity-50 whitespace-nowrap ${
+                      method === m.id
+                        ? 'bg-slate-700 text-white shadow'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {t(m.labelKey, m.labelDefault)}
+                  </button>
+                ))}
+              </div>
+
+              <button
+                onClick={() => handleScanSuggestions(false)}
+                disabled={scanningSuggestions || applyingMerges || isScanning}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50 whitespace-nowrap"
+              >
+                {scanningSuggestions ? (
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                ) : (
+                  <Sparkles className="w-3.5 h-3.5" />
+                )}
+                <span>{t('tag_modal.label_btn_scan', 'Scan Similar Tags')}</span>
+              </button>
+            </div>
+          )}
         </div>
+
+        {/* 読み込み中の帯。**タブの切り替えと方式の切り替えの両方で出す。**
+            どちらも「押したのに何も起きない」時間があり、遅いPCほど長くなる。
+            高さを持つ要素にすると出入りのたびに下の内容がずれるので、
+            1px の線をタブ行の直下に重ねる */}
+        <div className="relative h-px shrink-0" aria-hidden={!isTabPending && !loadingSuggestions}>
+          {(isTabPending || loadingSuggestions) && (
+            <div className="absolute inset-x-0 top-0 h-px overflow-hidden bg-indigo-500/20">
+              <div className="h-full w-1/4 bg-indigo-400 animate-loading-slide" />
+            </div>
+          )}
+        </div>
+
+        {/* タブごとの案内。**常設の1行。**
+            ? に隠すと、初見のユーザーには存在ごと気付かれない。
+            細かい規則（却下の3秒、方式ごとに保存が独立、など）は ? に逃がす */}
+        <div className="px-4 py-2 bg-slate-950/40 border-b border-white/5 flex items-center gap-1.5 shrink-0">
+          <Info className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
+          <span className="text-[11px] text-slate-300 leading-snug">
+            {activeTab === 'all'
+              ? t('tag_modal.guide_all', '')
+              : t('tag_modal.guide_proposals', '')}
+          </span>
+          <TooltipHelp
+            text={
+              activeTab === 'all'
+                ? t('tag_modal.guide_all_help', '')
+                : t('tag_modal.guide_proposals_help', '')
+            }
+            width="w-96"
+          />
+        </div>
+
+        {/* 実行の状態。**1本にまとめてある。**
+            以前は「実行中」「未判定」「最初から作り直す」が別々の帯として縦に積み重なり、
+            一覧に使える高さがそのぶん減っていた。同時に意味を持つのは常に1つなので、
+            状態を1行、操作を右端に寄せる。 */}
+        {activeTab === 'suggestions' && (scanningSuggestions || scanProgress || runStatus) && (
+          <div
+            className={`mx-4 mt-3 rounded-xl px-3 py-2 text-xs flex items-center justify-between gap-3 shrink-0 border ${
+              scanningSuggestions || scanProgress
+                ? 'bg-indigo-500/10 border-indigo-500/30 text-indigo-200'
+                : runStatus && runStatus.unjudged_count > 0
+                ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                : 'bg-slate-950/40 border-white/5 text-slate-400'
+            }`}
+          >
+            <span className="flex items-center gap-2 min-w-0">
+              {scanningSuggestions && <RefreshCw className="w-3.5 h-3.5 animate-spin shrink-0" />}
+              <span className="truncate">{runStatusText}</span>
+            </span>
+
+            <span className="flex items-center gap-3 shrink-0">
+              {/* 未判定があるときだけ。中断ぶん・増えたタグ・失敗したチャンクを一括で拾う */}
+              {!scanningSuggestions && runStatus && runStatus.unjudged_count > 0 && (
+                <button
+                  onClick={() => handleScanSuggestions(false)}
+                  disabled={applyingMerges || isScanning}
+                  className="px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition cursor-pointer disabled:opacity-50"
+                >
+                  {t('tag_modal.label_btn_resume', 'Continue')}
+                </button>
+              )}
+              {/* 全件やり直し。段1のカテゴリごと引き直したいときの唯一の手段 */}
+              {!scanningSuggestions && method === 'hypernym' && runStatus && (
+                <button
+                  onClick={() => handleScanSuggestions(true)}
+                  disabled={applyingMerges || isScanning}
+                  title={t('tag_modal.label_title_rescan', 'Discard saved judgements and re-extract hypernyms')}
+                  className="text-[11px] text-slate-400 hover:text-slate-200 underline underline-offset-2 cursor-pointer disabled:opacity-50"
+                >
+                  {t('tag_modal.label_btn_rescan', 'Rebuild from scratch')}
+                </button>
+              )}
+            </span>
+          </div>
+        )}
 
         {/* Warning Banner when analysis is running in background */}
         {isScanning && (
@@ -549,7 +1112,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                     type="text"
                     value={search}
                     onChange={(e) => setSearch(e.target.value)}
-                    placeholder={t('tag_modal.filter_placeholder', 'Filter tags...')}
+                    placeholder={t('tag_modal.label_filter_placeholder', 'Filter tags...')}
                     className="w-full bg-slate-950 border border-white/10 rounded-xl pl-9 pr-3 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
                   />
                 </div>
@@ -559,10 +1122,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   onChange={(e) => setSortBy(e.target.value as any)}
                   className="bg-slate-950 border border-white/10 text-xs text-slate-300 px-2.5 py-1.5 rounded-xl focus:outline-none focus:border-indigo-500/50 shrink-0 font-medium"
                 >
-                  <option value="count_desc">Sort: Count (High → Low)</option>
-                  <option value="count_asc">Sort: Count (Low → High)</option>
-                  <option value="alpha_asc">Sort: Alphabet (A → Z)</option>
-                  <option value="ja_asc">Sort: Japanese (50音順)</option>
+                  <option value="count_desc">{t('tag_modal.label_sort_label','Sort')}: {t('tag_modal.label_sort_count_desc','Count (High → Low)')}</option>
+                  <option value="count_asc">{t('tag_modal.label_sort_label','Sort')}: {t('tag_modal.label_sort_count_asc','Count (Low → High)')}</option>
+                  <option value="alpha_asc">{t('tag_modal.label_sort_label','Sort')}: {t('tag_modal.label_sort_name_asc','Name (A → Z)')}</option>
+                  <option value="ja_asc">{t('tag_modal.label_sort_label','Sort')}: {t('tag_modal.label_sort_ja_asc','Japanese')}</option>
                 </select>
 
                 {/* タグ種別フィルタ: 基本語 / 記述的タグ */}
@@ -576,10 +1139,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                       }`}
                     >
                       {k === 'all'
-                        ? t('tag_modal.kind_all', 'すべて')
+                        ? t('tag_modal.label_kind_all', 'すべて')
                         : k === 'basic'
-                        ? t('tag_modal.kind_basic', '基本語')
-                        : t('tag_modal.kind_descriptive', '修飾語')}
+                        ? t('tag_modal.label_kind_basic', '基本語')
+                        : t('tag_modal.label_kind_descriptive', '修飾語')}
                     </button>
                   ))}
                 </div>
@@ -588,14 +1151,14 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               {selectedTagIds.length >= 2 && (
                 <div className="flex items-center gap-2 bg-indigo-950/60 border border-indigo-500/40 p-1.5 rounded-xl animate-in fade-in">
                   <span className="text-[11px] text-indigo-300 font-semibold px-1">
-                    Selected ({selectedTagIds.length})
+                    {t('tag_modal.label_selected_count','Selected')} ({selectedTagIds.length})
                   </span>
                   <select
                     value={targetTagId || ''}
                     onChange={(e) => setTargetTagId(Number(e.target.value))}
                     className="bg-slate-900 text-xs text-white border border-white/10 rounded-lg px-2 py-1 focus:outline-none"
                   >
-                    <option value="">-- Choose Master Tag to Keep --</option>
+                    <option value="">{t('tag_modal.label_choose_master','-- Choose the tag to keep --')}</option>
                     {freeTags
                       .filter((t) => selectedTagIds.includes(t.id))
                       .map((t) => (
@@ -610,15 +1173,15 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                     className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition disabled:opacity-40 cursor-pointer flex items-center gap-1"
                   >
                     {applyingMerges && <RefreshCw className="w-3 h-3 animate-spin" />}
-                    <span>Merge Manual</span>
+                    <span>{t('tag_modal.label_btn_merge_manual','Consolidate manually')}</span>
                   </button>
                 </div>
               )}
             </div>
 
             {/* List */}
-            <div className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
-              {sortedTags.map((t) => {
+            <div ref={tagScrollRef} className="flex-1 overflow-y-auto p-3 space-y-1 min-h-0">
+              {sortedTags.slice(0, visibleTagCount).map((t) => {
                 const isEditing = editingTagId === t.id;
                 const isSelected = selectedTagIds.includes(t.id);
                 return (
@@ -651,14 +1214,14 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                             type="text"
                             value={editName}
                             onChange={(e) => setEditName(e.target.value)}
-                            placeholder="English name"
+                            placeholder={translate('tag_modal.label_placeholder_name_en', 'English name')}
                             className="bg-slate-900 border border-white/20 rounded px-2 py-1 text-xs text-white focus:outline-none"
                           />
                           <input
                             type="text"
                             value={editNameJa}
                             onChange={(e) => setEditNameJa(e.target.value)}
-                            placeholder="日本語訳"
+                            placeholder={translate('tag_modal.label_placeholder_name_ja', 'Japanese name')}
                             className="bg-slate-900 border border-white/20 rounded px-2 py-1 text-xs text-white focus:outline-none"
                           />
                         </div>
@@ -667,7 +1230,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                           <span
                             onClick={() => handleTriggerSearchFilter(t.name)}
                             className="font-mono font-semibold text-xs text-indigo-300 hover:text-indigo-200 cursor-pointer hover:underline"
-                            title="Click to search this tag in gallery"
+                            title={translate('tag_modal.label_title_search_tag', 'Click to search this tag in gallery')}
                           >
                             #{t.name}
                           </span>
@@ -675,7 +1238,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                             <span
                               onClick={() => handleTriggerSearchFilter(t.name_ja || t.name)}
                               className="text-xs text-slate-300 bg-slate-800 px-2 py-0.5 rounded-md border border-white/5 font-medium hover:text-white cursor-pointer hover:underline"
-                              title="Click to search this tag in gallery"
+                              title={translate('tag_modal.label_title_search_tag', 'Click to search this tag in gallery')}
                             >
                               {t.name_ja}
                             </span>
@@ -691,7 +1254,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                                 '日本語名が未設定です。似ているメディアの検索では英語名で代替されるため、精度が落ちることがあります。',
                               )}
                             >
-                              {translate('tag_modal.no_name_ja', '日本語名なし')}
+                              {translate('tag_modal.label_no_name_ja', '日本語名なし')}
                             </span>
                           )}
                           <span className="text-[11px] font-bold text-slate-500 bg-slate-900 px-1.5 py-0.5 rounded border border-white/5">
@@ -699,8 +1262,17 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                           </span>
                           {t.kind === 'descriptive' && (
                             <span className="text-[9px] font-bold text-slate-500 bg-slate-900/60 px-1.5 py-0.5 rounded border border-white/5 uppercase tracking-wide">
-                              修飾語
+                              {translate('tag_modal.label_kind_descriptive', 'Descriptive')}
                             </span>
+                          )}
+
+                          {/* 目のアイコンで開くまで中身が分からないと、
+                              どのタグを統合してよいか判断できない。AI提案のカードと同じ見せ方に揃える */}
+                          {tagThumbs[t.id] && tagThumbs[t.id].length > 0 && (
+                            <SampleThumbStack
+                              thumbnails={tagThumbs[t.id]}
+                              totalImagesCount={t.count ?? 0}
+                            />
                           )}
                         </div>
                       )}
@@ -713,7 +1285,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                             handleTriggerSearchFilter(language === 'ja' && t.name_ja ? t.name_ja : t.name)
                           }
                           className="p-1.5 text-slate-400 hover:text-indigo-400 hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                          title="Filter Gallery by this Tag"
+                          title={translate('tag_modal.label_title_filter', 'Filter gallery by this tag')}
                         >
                           <Filter className="w-3.5 h-3.5" />
                         </button>
@@ -722,7 +1294,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                       <button
                         onClick={() => handleOpenTagPreview(t)}
                         className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                        title="Preview Images with this Tag"
+                        title={translate('tag_modal.label_title_preview', 'Preview media with this tag')}
                       >
                         <Eye className="w-3.5 h-3.5" />
                       </button>
@@ -731,7 +1303,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                         <button
                           onClick={() => handleSaveEdit(t)}
                           className="p-1.5 bg-emerald-600 text-white hover:bg-emerald-500 rounded-lg transition cursor-pointer"
-                          title="Save"
+                          title={translate('tag_modal.label_title_save', 'Save')}
                         >
                           <Check className="w-3.5 h-3.5" />
                         </button>
@@ -739,7 +1311,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                         <button
                           onClick={() => handleStartEdit(t)}
                           className="p-1.5 text-slate-400 hover:text-white hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                          title="Edit Tag Name & Translation"
+                          title={translate('tag_modal.label_title_edit', 'Edit tag name & translation')}
                         >
                           <Edit2 className="w-3.5 h-3.5" />
                         </button>
@@ -748,6 +1320,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   </div>
                 );
               })}
+              {/* 末尾に来たら次を足す。上限ではないので全件に到達できる */}
+              <div ref={tagSentinelRef} className="h-px" />
             </div>
           </div>
         )}
@@ -755,19 +1329,37 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         {/* Tab 2: Group Proposals & Review */}
         {activeTab === 'suggestions' && (
           <div className="flex-1 flex flex-col min-h-0">
-            {suggestions.length === 0 ? (
+            {loadingSuggestions ? (
+              // **空表示にしない。** 読み込み中に「提案はまだありません」を出すと、
+              // 0件だったのか待っているだけなのかが区別できない
+              <div className="flex-1 overflow-hidden p-4 space-y-3">
+                <div className="flex items-center gap-2 text-xs text-slate-400">
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+                  <span>{t('tag_modal.label_loading_suggestions', 'Loading suggestions...')}</span>
+                </div>
+                {[0, 1, 2].map((i) => (
+                  <div
+                    key={i}
+                    className="h-28 rounded-2xl border border-white/5 bg-slate-950/40 animate-pulse-subtle"
+                  />
+                ))}
+              </div>
+            ) : suggestions.length === 0 ? (
               <div className="flex-1 flex flex-col items-center justify-center p-8 text-center">
                 <Sparkles className="w-10 h-10 text-indigo-400/50 mb-2" />
-                <h3 className="text-sm font-semibold text-slate-300">No proposals yet</h3>
+                <h3 className="text-sm font-semibold text-slate-300">{t('tag_modal.label_proposals_empty_title','No suggestions yet')}</h3>
                 <p className="text-xs text-slate-500 max-w-sm mt-1">
-                  Click "Scan Similar Tags" to group duplicate, plural, or synonymous tags into unified merge proposals.
+                  {t(
+                    'tag_modal.proposals_empty_body',
+                    'Press "Scan Similar Tags" to look for spelling variants, singular/plural forms and tags close in meaning, and list them as consolidation candidates.',
+                  )}
                 </p>
               </div>
             ) : (
               <>
                 <div className="p-3 bg-slate-950/80 border-b border-white/10 flex items-center justify-between">
                   <span className="text-xs text-slate-300 font-medium">
-                    Group Proposals ({acceptedIds.size} accepted / {suggestions.length} total)
+                    {t('tag_modal.label_proposals_summary','Selected suggestions')} ({acceptedIds.size} / {suggestions.length})
                   </span>
 
                   <button
@@ -778,19 +1370,19 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                     {applyingMerges ? (
                       <>
                         <RefreshCw className="w-4 h-4 animate-spin" />
-                        <span>{applyProgressText || 'Applying Merges...'}</span>
+                        <span>{applyProgressText || t('tag_modal.label_btn_applying','Consolidating...')}</span>
                       </>
                     ) : (
                       <>
                         <Check className="w-4 h-4" />
-                        <span>Apply Selected Merges ({acceptedIds.size})</span>
+                        <span>{t('tag_modal.label_btn_apply_merges','Consolidate selected')} ({acceptedIds.size})</span>
                       </>
                     )}
                   </button>
                 </div>
 
-                <div className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
-                  {sortedSuggestions.map((sug) => {
+                <div ref={sugScrollRef} className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0">
+                  {sortedSuggestions.slice(0, visibleSuggestionCount).map((sug) => {
                     if (!sug || !sug.target_tag) return null;
                     const sources = Array.isArray(sug.source_tags)
                       ? sug.source_tags.filter(Boolean)
@@ -822,51 +1414,43 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                         }`}
                       >
                         <div className="flex items-center justify-between gap-3 mb-3">
-                          <div className="flex items-center gap-2 max-w-[65%] min-w-0">
-                            <span
-                              className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold truncate"
-                              title={sug.reason}
-                            >
-                              {sug.reason}
-                            </span>
+                          <div className="flex items-center gap-2 max-w-[65%] min-w-0 flex-wrap">
+                            {/* **どの規則で候補になったかを個別に出す。**
+                                これが無いと、提案が妥当かどうかを判断する材料が無い。
+                                複数該当は確度が高いので、件数も併記する */}
+                            {sug.rules && sug.rules.length > 0 ? (
+                              sug.rules.map((r) => (
+                                <span
+                                  key={r}
+                                  title={r}
+                                  className="px-2 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold shrink-0"
+                                >
+                                  {t(ruleLabelKey(r), r)}
+                                </span>
+                              ))
+                            ) : (
+                              <span
+                                className="px-2.5 py-0.5 bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 rounded-full text-[11px] font-semibold truncate"
+                                title={sug.reason}
+                              >
+                                {sug.reason}
+                              </span>
+                            )}
+                            {sug.rules && sug.rules.length > 1 && (
+                              <span className="px-2 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/40 rounded-full text-[11px] font-bold shrink-0">
+                                {t('tag_modal.label_rules_matched', 'matches {n} rules', { n: sug.rules.length })}
+                              </span>
+                            )}
                             <span className="text-xs text-slate-400 shrink-0">
                               ({allMembers.length} tags)
                             </span>
 
                             {/* サンプルサムネイルのアバタースタック表示 & ホバーフローティング拡大 & 続きありインジケーター */}
                             {sug.sample_thumbnails && sug.sample_thumbnails.length > 0 && (
-                              <div className="flex items-center gap-1 shrink-0 ml-1">
-                                <div className="flex items-center -space-x-2 p-0.5" title="Group sample media">
-                                  {sug.sample_thumbnails.slice(0, 5).map((thumbPath, idx) => (
-                                    <img
-                                      key={idx}
-                                      src={convertFileSrc(thumbPath)}
-                                      alt="sample"
-                                      className="w-7 h-7 rounded-md object-cover border-2 border-slate-900 shadow-md cursor-pointer transition-transform hover:scale-110 relative"
-                                      onMouseEnter={(e) => {
-                                        const rect = e.currentTarget.getBoundingClientRect();
-                                        setHoveredThumb({
-                                          src: convertFileSrc(thumbPath),
-                                          x: rect.left + rect.width / 2,
-                                          y: rect.top,
-                                        });
-                                      }}
-                                      onMouseLeave={() => setHoveredThumb(null)}
-                                      onError={(e) => { (e.target as HTMLElement).style.display = 'none'; }}
-                                    />
-                                  ))}
-                                </div>
-
-                                {/* 最大枚数以上の画像がある場合の「続きあり (+N / ...)」インジケーター */}
-                                {sug.total_images_count !== undefined && sug.total_images_count > sug.sample_thumbnails.length && (
-                                  <span
-                                    className="px-1.5 py-0.5 bg-slate-800/90 text-slate-300 border border-white/10 rounded-md text-[10px] font-mono font-bold tracking-tight shrink-0 shadow-sm"
-                                    title={`${sug.total_images_count} total images (${sug.total_images_count - sug.sample_thumbnails.length} more)`}
-                                  >
-                                    +{sug.total_images_count - sug.sample_thumbnails.length}…
-                                  </span>
-                                )}
-                              </div>
+                              <SampleThumbStack
+                                thumbnails={sug.sample_thumbnails}
+                                totalImagesCount={sug.total_images_count}
+                              />
                             )}
                           </div>
 
@@ -881,12 +1465,12 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                               }`}
                             >
                               <ThumbsUp className="w-3.5 h-3.5" />
-                              Accept
+                              {t('tag_modal.label_btn_accept', 'Approve')}
                             </button>
 
                             <button
                               onClick={() => handleToggleReject(sug.id)}
-                              title={isRejected ? 'クリックでRejectをキャンセル' : '3秒後に結果から削除されます'}
+                              title={isRejected ? t('tag_modal.reject_cancel_hint','') : t('tag_modal.reject_hint','')}
                               className={`flex items-center gap-1 px-3 py-1 rounded-lg text-xs font-bold transition cursor-pointer ${
                                 isRejected
                                   ? 'bg-red-600 text-white shadow animate-pulse'
@@ -894,7 +1478,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                               }`}
                             >
                               <ThumbsDown className="w-3.5 h-3.5" />
-                              {isRejected ? 'Reject (3秒後削除)' : 'Reject'}
+                              {isRejected ? t('tag_modal.label_btn_reject_pending','Reject (removed in 3s)') : t('tag_modal.label_btn_reject','Reject')}
                             </button>
                           </div>
                         </div>
@@ -906,13 +1490,13 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                             <div className="flex items-center justify-between gap-3">
                               <div className="flex items-center gap-2">
                                 <span className="text-[11px] text-emerald-400 font-bold uppercase tracking-wider shrink-0">
-                                  Keep Master Tag:
+                                  {t('tag_modal.label_keep_master', 'Tag to keep')}
                                 </span>
                                 {!isCustomMaster && (
                                   <button
                                     onClick={() => handleOpenTagPreview(masterTag)}
                                     className="p-1 text-slate-400 hover:text-indigo-300 rounded hover:bg-slate-800 transition cursor-pointer"
-                                    title="Preview images with master tag"
+                                    title={t('tag_modal.label_title_preview_master', 'Preview media with the tag to keep')}
                                   >
                                     <Eye className="w-3.5 h-3.5" />
                                   </button>
@@ -930,7 +1514,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                                   </option>
                                 ))}
                                 <option value={-1}>
-                                  ✏️ -- Custom Master Tag (手入力) --
+                                  ✏️ {t('tag_modal.label_custom_master', 'Enter my own')}
                                 </option>
                               </select>
                             </div>
@@ -943,14 +1527,14 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                                   type="text"
                                   value={customInfo.name}
                                   onChange={(e) => handleCustomMasterTagChange(sug.id, 'name', e.target.value)}
-                                  placeholder="English tag (e.g. drink)"
+                                  placeholder={t('tag_modal.label_placeholder_custom_en','English name (e.g. drink)')}
                                   className="bg-slate-950 border border-emerald-500/50 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none flex-1 font-mono"
                                 />
                                 <input
                                   type="text"
                                   value={customInfo.nameJa}
                                   onChange={(e) => handleCustomMasterTagChange(sug.id, 'nameJa', e.target.value)}
-                                  placeholder="日本語訳 (e.g. 飲み物)"
+                                  placeholder={t('tag_modal.label_placeholder_custom_ja','Japanese name')}
                                   className="bg-slate-950 border border-emerald-500/50 rounded-lg px-2.5 py-1 text-xs text-white placeholder-slate-500 focus:outline-none flex-1"
                                 />
                               </div>
@@ -960,7 +1544,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                           {/* Sources to be Merged & Removed */}
                           <div className="flex items-start gap-2 pt-2 border-t border-white/5">
                             <span className="text-[10px] text-slate-400 font-bold uppercase tracking-wider shrink-0 mt-1">
-                              Merge & Remove ({activeSourceCount}):
+                              {t('tag_modal.label_merge_and_remove','Tags to consolidate and remove')} ({activeSourceCount})
                             </span>
                             <div className="flex flex-wrap gap-1.5 flex-1">
                               {sourceTags.map((st) => {
@@ -968,13 +1552,16 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                                 return (
                                   <div
                                     key={st.id}
+                                    // **打ち消し線と減光はタグ名だけに掛ける。**
+                                    // ここに置くと「戻す」ボタンと目のアイコンにも継承され、
+                                    // 押せないボタンに見える
                                     className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-mono border transition ${
                                       isExcluded
-                                        ? 'bg-slate-950/40 text-slate-600 border-white/5 line-through opacity-50'
+                                        ? 'bg-slate-950/40 border-white/5'
                                         : 'bg-slate-950 text-slate-300 border-white/10'
                                     }`}
                                   >
-                                    <span className={isExcluded ? 'line-through' : ''}>
+                                    <span className={isExcluded ? 'line-through text-slate-600 opacity-60' : ''}>
                                       #{st.name}
                                       {st.name_ja && (
                                         <span className="text-[10px] font-normal text-slate-500 ml-1 no-underline">
@@ -990,7 +1577,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                                     <button
                                       onClick={() => handleOpenTagPreview(st)}
                                       className="text-slate-400 hover:text-indigo-300 transition cursor-pointer"
-                                      title="Preview Images with this Tag"
+                                      title={translate('tag_modal.label_title_preview', 'Preview media with this tag')}
                                     >
                                       <Eye className="w-3 h-3" />
                                     </button>
@@ -1003,9 +1590,13 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                                           ? 'text-emerald-400 hover:bg-emerald-950/50'
                                           : 'text-red-400 hover:bg-red-950/50'
                                       }`}
-                                      title={isExcluded ? 'Include back in merge' : 'Exclude from merge'}
+                                      title={
+                                        isExcluded
+                                          ? t('tag_modal.label_title_include', 'Include back in the consolidation')
+                                          : t('tag_modal.label_title_exclude', 'Exclude from the consolidation')
+                                      }
                                     >
-                                      {isExcluded ? '+ Include' : '✕ Exclude'}
+                                      {isExcluded ? t('tag_modal.label_btn_include','Include') : t('tag_modal.label_btn_exclude','Exclude')}
                                     </button>
                                   </div>
                                 );
@@ -1016,6 +1607,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                       </div>
                     );
                   })}
+                  {/* 末尾に来たら次を足す。上限ではないので全件に到達できる */}
+                  <div ref={sugSentinelRef} className="h-px" />
                 </div>
               </>
             )}
@@ -1032,9 +1625,13 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               <div className="flex items-center gap-2">
                 <ImageIcon className="w-4 h-4 text-indigo-400" />
                 <h3 className="text-xs font-bold text-white">
-                  Images with tag: <span className="text-indigo-300 font-mono">#{previewTag.name}</span>
+                  {t('tag_modal.label_preview_title', 'Media with this tag')}{' '}
+                  <span className="text-indigo-300 font-mono">#{previewTag.name}</span>
                   {previewTag.name_ja && <span className="text-slate-400 ml-1">({previewTag.name_ja})</span>}
-                  <span className="text-indigo-400 ml-1">({previewTag.count ?? 0} images)</span>
+                  <span className="text-indigo-400 ml-1">
+                    ({previewTag.count ?? 0}
+                    {t('tag_modal.label_tag_count_unit', '')})
+                  </span>
                 </h3>
               </div>
               <button
@@ -1050,11 +1647,11 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               {loadingPreview ? (
                 <div className="flex items-center justify-center py-12 text-slate-400 text-xs">
                   <RefreshCw className="w-4 h-4 animate-spin mr-2 text-indigo-400" />
-                  Loading tagged images...
+                  {t('tag_modal.label_preview_loading', 'Loading...')}
                 </div>
               ) : previewMediaList.length === 0 ? (
                 <div className="text-center py-12 text-slate-500 text-xs">
-                  No images currently assigned to this tag.
+                  {t('tag_modal.preview_empty', 'No media currently carries this tag.')}
                 </div>
               ) : (
                 <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
@@ -1075,7 +1672,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                 onClick={() => setPreviewTag(null)}
                 className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
               >
-                Close Preview
+                {t('tag_modal.label_btn_close_preview', 'Close')}
               </button>
             </div>
           </div>
@@ -1121,29 +1718,15 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                 onClick={() => setPreviewMediaItem(null)}
                 className="text-xs text-slate-300 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-white/10 transition cursor-pointer"
               >
-                閉じる
+                {t('tag_modal.label_btn_close', 'Close')}
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Floating Hover Preview Tooltip (Always fully visible above all modal scrollports) */}
-      {hoveredThumb && (
-        <div
-          style={{
-            left: `${hoveredThumb.x}px`,
-            top: hoveredThumb.y < 160 ? `${hoveredThumb.y + 36}px` : `${hoveredThumb.y - 136}px`,
-          }}
-          className="fixed -translate-x-1/2 w-32 h-32 rounded-2xl overflow-hidden border-2 border-indigo-500 bg-slate-950 shadow-2xl z-[120] pointer-events-none animate-in fade-in zoom-in-95 duration-100 flex items-center justify-center select-none"
-        >
-          <img
-            src={hoveredThumb.src}
-            alt="floating preview"
-            className="w-full h-full object-cover"
-          />
-        </div>
-      )}
+      {/* ホバー時の拡大表示は SampleThumbStack が body へ portal する。
+          ここに置くと、サムネの上をマウスが通るたびにモーダル全体が再描画される */}
     </div>
   );
 };

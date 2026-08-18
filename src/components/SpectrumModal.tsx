@@ -116,9 +116,9 @@ const RangeLegend: React.FC<{ min: number; mean: number; max: number; zones: Zon
   return (
     <div className="px-1">
       <div className="flex items-center gap-3 text-[11px] text-slate-400 mb-1.5">
-        <span>{t('spectrum.legend_low', '似ていない')}</span>
+        <span>{t('spectrum.label_legend_low', '似ていない')}</span>
         <span className="flex-1" />
-        <span>{t('spectrum.legend_high', '似ている')}</span>
+        <span>{t('spectrum.label_legend_high', '似ている')}</span>
       </div>
 
       <div className="relative h-2 rounded-full bg-slate-800 border border-white/5">
@@ -133,7 +133,7 @@ const RangeLegend: React.FC<{ min: number; mean: number; max: number; zones: Zon
         <div
           className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full bg-slate-100 ring-2 ring-slate-900"
           style={{ left: `${pos(mean)}%` }}
-          title={`${t('spectrum.legend_mean', '平均')} ${mean.toFixed(3)}`}
+          title={`${t('spectrum.label_legend_mean', '平均')} ${mean.toFixed(3)}`}
         />
       </div>
 
@@ -160,7 +160,7 @@ const RangeLegend: React.FC<{ min: number; mean: number; max: number; zones: Zon
         <span>min {min.toFixed(3)}</span>
         <span className="inline-flex items-center gap-1 text-slate-200">
           <span className="w-2.5 h-2.5 rounded-full bg-slate-100 ring-2 ring-slate-900 inline-block shrink-0" />
-          {t('spectrum.legend_mean', '平均')} {mean.toFixed(3)}
+          {t('spectrum.label_legend_mean', '平均')} {mean.toFixed(3)}
         </span>
         <span>max {max.toFixed(3)}</span>
         <span className="ml-auto text-slate-500">−1 … 0 … +1</span>
@@ -184,7 +184,7 @@ const SimilarCard: React.FC<{
       <button
         type="button"
         onClick={onOpenDetail}
-        title={`${name}\n${t('spectrum.open_detail', '詳細を開く')}`}
+        title={`${name}\n${t('spectrum.label_open_detail', '詳細を開く')}`}
         className="relative block w-full aspect-square bg-slate-950/80 cursor-pointer"
       >
         <img
@@ -211,7 +211,7 @@ const SimilarCard: React.FC<{
               onExplore();
             }
           }}
-          title={t('spectrum.explore_from', 'このメディアを基準に探索')}
+          title={t('spectrum.label_explore_from', 'このメディアを基準に探索')}
           className="absolute top-1.5 right-1.5 p-1.5 rounded-full bg-black/60 hover:bg-indigo-500/80 text-white opacity-0 group-hover:opacity-100 focus:opacity-100 transition"
         >
           <Radar className="w-3.5 h-3.5" />
@@ -241,7 +241,7 @@ const BaseMediaPreview: React.FC<{ media: MediaItem; onOpenDetail?: () => void }
         type="button"
         onClick={onOpenDetail}
         disabled={!onOpenDetail}
-        title={onOpenDetail ? t('spectrum.open_detail', '詳細を開く') : name}
+        title={onOpenDetail ? t('spectrum.label_open_detail', '詳細を開く') : name}
         className="relative w-24 h-24 shrink-0 rounded-lg overflow-hidden bg-slate-950/80 border border-white/10 disabled:cursor-default"
       >
         <img
@@ -255,7 +255,7 @@ const BaseMediaPreview: React.FC<{ media: MediaItem; onOpenDetail?: () => void }
       </button>
       <div className="min-w-0 flex-1 space-y-1">
         <div className="text-[10px] font-bold text-indigo-300 uppercase tracking-wide">
-          {t('spectrum.base', '基準')}
+          {t('spectrum.label_base', '基準')}
         </div>
         <div className="text-xs text-slate-100 truncate" title={name}>
           {name}
@@ -275,9 +275,9 @@ const ZONE_LABEL: Record<ZoneKey, [string, string]> = {
   // 単なる無関係であり、ラベルが実態以上を約束することになる。
   // 基準とタグを共有する候補は除外済みなので、「タグの類似度が高い」は実態と合わない
   // （同じタグのメディアはここには絶対に出ない）。何が出る枠なのかをラベルで言い切る
-  similar: ['spectrum.zone_similar', 'タグは違うが意味が近い'],
-  middle: ['spectrum.zone_middle', '意味の近さが中くらい'],
-  distant: ['spectrum.zone_distant', '意味が最も遠い'],
+  similar: ['spectrum.label_zone_similar', 'タグは違うが意味が近い'],
+  middle: ['spectrum.label_zone_middle', '意味の近さが中くらい'],
+  distant: ['spectrum.label_zone_distant', '意味が最も遠い'],
 };
 
 export const SpectrumModal: React.FC<SpectrumModalProps> = ({
@@ -379,7 +379,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
         <div className="flex items-center gap-3 px-5 py-3 border-b border-white/10 shrink-0">
           <div className="min-w-0 flex-1">
             <h2 className="text-sm font-semibold text-slate-100">
-              {t('spectrum.title', '似ているメディア')}
+              {t('spectrum.label_title', '似ているメディア')}
             </h2>
             {/* パンくず履歴 */}
             <div className="flex items-center gap-1 mt-0.5 text-[11px] text-slate-400 overflow-x-auto">
@@ -409,14 +409,14 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
               title={t('spectrum.reroll_help', '各ゾーンの帯から別のメディアを選び直します')}
             >
               <Dices className="w-3.5 h-3.5 text-indigo-300" />
-              {t('spectrum.reroll', '引き直す')}
+              {t('spectrum.label_reroll', '引き直す')}
             </button>
           )}
 
           {result && (
             <span
               className="text-[11px] text-slate-400 shrink-0"
-              title={t('spectrum.model_hint', '類似度の算出に使ったモデル')}
+              title={t('spectrum.label_model_hint', '類似度の算出に使ったモデル')}
             >
               {result.model}
             </span>
@@ -435,7 +435,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
           {loading && (
             <div className="flex items-center justify-center gap-2 py-16 text-slate-300 text-sm">
               <Loader2 className="w-4 h-4 animate-spin" />
-              {t('spectrum.loading', '類似度を計算しています...')}
+              {t('spectrum.label_loading', '類似度を計算しています...')}
             </div>
           )}
 
@@ -452,7 +452,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
                 {notice.text}
                 {notice.action && (
                   <button type="button" onClick={onOpenSettings} className="ml-2 underline hover:text-white">
-                    {t('spectrum.open_settings', '設定を開く')}
+                    {t('spectrum.label_open_settings', '設定を開く')}
                   </button>
                 )}
               </div>
@@ -493,7 +493,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
                       </h3>
                       {zone.band_size > zone.items.length && (
                         <span className="text-[11px] text-slate-400">
-                          {t('spectrum.band_of', '候補')} {zone.band_size} {t('spectrum.band_pick', '件から抽出')}
+                          {t('spectrum.label_band_of', '候補')} {zone.band_size} {t('spectrum.label_band_pick', '件から抽出')}
                         </span>
                       )}
                     </div>
@@ -514,7 +514,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
               {/* 除外されているメディアを黙って隠さない */}
               <div className="text-[11px] text-slate-400 border-t border-white/5 pt-3 flex flex-wrap items-center gap-x-4 gap-y-1">
                 <span>
-                  {t('spectrum.candidates', '比較対象')}: {result.candidate_count}
+                  {t('spectrum.label_candidates', '比較対象')}: {result.candidate_count}
                 </span>
                 {result.excluded_media > 0 && (
                   <button
@@ -523,13 +523,13 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
                     disabled={!onShowExcluded}
                     className={onShowExcluded ? 'underline hover:text-indigo-300 transition' : 'cursor-default'}
                   >
-                    {t('spectrum.excluded', 'タグ不足で対象外')}: {result.excluded_media}
+                    {t('spectrum.label_excluded', 'タグ不足で対象外')}: {result.excluded_media}
                   </button>
                 )}
                 {/* 除外は結果の中身を決めている規則なので、件数と理由を必ず出す */}
                 {result.shared_tag_excluded > 0 && (
                   <span className="inline-flex items-center gap-1">
-                    {t('spectrum.shared_excluded', 'タグ共有で除外')}: {result.shared_tag_excluded}
+                    {t('spectrum.label_shared_excluded', 'タグ共有で除外')}: {result.shared_tag_excluded}
                     <TooltipHelp
                       text={t(
                         'spectrum.shared_excluded_help',

@@ -1,0 +1,23 @@
+{
+  "label_tags_categories": "タグ & カテゴリ",
+  "no_tags": "タグが設定されていません。",
+  "label_file_size": "ファイルサイズ",
+  "label_folder": "登録フォルダ",
+  "label_open_folder": "フォルダを開く",
+  "label_open_file": "ファイルを開く",
+  "label_retry_analysis": "解析を再試行",
+  "label_reanalyze_image": "画像AI単体再解析",
+  "label_reanalyze_image_btn": "この画像を再解析",
+  "label_video_time_thumbnail": "時間指定サムネイル変更 ＆ 高精度VLM解析",
+  "label_video_time_btn": "📍 この場面でサムネイル変更 ＆ 解析",
+  "label_cancel": "キャンセル",
+  "label_tag_placeholder_en": "英語タグ (a-Z, _)",
+  "label_tag_placeholder_ja": "日本語訳 (例: 山脈)",
+  "label_add_tag_btn": "追加",
+  "label_title_search_tag": "クリックでギャラリーからこのタグを検索",
+  "label_title_remove_tag": "このメディアからタグを外す",
+  "codec_unsupported": "HTML5で再生できないコーデックです。下の秒数入力から時間を指定できます。",
+  "label_seconds_input": "秒数指定",
+  "label_seconds_unit": "秒",
+  "label_title_custom_analyze": "動画の現在の再生位置（または指定秒数）からサムネイルを変更し、マルチフレームの高精度解析を実行する"
+}

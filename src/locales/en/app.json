@@ -1,0 +1,15 @@
+{
+  "label_title": "Loma",
+  "label_subtitle": "Local Ollama Media Analyzer",
+  "label_title_about": "About Loma",
+  "label_title_resume": "Resume processing",
+  "label_title_pause": "Pause processing",
+  "label_title_cancel_scan": "Cancel scan",
+  "label_title_sync": "Sync all registered folders",
+  "label_title_retry": "Retry failed items",
+  "label_title_tags": "Tag Management & Consolidation",
+  "label_title_folders": "Manage Registered Folders",
+  "label_title_settings": "Settings",
+  "download_in_progress": "The model \"{model}\" is still downloading. Start the analysis once it finishes.",
+  "label_open_settings": "Open settings"
+}

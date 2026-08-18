@@ -1,0 +1,7 @@
+{
+  "label_title_resize": "Drag to resize console height",
+  "label_title_refresh": "Refresh Logs",
+  "label_title_open_modal": "Open Full Search & Diagnostic Modal",
+  "label_lines": "{n} lines",
+  "label_errors": "{n} errors"
+}

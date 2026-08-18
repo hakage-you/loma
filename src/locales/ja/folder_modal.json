@@ -1,0 +1,10 @@
+{
+  "label_title": "登録フォルダ管理",
+  "label_add_folder": "新規フォルダ追加",
+  "label_rescan_all": "全フォルダ再スキャン",
+  "label_reanalyze_all": "全メディア再解析",
+  "label_title_scan_pending": "このフォルダの未処理・新規の項目を処理",
+  "label_title_reanalyze": "このフォルダの全項目を強制的に再解析",
+  "label_title_remove": "フォルダを削除",
+  "label_subtitle": "登録済みスキャンフォルダの一覧管理および一括再解析"
+}

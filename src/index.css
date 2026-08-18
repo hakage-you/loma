@@ -64,3 +64,13 @@ body {
 .animate-pulse-subtle {
   animation: pulse-subtle 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
+
+/* 読み込み中の不確定バー。所要時間が読めない区間（タブ切り替え・方式切り替え）で使う */
+@keyframes loading-slide {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(400%); }
+}
+
+.animate-loading-slide {
+  animation: loading-slide 1.1s ease-in-out infinite;
+}

@@ -6,6 +6,10 @@ mod embedding;
 mod llm;
 mod logger;
 mod proc;
+/// タグ整理の提案を判定の記録として保存する（中断再開・却下・未判定）
+mod suggestion_store;
+/// タグ整理の提案生成（ルール検出以外の、明示実行の方式群）
+mod tag_organize;
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -64,7 +68,12 @@ pub fn run() {
             commands::rename_tag,
             commands::merge_tags,
             commands::suggest_tag_merges,
+            commands::suggest_related_tags,
+            commands::suggest_hypernyms,
+            commands::apply_tag_merges,
+            commands::count_invalidated_suggestions,
             commands::get_media_by_tag,
+            commands::get_tag_sample_thumbnails,
             commands::get_or_create_tag,
             commands::add_tag_to_media,
             commands::remove_tag_from_media,
@@ -72,8 +81,8 @@ pub fn run() {
             commands::open_folder,
             commands::check_and_open_file,
             commands::load_tag_suggestions_cache,
-            commands::save_tag_suggestions_cache,
-            commands::clear_tag_suggestions_cache,
+            commands::dismiss_tag_suggestion,
+            commands::get_suggestion_run_status,
             commands::custom_analyze_video,
             commands::save_provider_api_key,
             commands::get_provider_api_key,

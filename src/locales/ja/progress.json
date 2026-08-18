@@ -1,0 +1,13 @@
+{
+  "label_processing": "解析処理中",
+  "label_paused": "一時停止中",
+  "label_calculating": "計算中...",
+  "label_eta": "残り時間",
+  "label_sec_per_item": "秒/件",
+  "label_measuring": "計測中",
+  "label_item_count": "件",
+  "label_eta_dhm": "{d}日 {h}時間 {m}分",
+  "label_eta_hm": "{h}時間 {m}分",
+  "label_eta_ms": "{m}分 {s}秒",
+  "label_eta_s": "{s}秒"
+}

@@ -7,6 +7,7 @@ import {
 import { TagItem, ScanFolderItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { STATUS_TAG_INSUFFICIENT } from '../constants/spectrum';
+import { CATEGORY_IDS, categoryLabelKey } from '../constants/categories';
 
 interface SidebarProps {
   tags: TagItem[];
@@ -28,35 +29,24 @@ interface SidebarProps {
   onClearFilters: () => void;
 }
 
-const CATEGORY_META: Record<string, { label: string; icon: React.ReactNode }> = {
-  screenshot: { label: 'スクリーンショット', icon: <Monitor className="w-3.5 h-3.5" /> },
-  document: { label: '書類・文書', icon: <FileText className="w-3.5 h-3.5" /> },
-  landscape: { label: '風景・自然', icon: <Mountain className="w-3.5 h-3.5" /> },
-  food: { label: '料理・食べ物', icon: <Utensils className="w-3.5 h-3.5" /> },
-  character: { label: 'キャラクター', icon: <Smile className="w-3.5 h-3.5" /> },
-  animal: { label: '動物・ペット', icon: <Dog className="w-3.5 h-3.5" /> },
-  person: { label: '人物・顔写真', icon: <User className="w-3.5 h-3.5" /> },
-  item_product: { label: '商品・雑貨', icon: <ShoppingBag className="w-3.5 h-3.5" /> },
-  art_illustration: { label: 'イラスト・アート', icon: <Palette className="w-3.5 h-3.5" /> },
-  text_heavy: { label: '文字主体', icon: <FileText className="w-3.5 h-3.5" /> },
-  tech: { label: 'IT・技術', icon: <Cpu className="w-3.5 h-3.5" /> },
-  other: { label: 'その他', icon: <HelpCircle className="w-3.5 h-3.5" /> },
+/** カテゴリの見出しアイコン。**表示名はここに持たない** → `constants/categories.ts` */
+const CATEGORY_ICON: Record<string, React.ReactNode> = {
+  screenshot: <Monitor className="w-3.5 h-3.5" />,
+  document: <FileText className="w-3.5 h-3.5" />,
+  landscape: <Mountain className="w-3.5 h-3.5" />,
+  food: <Utensils className="w-3.5 h-3.5" />,
+  character: <Smile className="w-3.5 h-3.5" />,
+  animal: <Dog className="w-3.5 h-3.5" />,
+  person: <User className="w-3.5 h-3.5" />,
+  item_product: <ShoppingBag className="w-3.5 h-3.5" />,
+  art_illustration: <Palette className="w-3.5 h-3.5" />,
+  text_heavy: <FileText className="w-3.5 h-3.5" />,
+  tech: <Cpu className="w-3.5 h-3.5" />,
+  other: <HelpCircle className="w-3.5 h-3.5" />,
 };
 
-const DEFAULT_CATEGORIES = [
-  'screenshot',
-  'document',
-  'landscape',
-  'food',
-  'character',
-  'animal',
-  'person',
-  'item_product',
-  'art_illustration',
-  'text_heavy',
-  'tech',
-  'other',
-];
+/** DB にカテゴリがまだ無いときの並び。識別子は共通定義から取る */
+const DEFAULT_CATEGORIES: readonly string[] = CATEGORY_IDS;
 
 const COMMON_EXTENSIONS = ['jpg', 'jpeg', 'png', 'gif', 'webp', 'mp4', 'webm', 'mov'];
 
@@ -122,14 +112,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
       <div className="flex items-center justify-between border-b border-white/10 pb-3">
         <div className="flex items-center gap-2 text-sm font-semibold text-white">
           <Filter className="w-4 h-4 text-indigo-400" />
-          <span>{t('sidebar.title', 'フィルター')}</span>
+          <span>{t('sidebar.label_title', 'フィルター')}</span>
         </div>
         {hasActiveFilters && (
           <button
             onClick={onClearFilters}
             className="text-xs text-indigo-400 hover:text-indigo-300 font-semibold transition cursor-pointer"
           >
-            {t('sidebar.reset_all', 'すべてリセット')}
+            {t('sidebar.label_reset_all', 'すべてリセット')}
           </button>
         )}
       </div>
@@ -142,12 +132,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
             <Film className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{t('sidebar.media_type', 'メディア種別')}</span>
+            <span>{t('sidebar.label_media_type', 'メディア種別')}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {!openSections.mediaType && selectedMediaType !== 'all' && (
               <span className="px-1.5 py-0.5 bg-indigo-600 text-white rounded text-[10px] font-bold">
-                {selectedMediaType === 'image' ? t('sidebar.images', '画像') : t('sidebar.videos', '動画')}
+                {selectedMediaType === 'image' ? t('sidebar.label_images', '画像') : t('sidebar.label_videos', '動画')}
               </span>
             )}
             {openSections.mediaType ? (
@@ -161,9 +151,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {openSections.mediaType && (
           <div className="p-2 space-y-1 border-t border-white/5 bg-slate-900/40">
             {[
-              { id: 'all', label: t('sidebar.all_media', 'すべてのメディア'), icon: <Film className="w-3.5 h-3.5" /> },
-              { id: 'image', label: t('sidebar.images', '画像'), icon: <ImageIcon className="w-3.5 h-3.5 text-emerald-400" /> },
-              { id: 'video', label: t('sidebar.videos', '動画'), icon: <Film className="w-3.5 h-3.5 text-amber-400" />, isVideo: true },
+              { id: 'all', label: t('sidebar.label_all_media', 'すべてのメディア'), icon: <Film className="w-3.5 h-3.5" /> },
+              { id: 'image', label: t('sidebar.label_images', '画像'), icon: <ImageIcon className="w-3.5 h-3.5 text-emerald-400" /> },
+              { id: 'video', label: t('sidebar.label_videos', '動画'), icon: <Film className="w-3.5 h-3.5 text-amber-400" />, isVideo: true },
             ].map((type) => {
               const isVideoDisabled = type.isVideo && ffmpegInstalled === false;
               return (
@@ -208,7 +198,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
             <Layers className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{t('sidebar.categories', 'カテゴリ')}</span>
+            <span>{t('sidebar.label_categories', 'カテゴリ')}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {!openSections.categories && selectedCategories.length > 0 && (
@@ -228,7 +218,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="p-2 space-y-1 border-t border-white/5 bg-slate-900/40">
             {displayCategories.map((cat) => {
               const isSelected = selectedCategories.includes(cat);
-              const meta = CATEGORY_META[cat] || { label: cat, icon: <Tag className="w-3.5 h-3.5" /> };
+              const icon = CATEGORY_ICON[cat] || <Tag className="w-3.5 h-3.5" />;
+              const label = t(categoryLabelKey(cat), cat);
               return (
                 <button
                   key={cat}
@@ -239,8 +230,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       : 'text-slate-300 hover:bg-slate-800/60'
                   }`}
                 >
-                  <div className="text-indigo-400">{meta.icon}</div>
-                  <span className="flex-1 text-left">{meta.label}</span>
+                  <div className="text-indigo-400">{icon}</div>
+                  <span className="flex-1 text-left">{label}</span>
                   {isSelected ? (
                     <CheckSquare className="w-3.5 h-3.5 text-indigo-400 shrink-0" />
                   ) : (
@@ -261,7 +252,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
             <Tag className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{t('sidebar.analysis_status', '解析ステータス')}</span>
+            <span>{t('sidebar.label_analysis_status', '解析ステータス')}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {!openSections.status && selectedStatus !== '' && (
@@ -280,12 +271,12 @@ export const Sidebar: React.FC<SidebarProps> = ({
         {openSections.status && (
           <div className="p-2 space-y-1 border-t border-white/5 bg-slate-900/40">
             {[
-              { id: '', label: t('sidebar.status_all', 'すべてのステータス'), icon: <Tag className="w-3.5 h-3.5 text-slate-400" /> },
-              { id: 'completed', label: t('sidebar.status_completed', '解析完了'), icon: <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> },
-              { id: 'pending', label: t('sidebar.status_pending', '未解析'), icon: <Clock className="w-3.5 h-3.5 text-amber-400" /> },
-              { id: 'failed', label: t('sidebar.status_failed', '解析失敗'), icon: <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> },
+              { id: '', label: t('sidebar.label_status_all', 'すべてのステータス'), icon: <Tag className="w-3.5 h-3.5 text-slate-400" /> },
+              { id: 'completed', label: t('sidebar.label_status_completed', '解析完了'), icon: <CheckCircle className="w-3.5 h-3.5 text-emerald-400" /> },
+              { id: 'pending', label: t('sidebar.label_status_pending', '未解析'), icon: <Clock className="w-3.5 h-3.5 text-amber-400" /> },
+              { id: 'failed', label: t('sidebar.label_status_failed', '解析失敗'), icon: <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> },
               // 類似検索の対象外。タグを手で足せば対象に入るので、辿れるようにしておく
-              { id: STATUS_TAG_INSUFFICIENT, label: t('sidebar.status_tag_insufficient', 'タグ不足（類似検索の対象外）'), icon: <Radar className="w-3.5 h-3.5 text-slate-400" /> },
+              { id: STATUS_TAG_INSUFFICIENT, label: t('sidebar.label_status_tag_insufficient', 'タグ不足（類似検索の対象外）'), icon: <Radar className="w-3.5 h-3.5 text-slate-400" /> },
             ].map((st) => (
               <button
                 key={st.id}
@@ -313,7 +304,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
               <FolderGit2 className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{t('sidebar.added_folders', '登録済みフォルダ')} ({scanFolders.length})</span>
+              <span>{t('sidebar.label_added_folders', '登録済みフォルダ')} ({scanFolders.length})</span>
             </div>
             <div className="flex items-center gap-1.5">
               {!openSections.scanFolders && selectedScanFolder !== '' && (
@@ -339,7 +330,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     : 'text-slate-300 hover:bg-slate-800/60'
                 }`}
               >
-                {t('sidebar.added_folders', 'すべての登録フォルダ')}
+                {t('sidebar.label_added_folders', 'すべての登録フォルダ')}
               </button>
               {scanFolders.map((sf) => {
                 const name = sf.path.split(/[/\\]/).filter(Boolean).pop() || sf.path;
@@ -373,7 +364,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           >
             <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
               <Folder className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{t('sidebar.parent_folders', '親フォルダ')} ({parentFolders.length})</span>
+              <span>{t('sidebar.label_parent_folders', '親フォルダ')} ({parentFolders.length})</span>
             </div>
             <div className="flex items-center gap-1.5">
               {!openSections.folders && selectedParentFolder !== '' && (
@@ -399,7 +390,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     : 'text-slate-300 hover:bg-slate-800/60'
                 }`}
               >
-                {t('sidebar.parent_folders', 'すべての親フォルダ')}
+                {t('sidebar.label_parent_folders', 'すべての親フォルダ')}
               </button>
               {parentFolders.map((folder) => (
                 <button
@@ -428,7 +419,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           <div className="flex items-center gap-2 text-xs font-semibold text-slate-300">
             <FileCode className="w-3.5 h-3.5 text-indigo-400" />
-            <span>{t('sidebar.file_extensions', 'ファイル拡張子')}</span>
+            <span>{t('sidebar.label_file_extensions', 'ファイル拡張子')}</span>
           </div>
           <div className="flex items-center gap-1.5">
             {!openSections.extensions && selectedExtensions.length > 0 && (

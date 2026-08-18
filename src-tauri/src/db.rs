@@ -50,7 +50,10 @@ pub async fn init_db(app_handle: &AppHandle) -> Result<Pool<Sqlite>, Box<dyn std
     Ok(pool)
 }
 
-async fn create_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
+/// スキーマを現在の形に揃える。**既存DBに対しても安全に呼べる**
+/// （すべて `IF NOT EXISTS` / 失敗を無視する `ALTER`）。
+/// 実データで検証するテストからも呼ぶ。
+pub async fn create_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
         CREATE TABLE IF NOT EXISTS settings (
@@ -111,6 +114,65 @@ async fn create_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         );
 
         CREATE INDEX IF NOT EXISTS idx_tag_embeddings_model ON tag_embeddings(model);
+
+        -- タグ整理の提案。**提案そのものではなく判定の記録を持つ。**
+        --
+        -- 提案を保存すると、タグが1つ統合されただけで他の提案が意味を失い、
+        -- 全部作り直しになる。生のペアで持てば、
+        -- 消えたタグは外部キーで自然に落ち、残りはそのまま使える。
+        -- 提案への組み立ては読み出し時に行う。
+        --
+        -- method: 'rules'（規則）/ 'hypernym'（包括関係）/ 'related'（関連タグ）。
+        -- 方式ごとに独立した枠を持つ（1つを回しても他が消えない）。
+        CREATE TABLE IF NOT EXISTS tag_suggestion_runs (
+            method TEXT PRIMARY KEY,
+            started_at INTEGER NOT NULL,
+            -- NULL は「途中」。②はここを見て続きから走る
+            finished_at INTEGER,
+            -- 途中結果を引き継いでよいかの判定に使う。
+            -- モデルやパラメータが変わったものを混ぜると結果が解釈不能になる
+            model TEXT,
+            params TEXT
+        );
+
+        -- ②の段1で決めた包括語。**段2の結果はこの集合に対する相対値**なので、
+        -- 続きから走らせるにはこれを一緒に持つ必要がある。
+        CREATE TABLE IF NOT EXISTS tag_suggestion_categories (
+            method TEXT NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (method, tag_id),
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
+
+        -- 生の判定結果。dismissed は却下の記録。
+        -- **却下で行を消さない。** 消すと再実行で同じ提案が戻る。
+        -- 後から新しいメンバーが加わった場合は、そのメンバーだけが提案に出る。
+        CREATE TABLE IF NOT EXISTS tag_suggestion_pairs (
+            method TEXT NOT NULL,
+            target_id INTEGER NOT NULL,
+            member_id INTEGER NOT NULL,
+            -- ①: 一致した規則（JSON配列）。②③では NULL
+            rules TEXT,
+            -- ③: コサイン類似度。①②では NULL
+            score REAL,
+            dismissed INTEGER NOT NULL DEFAULT 0,
+            created_at INTEGER DEFAULT (strftime('%s', 'now')),
+            PRIMARY KEY (method, target_id, member_id),
+            FOREIGN KEY (target_id) REFERENCES tags(id) ON DELETE CASCADE,
+            FOREIGN KEY (member_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_tag_suggestion_pairs_method
+            ON tag_suggestion_pairs(method, dismissed);
+
+        -- 判定済みの対象。**「見たが該当なし」と「まだ見ていない」を区別するために要る。**
+        -- 未判定 = 母集団 - これ。中断で残ったぶんと、後から増えたタグが同じ形で出る。
+        CREATE TABLE IF NOT EXISTS tag_suggestion_judged (
+            method TEXT NOT NULL,
+            tag_id INTEGER NOT NULL,
+            PRIMARY KEY (method, tag_id),
+            FOREIGN KEY (tag_id) REFERENCES tags(id) ON DELETE CASCADE
+        );
         "#,
     )
     .execute(pool)
@@ -135,7 +197,10 @@ async fn seed_initial_data(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
     let default_settings = [
         ("ollama_url", "http://localhost:11434"),
         ("ollama_model", "qwen3-vl:30b"),
-        ("ollama_text_model", "qwen3:14b"),
+        // **`RECOMMENDED_TEXT_MODELS` の標準と揃えること。**
+        // 実測で選んだ推奨と初期値が食い違っていると、新規インストールは
+        // 測っていない構成で動く（2026-08-12 まで `qwen3:14b` のままだった）。
+        ("ollama_text_model", "gemma4:12b"),
         ("llm_provider", "ollama"),
         ("gemini_model", "gemini-2.0-flash"),
         ("gemini_text_model", "gemini-3.5-flash-lite"),

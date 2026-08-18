@@ -140,7 +140,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
         <div
           onMouseDown={handleMouseDown}
           className="h-1.5 w-full bg-slate-800/80 hover:bg-indigo-500/80 cursor-row-resize flex items-center justify-center transition group shrink-0"
-          title="Drag to resize console height"
+          title={t('log_console.label_title_resize', 'Drag to resize console height')}
         >
           <GripHorizontal className="w-6 h-3 text-slate-500 group-hover:text-white transition" />
         </div>
@@ -154,14 +154,14 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
         >
           <div className="flex items-center gap-1.5 font-bold text-indigo-400 shrink-0">
             <Terminal className="w-3.5 h-3.5" />
-            <span>{t('logs.title', '処理ログ')}</span>
+            <span>{t('logs.label_title', '処理ログ')}</span>
           </div>
 
           <div className="flex items-center gap-2 text-[11px] text-slate-400 shrink-0">
-            <span>{logLines.length} 行</span>
+            <span>{t('log_console.label_lines', '{n} lines', { n: logLines.length })}</span>
             {errorCount > 0 && (
               <span className="px-1.5 py-0.2 bg-red-500/20 text-red-300 border border-red-500/30 rounded font-semibold text-[10px]">
-                {errorCount} エラー
+                {t('log_console.label_errors', '{n} errors', { n: errorCount })}
               </span>
             )}
           </div>
@@ -180,7 +180,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
               <button
                 onClick={fetchLogs}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition cursor-pointer"
-                title="Refresh Logs"
+                title={t('log_console.label_title_refresh', 'Refresh Logs')}
               >
                 <RefreshCw className="w-3.5 h-3.5" />
               </button>
@@ -189,7 +189,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
                 onClick={handleCopy}
                 disabled={!logs}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition cursor-pointer disabled:opacity-40"
-                title={t('logs.copy', 'Copy All Logs')}
+                title={t('logs.label_copy', 'Copy All Logs')}
               >
                 {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
               </button>
@@ -198,7 +198,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
                 onClick={handleClear}
                 disabled={!logs}
                 className="p-1 hover:bg-slate-800 text-slate-400 hover:text-red-400 rounded transition cursor-pointer disabled:opacity-40"
-                title={t('logs.clear', 'Clear Logs')}
+                title={t('logs.label_clear', 'Clear Logs')}
               >
                 <Trash2 className="w-3.5 h-3.5" />
               </button>
@@ -211,10 +211,10 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
           <button
             onClick={onOpenFullModal}
             className="flex items-center gap-1 px-2 py-0.5 bg-indigo-600/30 hover:bg-indigo-600/50 border border-indigo-500/40 text-indigo-200 rounded text-[11px] font-medium transition cursor-pointer"
-            title="Open Full Search & Diagnostic Modal"
+            title={t('log_console.label_title_open_modal', 'Open Full Search & Diagnostic Modal')}
           >
             <Maximize2 className="w-3 h-3" />
-            <span>{t('logs.full_view', '全画面表示')}</span>
+            <span>{t('logs.label_full_view', '全画面表示')}</span>
           </button>
 
           {/* Toggle Expand / Collapse */}
@@ -268,7 +268,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
               className="absolute bottom-4 right-6 flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-full text-xs font-semibold shadow-xl border border-indigo-400/30 transition animate-in fade-in slide-in-from-bottom-2 duration-200 cursor-pointer"
             >
               <ArrowDown className="w-3.5 h-3.5" />
-              <span>{t('logs.scroll_to_bottom', 'Scroll to Bottom')}</span>
+              <span>{t('logs.label_scroll_to_bottom', 'Scroll to Bottom')}</span>
             </button>
           )}
         </div>
