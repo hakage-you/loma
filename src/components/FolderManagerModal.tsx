@@ -64,9 +64,9 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
               <HardDrive className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-semibold text-white">{t('folder_modal.title', '登録フォルダ管理')}</h3>
+              <h3 className="text-lg font-semibold text-white">{t('folder_modal.label_title', '登録フォルダ管理')}</h3>
               <p className="text-xs text-slate-400">
-                登録済みスキャンフォルダの一覧管理および一括再解析
+                {t('folder_modal.label_subtitle', 'Manage scan folders and re-analyze in bulk')}
               </p>
             </div>
           </div>
@@ -203,7 +203,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                     }}
                     disabled={scanning}
                     className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-indigo-600/20 rounded-lg transition cursor-pointer"
-                    title="Process pending/new items in this folder"
+                    title={t('folder_modal.label_title_scan_pending', 'Process pending/new items in this folder')}
                   >
                     <RefreshCw className="w-4 h-4" />
                   </button>
@@ -215,7 +215,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                       }}
                       disabled={scanning}
                       className="p-1.5 text-slate-400 hover:text-amber-300 hover:bg-amber-600/20 rounded-lg transition cursor-pointer"
-                      title="Force re-analyze ALL items in this folder"
+                      title={t('folder_modal.label_title_reanalyze', 'Force re-analyze ALL items in this folder')}
                     >
                       <RotateCcw className="w-4 h-4 text-amber-400/80" />
                     </button>
@@ -223,7 +223,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                   <button
                     onClick={() => onRemoveFolder(item.id)}
                     className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/20 rounded-lg transition cursor-pointer"
-                    title="Remove folder"
+                    title={t('folder_modal.label_title_remove', 'Remove folder')}
                   >
                     <Trash2 className="w-4 h-4" />
                   </button>

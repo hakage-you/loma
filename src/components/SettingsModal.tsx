@@ -8,6 +8,7 @@ import {
   RECOMMENDED_TEXT_MODELS,
   RECOMMENDED_EMBEDDING_MODELS,
   RecommendedModel,
+  badgeLabelKey,
 } from '../constants/recommendedModels';
 import { resolveInstalledModel, isModelInstalled } from '../utils/modelMatch';
 import {
@@ -61,9 +62,9 @@ const isModelSelected = (recommendedName: string, selectedModel: string): boolea
 
 // タグ付与粒度レベルの定義（基本語タグは常に5〜10個で固定、記述的タグのみレベルで変動する）
 const GRANULARITY_LEVELS: { value: TagGranularity; labelKey: string; labelDefault: string; descriptiveRange: string }[] = [
-  { value: 'atomic', labelKey: 'settings.granularity_atomic', labelDefault: 'Lv1: 分解重視（現行）', descriptiveRange: '基本語タグ 5〜10個 / 記述的タグなし' },
-  { value: 'balanced', labelKey: 'settings.granularity_balanced', labelDefault: 'Lv2: バランス', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 1〜3個' },
-  { value: 'descriptive', labelKey: 'settings.granularity_descriptive', labelDefault: 'Lv3: 記述重視', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 3〜6個' },
+  { value: 'atomic', labelKey: 'settings.label_granularity_atomic', labelDefault: 'Lv1: 分解重視（現行）', descriptiveRange: '基本語タグ 5〜10個 / 記述的タグなし' },
+  { value: 'balanced', labelKey: 'settings.label_granularity_balanced', labelDefault: 'Lv2: バランス', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 1〜3個' },
+  { value: 'descriptive', labelKey: 'settings.label_granularity_descriptive', labelDefault: 'Lv3: 記述重視', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 3〜6個' },
 ];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -479,7 +480,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setIsDownloading(true);
     setDownloadProgress({
       model: targetModel.name,
-      status: 'ダウンロードを開始しています...',
+      status: t('settings.label_download_starting', 'Starting download...'),
       completed: 0,
       total: 0,
       percent: 0,
@@ -564,7 +565,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               <Settings className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-lg font-bold text-white">{t('settings.title', '設定')}</h3>
+              <h3 className="text-lg font-bold text-white">{t('settings.label_title', '設定')}</h3>
               <p className="text-xs text-slate-400">Configure LLM Provider & Analysis Parameters</p>
             </div>
           </div>
@@ -579,14 +580,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         <div className="mt-5 space-y-5">
           {/* General App Settings (Language) */}
           <div className="p-4 bg-slate-900/50 rounded-xl border border-white/5 space-y-3">
-            <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider">{t('settings.general', '一般設定')}</h4>
+            <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider">{t('settings.label_general', '一般設定')}</h4>
 
             <div className="flex flex-col gap-3.5">
               {/* Language Selection */}
               <div>
                 <div className="flex items-center gap-1.5 mb-1">
                   <label className="text-[11px] font-semibold text-slate-300">
-                    {t('settings.language', 'UI表示言語')}
+                    {t('settings.label_language', 'UI表示言語')}
                   </label>
                   <TooltipHelp text={t('settings.language_help', 'アプリケーション全体の表示言語（日本語 / English）を切り替えます。')} />
                 </div>
@@ -595,7 +596,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   onChange={(e) => setUiLanguage(e.target.value as any)}
                   className="w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                 >
-                  <option value="ja">日本語 (Japanese)</option>
+                  <option value="ja">{t('settings.label_language_ja', '日本語 (Japanese)')}</option>
                   <option value="en">English (US)</option>
                 </select>
               </div>
@@ -606,14 +607,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="p-4 bg-slate-900/50 rounded-xl border border-white/5 space-y-3.5">
             <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
               <Layers className="w-3.5 h-3.5" />
-              {t('settings.prompt_section', '解析プロンプト設定')}
+              {t('settings.label_prompt_section', '解析プロンプト設定')}
             </h4>
 
             {/* Tag Granularity Selection */}
             <div>
               <div className="flex items-center gap-1.5 mb-1.5">
                 <label className="text-xs font-semibold text-slate-300">
-                  {t('settings.tag_granularity', 'タグ粒度')}
+                  {t('settings.label_tag_granularity', 'タグ粒度')}
                 </label>
                 <TooltipHelp text={t('settings.tag_granularity_help', 'DETAILEDプロンプト使用時の、タグの分解度合いを設定します。基本語タグは常に5〜10個で維持され、記述的タグ（例:「雨に濡れた木」）が粒度に応じて追加されます。')} />
               </div>
@@ -649,7 +650,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 border border-white/10 rounded-lg text-[11px] font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <FlaskConical className="w-3.5 h-3.5" />
-                  {t('settings.granularity_try', '粒度を試す（画像を選択）')}
+                  {t('settings.label_granularity_try', '粒度を試す（画像を選択）')}
                 </button>
               </div>
             </div>
@@ -660,9 +661,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             <div className="p-3 bg-amber-500/10 border border-amber-500/30 rounded-xl flex items-start gap-2 text-amber-300 text-[11px] leading-relaxed">
               <ShieldAlert className="w-4 h-4 text-amber-400 shrink-0 mt-0.5" />
               <div>
-                <span className="font-bold text-amber-200">⚠️ 非公式機能 & プライバシー免責事項: </span>
-                外部LLMプロバイダー利用時のデータ送信およびプライバシーの取り扱いは**選択したプロバイダーの利用規約に準拠**します。
-                Loma 開発者は外部プロバイダーへのデータ送信や第三者サーバーでのデータ取り扱い・保管について**一切の責任を負いません**。
+                <span className="font-bold text-amber-200">⚠️ {t('settings.label_privacy_title', 'Unofficial feature & privacy disclaimer')}: </span>
+                {t('settings.privacy_body_1', '')}
+                {t('settings.privacy_body_2', '')}
               </div>
             </div>
           )}
@@ -686,7 +687,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center justify-between text-xs">
                     <span className="font-bold text-white flex items-center gap-1.5">
                       <Loader2 className={`w-3.5 h-3.5 text-indigo-400 ${isDownloading ? 'animate-spin' : ''}`} />
-                      ダウンロード中: <span className="font-mono text-indigo-300">{downloadProgress?.model}</span>
+                      {t('settings.label_downloading', 'Downloading')}: <span className="font-mono text-indigo-300">{downloadProgress?.model}</span>
                     </span>
                     <span className="font-mono font-bold text-indigo-400">
                       {downloadProgress?.percent.toFixed(1)}%
@@ -717,7 +718,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         className="text-xs text-rose-400 hover:text-rose-300 flex items-center gap-1 font-semibold cursor-pointer"
                       >
                         <X className="w-3.5 h-3.5" />
-                        ダウンロードをキャンセル
+                        {t('settings.label_btn_cancel_download', 'Cancel download')}
                       </button>
                     </div>
                   )}
@@ -731,7 +732,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {downloadProgress?.done && !downloadProgress.error && (
                     <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-emerald-300 text-xs flex items-center gap-1.5 font-semibold">
                       <Check className="w-4 h-4 text-emerald-400" />
-                      ダウンロードが完了し、モデルとして自動設定されました！
+                      {t('settings.download_done', '')}
                     </div>
                   )}
                 </div>
@@ -743,7 +744,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center gap-1.5">
                     <Cpu className="w-3.5 h-3.5 text-indigo-400" />
                     <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.vlm_model', '使用するVLM (視覚言語) モデル')}
+                      {t('settings.label_vlm_model', '使用するVLM (視覚言語) モデル')}
                     </label>
                     <TooltipHelp text={t('settings.vlm_model_help', '画像や動画フレームの解釈・説明文の自動作成を行う視覚言語モデル（例: minicpm-v, llama3.2-vision）を選択します。')} />
                   </div>
@@ -753,7 +754,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     className="text-[11px] text-indigo-400 hover:text-indigo-300 flex items-center gap-1 cursor-pointer disabled:opacity-50"
                   >
                     <RefreshCw className={`w-3 h-3 ${loadingModels ? 'animate-spin' : ''}`} />
-                    モデル一覧取得
+                    {t('settings.label_btn_fetch_models', 'Fetch model list')}
                   </button>
                 </div>
                 <select
@@ -777,11 +778,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="text-[11px] font-semibold text-slate-400 flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                      おすすめ VLM プリセット (クリックして選択 / 自動DL)
+                      {t('settings.label_preset_vlm', 'Recommended VLM presets (click to select / auto-download)')}
                     </span>
                     {vramGb !== null && vramGb > 0 && (
                       <span className="text-[10px] text-indigo-300 font-mono flex items-center gap-1">
-                        <HardDrive className="w-3 h-3 text-indigo-400" /> 検出VRAM: ~{vramGb.toFixed(1)} GB
+                        <HardDrive className="w-3 h-3 text-indigo-400" /> {t('settings.label_detected_vram', 'Detected VRAM')}: ~{vramGb.toFixed(1)} GB
                       </span>
                     )}
                   </div>
@@ -814,11 +815,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <div className="flex items-center justify-between gap-1 mb-1">
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badgeColor}`}>
-                                  {item.badgeJa}
+                                  {t(badgeLabelKey(item.badge), item.badge)}
                                 </span>
                                 {isBestMatch && (
                                   <span className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                    {t('settings.recommended_vram_best', '★ VRAM適合のおすすめ')}
+                                    {t('settings.label_recommended_vram_best', '★ VRAM適合のおすすめ')}
                                   </span>
                                 )}
                               </div>
@@ -826,31 +827,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </div>
                             <div className="text-xs font-bold text-white font-mono mt-0.5">{item.name}</div>
                             <p className="text-[10px] text-slate-400 mt-1 line-clamp-2 leading-tight">
-                              {item.description}
+                              {t(item.descriptionKey, item.descriptionDefault)}
                             </p>
                           </div>
 
                           <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between">
                             {loadingModels ? (
                               <span className="text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> 読み込み中...
+                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> {t('settings.label_loading', 'Loading...')}
                               </span>
                             ) : isDownloading && downloadProgress?.model === item.name ? (
                               <span className="text-[10px] font-medium text-amber-400 flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> インストール中...
+                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> {t('settings.label_installing', 'Installing...')}
                               </span>
                             ) : isInstalled ? (
                               <span className="text-[10px] font-medium text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> インストール済
+                                <Check className="w-3 h-3" /> {t('settings.label_installed', 'Installed')}
                               </span>
                             ) : (
                               <span className="text-[10px] font-medium text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
-                                <Download className="w-3 h-3" /> 要DL
+                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
                               </span>
                             )}
                             {isSelected && (
                               <span className="text-[9px] px-1.5 py-0.5 bg-indigo-600 text-white rounded font-bold">
-                                選択中
+                                {t('settings.label_selected', 'Selected')}
                               </span>
                             )}
                           </div>
@@ -866,7 +867,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="flex items-center gap-1.5 mb-1.5">
                   <FileText className="w-3.5 h-3.5 text-indigo-400" />
                   <label className="text-xs font-semibold text-slate-300">
-                    {t('settings.text_model', 'テキスト解析・タグ翻訳モデル')}
+                    {t('settings.label_text_model', 'テキスト解析・タグ翻訳モデル')}
                   </label>
                   <TooltipHelp text={t('settings.text_model_help', 'VLMが生成した説明文から日本語/英語のタグ構造化やカテゴリ分類を行う言語モデル（例: qwen2.5, llama3.1）を選択します。')} />
                 </div>
@@ -891,7 +892,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="text-[11px] font-semibold text-slate-400 flex items-center justify-between">
                     <span className="flex items-center gap-1.5">
                       <Sparkles className="w-3.5 h-3.5 text-indigo-400" />
-                      おすすめ Text LLM プリセット (クリックして選択 / 自動DL)
+                      {t('settings.label_preset_text', 'Recommended text LLM presets (click to select / auto-download)')}
                     </span>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
@@ -923,11 +924,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             <div className="flex items-center justify-between gap-1 mb-1">
                               <div className="flex items-center gap-1.5 flex-wrap">
                                 <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badgeColor}`}>
-                                  {item.badgeJa}
+                                  {t(badgeLabelKey(item.badge), item.badge)}
                                 </span>
                                 {isBestMatch && (
                                   <span className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                    {t('settings.recommended_vram_best', '★ VRAM適合のおすすめ')}
+                                    {t('settings.label_recommended_vram_best', '★ VRAM適合のおすすめ')}
                                   </span>
                                 )}
                               </div>
@@ -935,31 +936,31 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             </div>
                             <div className="text-xs font-bold text-white font-mono mt-0.5">{item.name}</div>
                             <p className="text-[10px] text-slate-400 mt-1 line-clamp-2 leading-tight">
-                              {item.description}
+                              {t(item.descriptionKey, item.descriptionDefault)}
                             </p>
                           </div>
 
                           <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between">
                             {loadingModels ? (
                               <span className="text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> 読み込み中...
+                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> {t('settings.label_loading', 'Loading...')}
                               </span>
                             ) : isDownloading && downloadProgress?.model === item.name ? (
                               <span className="text-[10px] font-medium text-amber-400 flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> インストール中...
+                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> {t('settings.label_installing', 'Installing...')}
                               </span>
                             ) : isInstalled ? (
                               <span className="text-[10px] font-medium text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> インストール済
+                                <Check className="w-3 h-3" /> {t('settings.label_installed', 'Installed')}
                               </span>
                             ) : (
                               <span className="text-[10px] font-medium text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
-                                <Download className="w-3 h-3" /> 要DL
+                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
                               </span>
                             )}
                             {isSelected && (
                               <span className="text-[9px] px-1.5 py-0.5 bg-indigo-600 text-white rounded font-bold">
-                                選択中
+                                {t('settings.label_selected', 'Selected')}
                               </span>
                             )}
                           </div>
@@ -983,7 +984,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             >
               <span className="flex items-center gap-1.5 text-xs font-bold text-indigo-300 uppercase tracking-wider">
                 <SlidersHorizontal className="w-3.5 h-3.5" />
-                {t('settings.advanced_section', '詳細設定')}
+                {t('settings.label_advanced_section', '詳細設定')}
               </span>
               <ChevronDown
                 className={`w-4 h-4 text-slate-400 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
@@ -997,7 +998,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <Server className="w-3.5 h-3.5 text-indigo-400" />
                     <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.provider_label', 'LLMプロバイダー選択')}
+                      {t('settings.label_provider_label', 'LLMプロバイダー選択')}
                     </label>
                     <TooltipHelp text={t('settings.provider_help', 'メディアの解析やタグ生成に使用するAIエンジンを選択します。Ollamaがローカル動作の標準プロバイダーです。')} />
                   </div>
@@ -1019,7 +1020,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="flex items-center gap-1.5 mb-1.5">
                       <Server className="w-3.5 h-3.5 text-indigo-400" />
                       <label className="text-xs font-semibold text-slate-300">
-                        {t('settings.ollama_url', 'Ollama API エンドポイント URL')}
+                        {t('settings.label_ollama_url', 'Ollama API エンドポイント URL')}
                       </label>
                       <TooltipHelp text={t('settings.ollama_url_help', 'ローカルまたはリモートで稼働中のOllamaサーバーの接続URLです（デフォルト: http://localhost:11434）。')} />
                     </div>
@@ -1042,7 +1043,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onChange={(e) => setForceDetailedPrompt(e.target.checked)}
                       className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
                     />
-                    <span>{t('settings.force_detailed_mode', '高精度プロンプトモード (DETAILED) を強制適用する')}</span>
+                    <span>{t('settings.label_force_detailed_mode', '高精度プロンプトモード (DETAILED) を強制適用する')}</span>
                   </label>
                   <TooltipHelp align="right" text={t('settings.force_detailed_help', '軽量モデル（8B未満など）で高精度モードを強制すると、モデルが高度な文脈指示や構造化JSONを解釈できず解析エラーの原因となる場合があります。OFF推奨（判定失敗時に自動で軽量モードへフォールバックします）。')} />
                 </div>
@@ -1056,7 +1057,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       onChange={(e) => setFfmpegNoticeEnabled(e.target.checked)}
                       className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
                     />
-                    <span>{t('settings.ffmpeg_notice', 'FFmpeg未インストール時のアナウンス通知を表示')}</span>
+                    <span>{t('settings.label_ffmpeg_notice', 'FFmpeg未インストール時のアナウンス通知を表示')}</span>
                   </label>
                   <TooltipHelp align="right" text={t('settings.ffmpeg_notice_help', '動画解析に必要なFFmpegが見つからない場合のアナウンス通知アイコンの表示を切り替えます。')} />
                 </div>
@@ -1065,7 +1066,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {provider === 'ollama' && (
                   <div className="pt-3 border-t border-white/5 space-y-3">
                     <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wide">
-                      {t('settings.ollama_advanced', 'Ollama 詳細・診断')}
+                      {t('settings.label_ollama_advanced', 'Ollama 詳細・診断')}
                     </h4>
 
                     {/* 縦並び: コンテキスト長 → 最大長辺 */}
@@ -1073,7 +1074,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div>
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <label className="text-xs font-semibold text-slate-300">
-                            {t('settings.ollama_num_ctx', 'コンテキスト長 (num_ctx)')}
+                            {t('settings.label_ollama_num_ctx', 'コンテキスト長 (num_ctx)')}
                           </label>
                           <TooltipHelp text={t('settings.ollama_num_ctx_help', '0で自動（タグ粒度に応じて8192〜16384を選択）。qwen3-vl等の思考モデルは応答本文の前に大量の推論トークンを消費するため、コンテキストが不足すると生成が途中で打ち切られ空応答となりリトライが多発します。不足時は自動的に2倍へ拡張されます。')} />
                         </div>
@@ -1083,7 +1084,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           step={1024}
                           value={ollamaNumCtx}
                           onChange={(e) => setOllamaNumCtx(e.target.value)}
-                          placeholder="0 (自動)"
+                          placeholder={t('settings.label_placeholder_auto', '0 (auto)')}
                           className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
                         />
                       </div>
@@ -1091,7 +1092,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       <div>
                         <div className="flex items-center gap-1.5 mb-1.5">
                           <label className="text-xs font-semibold text-slate-300">
-                            {t('settings.ollama_max_image_edge', '送信画像の最大長辺 (px)')}
+                            {t('settings.label_ollama_max_image_edge', '送信画像の最大長辺 (px)')}
                           </label>
                           <TooltipHelp text={t('settings.ollama_max_image_edge_help', '解析前に画像をこのサイズまで縮小して送信します（0で無効）。縦横比は保たれます。12MPの写真は画像だけで約4000トークンを消費するため、縮小するとコンテキストに余裕が生まれ解析も高速化します。文字認識精度を優先する場合は大きめの値に設定してください。')} />
                         </div>
@@ -1115,7 +1116,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           onChange={(e) => setLlmDebugLogging(e.target.checked)}
                           className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
                         />
-                        <span>{t('settings.llm_debug_logging', 'LLM診断ログを出力する（開発用）')}</span>
+                        <span>{t('settings.label_llm_debug_logging', 'LLM診断ログを出力する（開発用）')}</span>
                       </label>
                       <TooltipHelp align="right" text={t('settings.llm_debug_logging_help', 'リクエストごとにプロンプト種別・num_ctx・トークン消費量・終了理由(done_reason)を、解析失敗時には生レスポンスをログへ記録します。リトライの原因調査に使用します。ログ量が増えるため通常はOFFにしてください。')} />
                     </div>
@@ -1126,7 +1127,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 {provider === 'ollama' && onUnloadModel && (
                   <div className="pt-3 border-t border-white/5 flex items-center justify-between">
                     <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-slate-300 font-medium">手動VRAMメモリ解放</span>
+                      <span className="text-xs text-slate-300 font-medium">{t('settings.label_manual_unload', 'Free VRAM manually')}</span>
                       <TooltipHelp text={t('settings.unload_vram_help', 'Ollamaでロード中のモデルをVRAMから即座にメモリ解放（アンロード）します。WebUIや他のアプリケーション等で同一モデルを使用中の場合でも、VRAMからアンロードされます。')} />
                     </div>
                     <button
@@ -1134,7 +1135,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       className="flex items-center gap-1.5 px-3 py-1 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-semibold transition cursor-pointer"
                     >
                       <Trash2 className="w-3 h-3" />
-                      {unloadedStatus ? '解放完了!' : 'VRAMメモリ解放'}
+                      {unloadedStatus ? t('settings.label_unloaded', 'Freed') : t('settings.label_unload', 'Free VRAM')}
                     </button>
                   </div>
                 )}
@@ -1143,7 +1144,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="flex items-center gap-1.5 mb-1.5">
                     <Radar className="w-3.5 h-3.5 text-indigo-400" />
                     <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.spectrum_section', '似ているメディアの検索（タグのベクトル化）')}
+                      {t('settings.label_spectrum_section', '似ているメディアの検索（タグのベクトル化）')}
                     </label>
                     <TooltipHelp
                       text={t(
@@ -1185,18 +1186,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           }`}
                         >
                           <div className="flex items-center justify-between gap-1">
-                            <span className="text-[9px] font-bold text-slate-400">{item.badgeJa}</span>
+                            <span className="text-[9px] font-bold text-slate-400">{t(badgeLabelKey(item.badge), item.badge)}</span>
                             <span className="text-[10px] text-slate-500 font-mono">{item.size}</span>
                           </div>
                           <div className="text-[11px] font-bold text-white font-mono truncate mt-0.5">{item.name}</div>
                           <div className="mt-1 text-[10px]">
                             {isInstalled ? (
                               <span className="text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> 導入済
+                                <Check className="w-3 h-3" /> {t('settings.label_present', 'Present')}
                               </span>
                             ) : (
                               <span className="text-indigo-400 flex items-center gap-1">
-                                <Download className="w-3 h-3" /> 要DL
+                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
                               </span>
                             )}
                           </div>
@@ -1210,22 +1211,22 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1">
                       <div className="flex flex-wrap gap-x-4 gap-y-1">
                         <span>
-                          {t('settings.spectrum_embedded', 'ベクトル化済みタグ')}: {embeddingStatus.embedded_tags} /{' '}
+                          {t('settings.label_spectrum_embedded', 'ベクトル化済みタグ')}: {embeddingStatus.embedded_tags} /{' '}
                           {embeddingStatus.total_tags}
                         </span>
                         <span className={embeddingStatus.missing_tags > 0 ? 'text-amber-300' : ''}>
-                          {t('settings.spectrum_missing', '未生成')}: {embeddingStatus.missing_tags}
+                          {t('settings.label_spectrum_missing', '未生成')}: {embeddingStatus.missing_tags}
                         </span>
                       </div>
                       <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-400">
                         <span>
-                          {t('settings.spectrum_eligible', '検索対象メディア')}: {embeddingStatus.eligible_media}
+                          {t('settings.label_spectrum_eligible', '検索対象メディア')}: {embeddingStatus.eligible_media}
                         </span>
                         {/* タグ不足で対象外になるメディアを黙って隠さない */}
                         <span>
-                          {t('settings.spectrum_excluded', 'タグ')}
+                          {t('settings.label_spectrum_excluded', 'タグ')}
                           {embeddingStatus.min_basic_tags}
-                          {t('settings.spectrum_excluded_suffix', '個未満で対象外')}: {embeddingStatus.excluded_media}
+                          {t('settings.label_spectrum_excluded_suffix', '個未満で対象外')}: {embeddingStatus.excluded_media}
                         </span>
                       </div>
                       {!embeddingStatus.model_available && (
@@ -1255,7 +1256,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       ) : (
                         <Sparkles className="w-3.5 h-3.5" />
                       )}
-                      {t('settings.spectrum_generate', '未生成のタグをベクトル化')}
+                      {t('settings.label_spectrum_generate', '未生成のタグをベクトル化')}
                     </button>
                     <button
                       type="button"
@@ -1268,7 +1269,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       ) : (
                         <FlaskConical className="w-3.5 h-3.5 text-indigo-400" />
                       )}
-                      {t('settings.spectrum_diagnostics', '類似度分布を計測')}
+                      {t('settings.label_spectrum_diagnostics', '類似度分布を計測')}
                     </button>
                     {isGeneratingEmbeddings && embeddingProgress && embeddingProgress.total > 0 && (
                       <span className="text-[11px] text-slate-400 tabular-nums">
@@ -1300,7 +1301,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         className="mt-0.5 accent-indigo-500"
                       />
                       <span className="text-[11px] text-slate-300">
-                        {t('settings.spectrum_centering', 'ハブ化対策 (centering) を有効にする')}
+                        {t('settings.label_spectrum_centering', 'ハブ化対策 (centering) を有効にする')}
                         <span className="block text-[10px] text-slate-500">
                           {t(
                             'settings.spectrum_centering_help',
@@ -1317,7 +1318,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                         className="mt-0.5 accent-indigo-500"
                       />
                       <span className="text-[11px] text-slate-300">
-                        {t('settings.spectrum_descriptive', '記述的タグも類似度計算に含める')}
+                        {t('settings.label_spectrum_descriptive', '記述的タグも類似度計算に含める')}
                         <span className="block text-[10px] text-slate-500">
                           {t(
                             'settings.spectrum_descriptive_help',
@@ -1331,13 +1332,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {/* 保存領域とGC */}
                   {storageInfo && storageInfo.models.length > 0 && (
                     <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] space-y-1.5">
-                      <div className="text-slate-400">{t('settings.spectrum_storage', 'ベクトルの保存量')}</div>
+                      <div className="text-slate-400">{t('settings.label_spectrum_storage', 'ベクトルの保存量')}</div>
                       {storageInfo.models.map((m) => (
                         <div key={m.model} className="flex items-center gap-2 text-slate-300">
                           <span className="font-mono truncate flex-1">{m.model}</span>
                           {m.in_use && (
                             <span className="px-1.5 py-0.5 rounded bg-indigo-600/40 text-indigo-200 text-[9px] font-bold shrink-0">
-                              {t('settings.spectrum_in_use', '使用中')}
+                              {t('settings.label_spectrum_in_use', '使用中')}
                             </span>
                           )}
                           <span className="tabular-nums text-slate-400 shrink-0">
@@ -1361,7 +1362,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             ) : (
                               <Trash2 className="w-3.5 h-3.5 text-slate-400" />
                             )}
-                            {t('settings.spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
+                            {t('settings.label_spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
                             {(storageInfo.reclaimable_bytes / 1e6).toFixed(1)} MB)
                           </button>
                         )}
@@ -1374,7 +1375,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                             className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
                           >
                             <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-                            {t('settings.spectrum_discard', '使用中のモデルのベクトルを破棄して作り直す')}
+                            {t('settings.label_spectrum_discard', '使用中のモデルのベクトルを破棄して作り直す')}
                           </button>
                         )}
                       </div>
@@ -1403,7 +1404,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             onClick={onClose}
             className="px-4 py-2 text-xs text-slate-400 hover:text-white transition cursor-pointer"
           >
-            キャンセル
+            {t('settings.label_btn_cancel', 'Cancel')}
           </button>
           <button
             onClick={handleSave}
@@ -1412,14 +1413,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           >
             {isSaving ? (
               <>
-                <Loader2 className="w-4 h-4 text-white animate-spin" /> 保存中...
+                <Loader2 className="w-4 h-4 text-white animate-spin" /> {t('settings.label_saving', 'Saving...')}
               </>
             ) : savedStatus ? (
               <>
-                <Check className="w-4 h-4 text-emerald-400" /> 保存完了!
+                <Check className="w-4 h-4 text-emerald-400" /> {t('settings.label_saved', 'Saved')}
               </>
             ) : (
-              '設定を保存'
+              t('settings.label_btn_save', 'Save settings')
             )}
           </button>
         </div>
@@ -1435,17 +1436,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
               <div className="min-w-0">
                 <h4 className="text-base font-bold text-white">
-                  {t('settings.spectrum_discard_title', 'ベクトルを破棄しますか')}
+                  {t('settings.label_spectrum_discard_title', 'ベクトルを破棄しますか')}
                 </h4>
                 <p className="text-xs text-slate-300 font-mono truncate">{storageInfo?.current_model}</p>
               </div>
             </div>
             <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
               <li>
-                {t('settings.spectrum_discard_regen', '破棄後は「未生成のタグをベクトル化」で作り直す必要があります')}
+                {t('settings.item_spectrum_discard_regen', '破棄後は「未生成のタグをベクトル化」で作り直す必要があります')}
               </li>
               <li>
-                {t('settings.spectrum_discard_note', 'centering と記述的タグの設定を変えるだけなら破棄は不要です。設定を変えて「類似度分布を計測」を押せばその場で反映されます')}
+                {t('settings.item_spectrum_discard_note', 'centering と記述的タグの設定を変えるだけなら破棄は不要です。設定を変えて「類似度分布を計測」を押せばその場で反映されます')}
               </li>
             </ul>
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
@@ -1453,13 +1454,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onClick={() => setConfirmDiscard(false)}
                 className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
               >
-                {t('settings.spectrum_switch_cancel', 'やめる')}
+                {t('settings.label_spectrum_switch_cancel', 'やめる')}
               </button>
               <button
                 onClick={handleDiscardEmbeddings}
                 className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white transition cursor-pointer"
               >
-                {t('settings.spectrum_discard_ok', '破棄する')}
+                {t('settings.label_spectrum_discard_ok', '破棄する')}
               </button>
             </div>
           </div>
@@ -1476,7 +1477,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
               <div className="min-w-0">
                 <h4 className="text-base font-bold text-white">
-                  {t('settings.spectrum_switch_title', '埋め込みモデルの切り替え')}
+                  {t('settings.label_spectrum_switch_title', '埋め込みモデルの切り替え')}
                 </h4>
                 <p className="text-xs text-slate-300 font-mono truncate">
                   {confirmModelSwitch.from} → {confirmModelSwitch.to}
@@ -1486,19 +1487,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
             <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
               <li>
-                {t('settings.spectrum_switch_regen', '再ベクトル化が必要です')}:{' '}
+                {t('settings.item_spectrum_switch_regen', '再ベクトル化が必要です')}:{' '}
                 {Math.max(
                   0,
                   (storageInfo?.total_tags ?? 0) -
                     (storageInfo?.models.find((m) => m.model === confirmModelSwitch.to)?.tag_count ?? 0),
                 )}{' '}
-                {t('settings.spectrum_switch_tags', '件')}
+                {t('settings.label_spectrum_switch_tags', '件')}
               </li>
-              <li>{t('settings.spectrum_switch_scores', '表示される類似度の数値が変わります')}</li>
+              <li>{t('settings.item_spectrum_switch_scores', '表示される類似度の数値が変わります')}</li>
               {/* 「戻せば復元される」と伝えるので、GC は自動で走らせない */}
               <li>
                 {t(
-                  'settings.spectrum_switch_kept',
+                  'settings.item_spectrum_switch_kept',
                   '以前のモデルのベクトルは保持され、モデルを戻せば即座に復元されます',
                 )}
               </li>
@@ -1509,13 +1510,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onClick={() => setConfirmModelSwitch(null)}
                 className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
               >
-                {t('settings.spectrum_switch_cancel', 'やめる')}
+                {t('settings.label_spectrum_switch_cancel', 'やめる')}
               </button>
               <button
                 onClick={doSave}
                 className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition cursor-pointer"
               >
-                {t('settings.spectrum_switch_ok', '切り替えて保存')}
+                {t('settings.label_spectrum_switch_ok', '切り替えて保存')}
               </button>
             </div>
           </div>
@@ -1531,8 +1532,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <Download className="w-5 h-5" />
               </div>
               <div>
-                <h4 className="text-base font-bold text-white">モデルのダウンロード確認</h4>
-                <p className="text-xs text-slate-400">Ollamaモデルをローカルにダウンロードします</p>
+                <h4 className="text-base font-bold text-white">{t('settings.label_confirm_download', 'Confirm model download')}</h4>
+                <p className="text-xs text-slate-400">{t('settings.confirm_download_body', '')}</p>
               </div>
             </div>
 
@@ -1543,12 +1544,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {confirmDownloadModal.model.size}
                 </span>
               </div>
-              <p className="text-xs text-slate-300">{confirmDownloadModal.model.description}</p>
+              <p className="text-xs text-slate-300">{t(confirmDownloadModal.model.descriptionKey, confirmDownloadModal.model.descriptionDefault)}</p>
             </div>
 
             <p className="text-[11px] text-slate-400 leading-relaxed">
-              ※ ネットワーク回線の速度により、ダウンロードには数分〜十分程度かかる場合があります。<br />
-              ※ ダウンロード中も設定画面やバックグラウンドで進捗状況を確認できます。
+              {t('settings.download_note_1', '')}<br />
+              {t('settings.download_note_2', '')}
             </p>
 
             <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
@@ -1556,14 +1557,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onClick={() => setConfirmDownloadModal(null)}
                 className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-300 transition cursor-pointer"
               >
-                キャンセル
+                {t('settings.label_btn_cancel', 'Cancel')}
               </button>
               <button
                 onClick={handleStartDownload}
                 className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 cursor-pointer"
               >
                 <Download className="w-3.5 h-3.5" />
-                ダウンロード開始
+                {t('settings.label_btn_start_download', 'Start download')}
               </button>
             </div>
           </div>
@@ -1580,11 +1581,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <button
                     onClick={() => setCompareImageEnlarged(true)}
                     className="shrink-0 w-14 h-14 rounded-xl overflow-hidden border border-indigo-500/30 hover:border-indigo-400 transition cursor-pointer group relative"
-                    title="クリックで拡大表示"
+                    title={t('settings.label_title_zoom', 'Click to enlarge')}
                   >
                     <img
                       src={convertFileSrc(compareImagePath)}
-                      alt="解析対象プレビュー"
+                      alt={t('settings.label_alt_preview', 'Preview of the target')}
                       className="w-full h-full object-cover group-hover:scale-105 transition"
                     />
                   </button>
@@ -1594,9 +1595,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </div>
                 )}
                 <div className="min-w-0">
-                  <h4 className="text-base font-bold text-white">{t('settings.granularity_try', '粒度を試す（画像を選択）')}</h4>
+                  <h4 className="text-base font-bold text-white">{t('settings.label_granularity_try', '粒度を試す（画像を選択）')}</h4>
                   <p className="text-xs text-slate-400 truncate" title={compareImagePath || undefined}>
-                    {compareImagePath ? compareImagePath.split(/[/\\]/).pop() : 'Lv1 / Lv2 / Lv3 の解析結果を比較します'}
+                    {compareImagePath ? compareImagePath.split(/[/\\]/).pop() : t('settings.compare_hint', '')}
                   </p>
                 </div>
               </div>
@@ -1619,7 +1620,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <div className="flex items-center gap-2 text-[11px] text-slate-400">
                   <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${Object.values(compareProgress).some((s) => s === 'running') ? 'animate-spin' : ''}`} />
                   <span>
-                    {Object.values(compareProgress).filter((s) => s === 'done').length} / {GRANULARITY_LEVELS.length} 完了
+                    {Object.values(compareProgress).filter((s) => s === 'done').length} /{' '}
+                    {GRANULARITY_LEVELS.length} {t('settings.label_done', 'done')}
                   </span>
                 </div>
 
@@ -1635,12 +1637,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                           </span>
                           {status === 'running' && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
                           {status === 'done' && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                          {status === 'pending' && <span className="text-[10px] text-slate-500">待機中</span>}
+                          {status === 'pending' && <span className="text-[10px] text-slate-500">{t('settings.label_waiting', 'Waiting')}</span>}
                         </div>
 
                         {status !== 'done' && (
                           <div className="flex items-center justify-center py-6 text-[11px] text-slate-500">
-                            {status === 'running' ? '解析中...' : '待機中...'}
+                            {status === 'running' ? t('settings.label_analyzing', 'Analyzing...') : t('settings.label_waiting_dots', 'Waiting...')}
                           </div>
                         )}
 
@@ -1694,7 +1696,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div onClick={(e) => e.stopPropagation()} className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center">
             <img
               src={convertFileSrc(compareImagePath)}
-              alt="解析対象プレビュー拡大"
+              alt={t('settings.label_alt_preview_zoom', 'Enlarged preview of the target')}
               className="max-w-full max-h-[80vh] object-contain rounded-2xl shadow-2xl border border-white/10"
             />
             <div className="mt-3 flex items-center gap-3">
@@ -1705,7 +1707,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 onClick={() => setCompareImageEnlarged(false)}
                 className="text-xs text-slate-300 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-white/10 transition cursor-pointer"
               >
-                閉じる
+                {t('settings.label_btn_close', 'Close')}
               </button>
             </div>
           </div>

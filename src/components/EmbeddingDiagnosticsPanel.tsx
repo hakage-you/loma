@@ -123,12 +123,12 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
   return (
     <div className="mt-2.5 p-3 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] space-y-3">
       <div className="text-slate-400">
-        {d.model} / {d.dim}次元 / centering {d.centering ? 'ON' : 'OFF'} / descriptive{' '}
+        {d.model} / {d.dim}{t('settings.label_dimensions', 'd')} / centering {d.centering ? 'ON' : 'OFF'} / descriptive{' '}
         {d.include_descriptive ? 'ON' : 'OFF'}
       </div>
 
       <div className="flex items-center gap-1.5">
-        <span className="text-slate-200 font-semibold">{t('settings.diag_dist', '類似度の分布')}</span>
+        <span className="text-slate-200 font-semibold">{t('settings.label_diag_dist', '類似度の分布')}</span>
         <TooltipHelp
           width="w-80"
           text={t(
@@ -142,15 +142,15 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
 
       <div className="space-y-2.5 pt-1">
         <Metric
-          title={t('settings.diag_separation', '概念の分離')}
-          value={`sd ${d.sim_stddev.toFixed(3)} / ${t('settings.diag_width', '幅')} ${width.toFixed(3)}`}
+          title={t('settings.label_diag_separation', '概念の分離')}
+          value={`sd ${d.sim_stddev.toFixed(3)} / ${t('settings.label_diag_width', '幅')} ${width.toFixed(3)}`}
           verdict={sepVerdict}
           verdictLabel={
             sepVerdict === 'good'
-              ? t('settings.diag_good', '良好')
+              ? t('settings.label_diag_good', '良好')
               : sepVerdict === 'ok'
-                ? t('settings.diag_ok', '実用域')
-                : t('settings.diag_warn', '要改善')
+                ? t('settings.label_diag_ok', '実用域')
+                : t('settings.label_diag_warn', '要改善')
           }
           reading={
             sepVerdict === 'warn'
@@ -163,7 +163,7 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
                   '大きいほど、似ている／似ていないをはっきり分けられています。小さいと「どれも似ている」しか言えなくなります。',
                 )
           }
-          reference={`${t('settings.diag_ref', '参考')}: bge-m3 ${REFERENCE.sd.bgeM3} / qwen3-embedding:8b ${REFERENCE.sd.qwen8b} / centering OFF ${REFERENCE.sd.centeringOff}`}
+          reference={`${t('settings.label_diag_ref', '参考')}: bge-m3 ${REFERENCE.sd.bgeM3} / qwen3-embedding:8b ${REFERENCE.sd.qwen8b} / centering OFF ${REFERENCE.sd.centeringOff}`}
           help={t(
             'settings.diag_separation_help',
             'まず前提: 類似度はメディア2枚の「タグの意味の近さ」で、−1〜+1 の値です。ここでは全部の組み合わせについてこの値を出しています。\n\nsd（標準偏差）は、その値がどれくらいバラついているかを表す1つの数字です。sd 0.13 なら「典型的な組み合わせは平均から 0.13 くらい離れている」という意味です。\n\n0 に近いほど、どの組み合わせもほぼ同じ値ということで、似ている／似ていないの区別がついていません。「幅」は実測の最大値から最小値を引いた値です。',
@@ -171,15 +171,15 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
         />
 
         <Metric
-          title={t('settings.diag_hub', 'ハブ化')}
+          title={t('settings.label_diag_hub', 'ハブ化')}
           value={`r ${d.tagcount_similarity_corr >= 0 ? '+' : ''}${d.tagcount_similarity_corr.toFixed(3)}`}
           verdict={hubVerdict}
           verdictLabel={
             hubVerdict === 'good'
-              ? t('settings.diag_none', '問題なし')
+              ? t('settings.label_diag_none', '問題なし')
               : hubVerdict === 'ok'
-                ? t('settings.diag_slight', 'わずかにあり')
-                : t('settings.diag_warn', '要改善')
+                ? t('settings.label_diag_slight', 'わずかにあり')
+                : t('settings.label_diag_warn', '要改善')
           }
           reading={
             hubVerdict === 'warn'
@@ -193,7 +193,7 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
                 )
           }
           reference={t(
-            'settings.diag_hub_ref',
+            'settings.label_diag_hub_ref',
             '参考: |r| が 0.15 以下は計測のばらつきの範囲。centering OFF での実測は +0.32〜+0.53',
           )}
           help={t(
@@ -204,11 +204,11 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
 
         {groupsMeasurable ? (
           <Metric
-            title={t('settings.diag_group', '解析設定の混在')}
-            value={`${t('settings.diag_gap', '群間の差')} ${groupGap!.toFixed(3)}`}
+            title={t('settings.label_diag_group', '解析設定の混在')}
+            value={`${t('settings.label_diag_gap', '群間の差')} ${groupGap!.toFixed(3)}`}
             verdict={groupVerdict}
             verdictLabel={
-              groupVerdict === 'warn' ? t('settings.diag_warn', '要改善') : t('settings.diag_none', '問題なし')
+              groupVerdict === 'warn' ? t('settings.label_diag_warn', '要改善') : t('settings.label_diag_none', '問題なし')
             }
             reading={
               groupVerdict === 'warn'
@@ -238,7 +238,7 @@ export const EmbeddingDiagnosticsPanel: React.FC<{ d: EmbeddingDiagnostics }> = 
 
       <div className="text-[10px] text-slate-500 pt-1 border-t border-white/5">
         <span className="inline-flex items-center gap-1 align-middle">
-          {t('settings.spectrum_sample', '標本')} {d.sample_size} / {d.eligible_media}
+          {t('settings.label_spectrum_sample', '標本')} {d.sample_size} / {d.eligible_media}
           <TooltipHelp
             width="w-80"
             // align="right" にすると、このアイコンは左寄りなので吹き出しが左方向へ

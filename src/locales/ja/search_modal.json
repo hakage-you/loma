@@ -1,0 +1,18 @@
+{
+  "label_title": "詳細検索ビルダー",
+  "label_query_preview": "検索条件プレビュー",
+  "label_add_group": "グループ追加",
+  "label_group_label": "グループ",
+  "label_operator_and": "すべて含む (AND)",
+  "label_operator_or": "いずれか含む (OR)",
+  "label_operator_not": "除外する (NOT)",
+  "label_between_groups": "AND",
+  "label_remove_group": "グループ削除",
+  "label_input_placeholder": "タグ名を入力...",
+  "label_add_btn": "追加",
+  "no_tags_group": "タグが追加されていません。",
+  "label_cancel": "キャンセル",
+  "label_apply": "検索を適用",
+  "label_clear_all": "条件をすべてクリア",
+  "label_no_condition": "(条件が設定されていません)"
+}

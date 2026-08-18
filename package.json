@@ -20,7 +20,8 @@
     "check:model-match": "node tools/check-model-match.ts",
     "text-check": "node tools/text-check/run.mjs",
     "text-report": "node tools/text-check/report.mjs",
-    "text-baseline": "node tools/text-check/baseline.mjs"
+    "text-baseline": "node tools/text-check/baseline.mjs",
+    "check:locale": "node tools/check-locale.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

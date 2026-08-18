@@ -1,0 +1,14 @@
+{
+  "label_screenshot": "Screenshot",
+  "label_document": "Document",
+  "label_landscape": "Landscape / Nature",
+  "label_food": "Food",
+  "label_character": "Character",
+  "label_animal": "Animal / Pet",
+  "label_person": "Person / Portrait",
+  "label_item_product": "Product / Goods",
+  "label_art_illustration": "Illustration / Art",
+  "label_text_heavy": "Text-heavy",
+  "label_tech": "Tech",
+  "label_other": "Other"
+}

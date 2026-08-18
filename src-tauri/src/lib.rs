@@ -73,6 +73,7 @@ pub fn run() {
             commands::apply_tag_merges,
             commands::count_invalidated_suggestions,
             commands::get_media_by_tag,
+            commands::get_tag_sample_thumbnails,
             commands::get_or_create_tag,
             commands::add_tag_to_media,
             commands::remove_tag_from_media,

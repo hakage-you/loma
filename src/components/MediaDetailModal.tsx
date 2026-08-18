@@ -161,7 +161,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               />
               {isVideo && videoError && (
                 <div className="mt-2 px-3 py-1 bg-amber-950/80 border border-amber-500/40 rounded-lg text-[11px] text-amber-300 font-mono text-center">
-                  ⚠️ HTML5再生不可コーデック。下の秒数入力から時間指定可能です。
+                  ⚠️ {t('media_modal.codec_unsupported', '')}
                 </div>
               )}
             </div>
@@ -180,17 +180,17 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                 <div className="flex items-center gap-2 mt-1">
                   {item.analysis_status === 'completed' && (
                     <span className="flex items-center gap-1 px-2.5 py-0.5 bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 rounded-full text-xs font-semibold">
-                      <CheckCircle className="w-3.5 h-3.5" /> {t('sidebar.status_completed', '解析完了')}
+                      <CheckCircle className="w-3.5 h-3.5" /> {t('sidebar.label_status_completed', '解析完了')}
                     </span>
                   )}
                   {item.analysis_status === 'pending' && (
                     <span className="flex items-center gap-1 px-2.5 py-0.5 bg-amber-500/20 text-amber-300 border border-amber-500/30 rounded-full text-xs font-semibold">
-                      <Clock className="w-3.5 h-3.5 animate-pulse" /> {t('sidebar.status_pending', '未解析')}
+                      <Clock className="w-3.5 h-3.5 animate-pulse" /> {t('sidebar.label_status_pending', '未解析')}
                     </span>
                   )}
                   {item.analysis_status === 'failed' && (
                     <span className="flex items-center gap-1 px-2.5 py-0.5 bg-rose-500/20 text-rose-300 border border-rose-500/30 rounded-full text-xs font-semibold">
-                      <AlertTriangle className="w-3.5 h-3.5" /> {t('sidebar.status_failed', '解析失敗')}
+                      <AlertTriangle className="w-3.5 h-3.5" /> {t('sidebar.label_status_failed', '解析失敗')}
                     </span>
                   )}
                 </div>
@@ -207,7 +207,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             <div>
               <h3 className="text-xs font-bold text-slate-300 mb-2 flex items-center gap-1.5">
                 <Tag className="w-3.5 h-3.5 text-indigo-400" />
-                {t('media_modal.tags_categories', 'タグ & カテゴリ')}
+                {t('media_modal.label_tags_categories', 'タグ & カテゴリ')}
               </h3>
               <div className="space-y-2">
                 {/* 候補集合から外れている事実を黙って隠さない。
@@ -217,7 +217,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                     <Radar className="w-3.5 h-3.5 shrink-0 mt-px text-slate-400" />
                     <span>
                       {t(
-                        'spectrum.badge_excluded',
+                        'spectrum.label_badge_excluded',
                         'タグが {n} 個未満のため、似ているメディアの検索の対象外です',
                       ).replace('{n}', String(MIN_BASIC_TAGS))}
                     </span>
@@ -252,7 +252,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                           onSelectTagFilter(language === 'ja' && tItem.name_ja ? tItem.name_ja : tItem.name)
                         }
                         className="cursor-pointer hover:underline"
-                        title="Click to search tag in gallery"
+                        title={t('media_modal.label_title_search_tag', 'Click to search tag in gallery')}
                       >
                         {tItem.name_ja ? `${tItem.name_ja} (${tItem.name})` : tItem.name}
                       </span>
@@ -264,7 +264,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                           }}
                           disabled={isSavingTag}
                           className="p-0.5 text-slate-400 hover:text-red-400 rounded transition cursor-pointer ml-0.5"
-                          title="Remove this tag from media"
+                          title={t('media_modal.label_title_remove_tag', 'Remove this tag from media')}
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -299,7 +299,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                               handleAddTagSubmit(newTagName, newTagNameJa);
                             }
                           }}
-                          placeholder={t('media_modal.tag_placeholder_en', '英語タグ (a-Z, _)')}
+                          placeholder={t('media_modal.label_tag_placeholder_en', '英語タグ (a-Z, _)')}
                           className="w-full bg-slate-950 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50 font-mono"
                         />
                       </div>
@@ -320,7 +320,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                               handleAddTagSubmit(newTagName, newTagNameJa);
                             }
                           }}
-                          placeholder={t('media_modal.tag_placeholder_ja', '日本語訳 (例: 山脈)')}
+                          placeholder={t('media_modal.label_tag_placeholder_ja', '日本語訳 (例: 山脈)')}
                           className="w-full bg-slate-950 border border-white/10 rounded-xl px-2.5 py-1.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50"
                         />
                         {isSavingTag && (
@@ -334,7 +334,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                         className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 cursor-pointer flex items-center gap-1 shrink-0 shadow"
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>{t('media_modal.add_tag_btn', '追加')}</span>
+                        <span>{t('media_modal.label_add_tag_btn', '追加')}</span>
                       </button>
                     </div>
 
@@ -365,11 +365,11 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             {/* Metadata File Info */}
             <div className="space-y-2 text-xs text-slate-300">
               <div className="flex justify-between py-1 border-b border-white/5">
-                <span className="text-slate-400">{t('media_modal.file_size', 'ファイルサイズ')}:</span>
+                <span className="text-slate-400">{t('media_modal.label_file_size', 'ファイルサイズ')}:</span>
                 <span className="font-mono text-white">{fileSizeMB} MB</span>
               </div>
               <div className="flex justify-between py-1 border-b border-white/5">
-                <span className="text-slate-400">{t('media_modal.folder', '登録フォルダ')}:</span>
+                <span className="text-slate-400">{t('media_modal.label_folder', '登録フォルダ')}:</span>
                 <span className="font-mono text-indigo-300 break-all">{item.parent_folder}</span>
               </div>
               <div className="text-slate-400 break-all font-mono text-[11px] bg-slate-950/50 p-2 rounded-lg border border-white/5 select-all">
@@ -384,11 +384,11 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               <div className="flex items-center justify-between">
                 <span className="text-xs font-bold text-indigo-300 flex items-center gap-1.5">
                   <RotateCcw className="w-3.5 h-3.5 text-indigo-400" />
-                  {t('media_modal.video_time_thumbnail', '時間指定サムネイル変更 ＆ 高精度VLM解析')}
+                  {t('media_modal.label_video_time_thumbnail', '時間指定サムネイル変更 ＆ 高精度VLM解析')}
                 </span>
                 {videoError && (
                   <div className="flex items-center gap-1 text-[11px] text-slate-300">
-                    <span>秒数指定:</span>
+                    <span>{t('media_modal.label_seconds_input', 'Timestamp')}:</span>
                     <input
                       type="number"
                       step="0.5"
@@ -397,7 +397,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       onChange={(e) => setManualTime(e.target.value)}
                       className="w-16 px-1.5 py-0.5 bg-slate-900 border border-white/20 rounded text-center text-xs font-mono text-indigo-300"
                     />
-                    <span>秒</span>
+                    <span>{t('media_modal.label_seconds_unit', 's')}</span>
                   </div>
                 )}
               </div>
@@ -407,17 +407,17 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   onClick={handleCustomAnalyzeCurrentTime}
                   disabled={isScanning}
                   className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-indigo-900/30 disabled:opacity-50"
-                  title="動画の現在の再生画面（または指定秒数）からサムネイルを変更し、マルチフレーム高精度AI解析を実行します"
+                  title={t('media_modal.label_title_custom_analyze', 'Change the thumbnail from the current frame (or the given timestamp) and run multi-frame analysis')}
                 >
                   <RotateCcw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
-                  {t('media_modal.video_time_btn', '📍 この場面でサムネイル変更 ＆ 解析')}
+                  {t('media_modal.label_video_time_btn', '📍 この場面でサムネイル変更 ＆ 解析')}
                 </button>
                 {isScanning && onCancelScan && (
                   <button
                     onClick={onCancelScan}
                     className="px-3 py-2 bg-red-600/80 hover:bg-red-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
                   >
-                    {t('media_modal.cancel', 'キャンセル')}
+                    {t('media_modal.label_cancel', 'キャンセル')}
                   </button>
                 )}
               </div>
@@ -429,7 +429,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             <div className="p-3 bg-violet-950/40 border border-violet-500/30 rounded-xl flex items-center justify-between gap-2">
               <div className="text-xs text-violet-300 font-semibold flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-violet-400" />
-                {t('media_modal.reanalyze_image', '画像AI単体再解析')}
+                {t('media_modal.label_reanalyze_image', '画像AI単体再解析')}
               </div>
               <button
                 onClick={() => onReanalyzeSingleMedia(item.id)}
@@ -437,7 +437,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-violet-900/30 disabled:opacity-50"
               >
                 <Sparkles className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
-                {t('media_modal.reanalyze_image_btn', 'この画像を再解析')}
+                {t('media_modal.label_reanalyze_image_btn', 'この画像を再解析')}
               </button>
             </div>
           )}
@@ -450,7 +450,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-amber-900/20"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
-                {t('media_modal.retry_analysis', '解析を再試行')}
+                {t('media_modal.label_retry_analysis', '解析を再試行')}
               </button>
             )}
             <div className="flex items-center gap-2 ml-auto">
@@ -462,7 +462,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   disabled={tagInsufficient}
                   title={
                     tagInsufficient
-                      ? t('spectrum.badge_excluded', 'タグが {n} 個未満のため、似ているメディアの検索の対象外です').replace(
+                      ? t('spectrum.label_badge_excluded', 'タグが {n} 個未満のため、似ているメディアの検索の対象外です').replace(
                           '{n}',
                           String(MIN_BASIC_TAGS),
                         )
@@ -471,7 +471,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10 disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-slate-800"
                 >
                   <Radar className="w-3.5 h-3.5 text-indigo-400" />
-                  {t('spectrum.trigger', '似ているメディアを探す')}
+                  {t('spectrum.label_trigger', '似ているメディアを探す')}
                 </button>
               )}
               <button
@@ -479,14 +479,14 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-semibold transition cursor-pointer border border-white/10"
               >
                 <FolderOpen className="w-3.5 h-3.5 text-indigo-400" />
-                {t('media_modal.open_folder', 'フォルダを開く')}
+                {t('media_modal.label_open_folder', 'フォルダを開く')}
               </button>
               <button
                 onClick={() => onOpenFile(item.file_path)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-indigo-900/30"
               >
                 <ExternalLink className="w-3.5 h-3.5" />
-                {t('media_modal.open_file', 'ファイルを開く')}
+                {t('media_modal.label_open_file', 'ファイルを開く')}
               </button>
             </div>
           </div>

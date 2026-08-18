@@ -25,7 +25,20 @@ export function useMedia() {
   const [scanning, setScanning] = useState(false);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [errorModal, setErrorModal] = useState<{ open: boolean; message: string }>({
+  /**
+   * エラー表示。**ここで文言を組み立てない。**
+   * `useMedia` は I18nProvider の外側でも呼ばれるため `useTranslation` を使えない。
+   * 何が失敗したかは `messageKey` で渡し、文言の解決は表示側で行う。
+   */
+  const [errorModal, setErrorModal] = useState<{
+    open: boolean;
+    /** バックエンドから返った生のエラー。翻訳しない */
+    message: string;
+    /** 「〜に失敗しました」の見出しのロケールキー */
+    messageKey?: string;
+    /** Ollama 由来と見られるとき、表示側が対処の案内を足す */
+    ollamaHint?: boolean;
+  }>({
     open: false,
     message: '',
   });
@@ -78,7 +91,7 @@ export function useMedia() {
       }
     } catch (e: any) {
       console.error('Failed to fetch media:', e);
-      setErrorModal({ open: true, message: `メディア一覧の取得に失敗しました: ${String(e)}` });
+      setErrorModal({ open: true, messageKey: 'errors.fetch_media', message: String(e) });
     } finally {
       setLoading(false);
     }
@@ -234,31 +247,24 @@ export function useMedia() {
     }
   };
 
-  const formatErrorMessageWithNotice = (prefix: string, e: any): string => {
+  /**
+   * Ollama 由来と見られるエラーか。**案内の文言はここで作らない**（表示側が足す）。
+   *
+   * **`💡【対処のご案内】` は Rust 側も出すマーカーなので翻訳しない**
+   * （`batch.rs` が同じ文字列を含むエラーを返す）。既に入っていれば案内は不要。
+   */
+  const looksLikeOllamaIssue = (e: any): boolean => {
     const errStr = String(e);
-    if (errStr.includes('💡【対処のご案内】')) {
-      return `${prefix}: ${errStr}`;
-    }
-
-    const isOllamaIssue =
+    if (errStr.includes('💡【対処のご案内】')) return false;
+    return (
       errStr.includes('Ollama') ||
       errStr.includes('llama-server') ||
       errStr.includes('500') ||
       errStr.includes('CUDA') ||
       errStr.includes('0xc0000409') ||
       errStr.includes('buffer') ||
-      errStr.includes('out of memory');
-
-    if (isOllamaIssue) {
-      return (
-        `${prefix}: ${errStr}\n\n` +
-        `💡【対処のご案内】\n` +
-        `GPUのVRAM不足またはOllamaプロセスの異常終了が発生した可能性があります。\n` +
-        `設定画面から「軽量なモデル（例: llava:7b や moondream など）」に変更するか、Ollamaの再起動をお試しください。`
-      );
-    }
-
-    return `${prefix}: ${errStr}`;
+      errStr.includes('out of memory')
+    );
   };
 
   const reanalyzeFolder = async (folderPath: string) => {
@@ -274,7 +280,7 @@ export function useMedia() {
       await invoke('reanalyze_folder', { folderPath });
     } catch (e: any) {
       console.error('Failed to reanalyze folder:', e);
-      setErrorModal({ open: true, message: formatErrorMessageWithNotice('フォルダの再解析に失敗しました', e) });
+      setErrorModal({ open: true, messageKey: 'errors.reanalyze_folder', message: String(e), ollamaHint: looksLikeOllamaIssue(e) });
       setScanning(false);
     }
   };
@@ -294,7 +300,7 @@ export function useMedia() {
       await fetchMasterData();
     } catch (e: any) {
       console.error('Failed custom video analysis:', e);
-      setErrorModal({ open: true, message: formatErrorMessageWithNotice('指定場面での動画解析に失敗しました', e) });
+      setErrorModal({ open: true, messageKey: 'errors.custom_video', message: String(e), ollamaHint: looksLikeOllamaIssue(e) });
     } finally {
       setScanning(false);
     }
@@ -351,7 +357,7 @@ export function useMedia() {
       await fetchMedia(); // アクティブフィルターを引き継いで更新
     } catch (e: any) {
       console.error('Failed to retry media:', e);
-      setErrorModal({ open: true, message: formatErrorMessageWithNotice('解析の再試行に失敗しました', e) });
+      setErrorModal({ open: true, messageKey: 'errors.retry_media', message: String(e), ollamaHint: looksLikeOllamaIssue(e) });
       setScanning(false);
     }
   };
@@ -364,7 +370,7 @@ export function useMedia() {
       await fetchMasterData();
     } catch (e: any) {
       console.error('Failed to reanalyze single media:', e);
-      setErrorModal({ open: true, message: formatErrorMessageWithNotice('メディアの再解析に失敗しました', e) });
+      setErrorModal({ open: true, messageKey: 'errors.reanalyze_media', message: String(e), ollamaHint: looksLikeOllamaIssue(e) });
     } finally {
       setScanning(false);
     }

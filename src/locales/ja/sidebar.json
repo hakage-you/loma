@@ -1,0 +1,19 @@
+{
+  "label_title": "フィルター",
+  "label_reset_all": "すべてリセット",
+  "label_media_type": "メディア種別",
+  "label_all_media": "すべてのメディア",
+  "label_images": "画像",
+  "label_videos": "動画",
+  "label_categories": "カテゴリ",
+  "label_analysis_status": "解析ステータス",
+  "label_added_folders": "登録済みフォルダ",
+  "label_parent_folders": "親フォルダ",
+  "label_file_extensions": "ファイル拡張子",
+  "label_status_all": "すべてのステータス",
+  "label_status_pending": "未解析",
+  "label_status_completed": "解析完了",
+  "label_status_failed": "解析失敗",
+  "video_no_ffmpeg": "FFmpegがインストールされていません。動画のフレーム抽出・解析にはFFmpegが必要です。",
+  "label_status_tag_insufficient": "タグ不足（類似検索の対象外）"
+}

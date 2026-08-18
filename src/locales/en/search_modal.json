@@ -1,0 +1,18 @@
+{
+  "label_title": "Advanced Search Builder",
+  "label_query_preview": "Search Condition Preview",
+  "label_add_group": "Add Group",
+  "label_group_label": "Group",
+  "label_operator_and": "ALL (AND)",
+  "label_operator_or": "ANY (OR)",
+  "label_operator_not": "EXCLUDE (NOT)",
+  "label_between_groups": "AND",
+  "label_remove_group": "Remove Group",
+  "label_input_placeholder": "Type tag name...",
+  "label_add_btn": "Add",
+  "no_tags_group": "No tags added",
+  "label_cancel": "Cancel",
+  "label_apply": "Apply & Search",
+  "label_clear_all": "Clear all conditions",
+  "label_no_condition": "(no conditions set)"
+}

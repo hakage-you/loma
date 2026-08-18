@@ -1,0 +1,11 @@
+{
+  "label_title": "Notice / Error",
+  "label_subtitle": "An issue occurred",
+  "label_btn_close": "Close",
+  "fetch_media": "Failed to fetch the media list.",
+  "reanalyze_folder": "Failed to re-analyze the folder.",
+  "custom_video": "Failed to analyze the video at the given timestamp.",
+  "retry_media": "Failed to retry the analysis.",
+  "reanalyze_media": "Failed to re-analyze the media.",
+  "ollama_notice": "The GPU may be out of VRAM, or the Ollama process may have terminated abnormally.\nSwitch to a lighter model (e.g. llava:7b or moondream) in Settings, or restart Ollama."
+}

@@ -1,6 +1,19 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import jaDict from '../locales/ja.json';
-import enDict from '../locales/en.json';
+// ロケールは名前空間ごとに1ファイル（`locales/<lang>/<namespace>.json`）。
+// **ファイル名がそのまま名前空間になる**ので、`t('settings.label_title')` の
+// 呼び方は分割前と変わらない。1ファイルに全部入れると、画面が増えるたびに
+// 同じファイルで衝突する
+const collect = (mods: Record<string, unknown>): Record<string, unknown> => {
+  const out: Record<string, unknown> = {};
+  for (const [path, mod] of Object.entries(mods)) {
+    const ns = path.split('/').pop()!.replace(/\.json$/, '');
+    out[ns] = (mod as { default?: unknown }).default ?? mod;
+  }
+  return out;
+};
+
+const jaDict = collect(import.meta.glob('../locales/ja/*.json', { eager: true }));
+const enDict = collect(import.meta.glob('../locales/en/*.json', { eager: true }));
 
 export type Language = 'ja' | 'en';
 
@@ -14,7 +27,12 @@ const dicts: Record<Language, Dictionaries> = {
 interface I18nContextType {
   language: Language;
   setLanguage: (lang: Language) => void;
-  t: (keyPath: string, defaultText?: string) => string;
+  /**
+   * `vars` を渡すと本文中の `{名前}` を置き換える。
+   * 「3件を統合しました」のような文を、語順の違う言語でも1つの文言として持てる
+   * （断片を JSX で連結すると英語で語順が崩れる）。
+   */
+  t: (keyPath: string, defaultText?: string, vars?: Record<string, string | number>) => string;
 }
 
 const I18nContext = createContext<I18nContextType | undefined>(undefined);
@@ -37,7 +55,19 @@ export const I18nProvider: React.FC<{ children: React.ReactNode; initialLanguage
     }
   };
 
-  const t = (keyPath: string, defaultText?: string): string => {
+  /** 本文中の `{名前}` を差し替える。渡されなかった名前はそのまま残す */
+  const fill = (text: string, vars?: Record<string, string | number>): string => {
+    if (!vars) return text;
+    let out = text;
+    for (const [k, v] of Object.entries(vars)) out = out.split(`{${k}}`).join(String(v));
+    return out;
+  };
+
+  const t = (
+    keyPath: string,
+    defaultText?: string,
+    vars?: Record<string, string | number>
+  ): string => {
     const keys = keyPath.split('.');
     let current: any = dicts[language] || dicts.ja;
 
@@ -51,13 +81,13 @@ export const I18nProvider: React.FC<{ children: React.ReactNode; initialLanguage
           if (fb && typeof fb === 'object' && k in fb) {
             fb = fb[k];
           } else {
-            return defaultText || keyPath;
+            return fill(defaultText || keyPath, vars);
           }
         }
-        return typeof fb === 'string' ? fb : defaultText || keyPath;
+        return fill(typeof fb === 'string' ? fb : defaultText || keyPath, vars);
       }
     }
-    return typeof current === 'string' ? current : defaultText || keyPath;
+    return fill(typeof current === 'string' ? current : defaultText || keyPath, vars);
   };
 
   return (

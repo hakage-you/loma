@@ -212,7 +212,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         <div className="flex items-center justify-between border-b border-white/10 pb-4 shrink-0">
           <div className="flex items-center gap-2.5 text-lg font-bold text-white">
             <Sliders className="w-5 h-5 text-indigo-400" />
-            <span>{t('search_modal.title', '詳細検索ビルダー')}</span>
+            <span>{t('search_modal.label_title', '詳細検索ビルダー')}</span>
           </div>
           <button
             onClick={onClose}
@@ -225,13 +225,13 @@ export const SearchModal: React.FC<SearchModalProps> = ({
         {/* Readonly Logical Search Query Preview */}
         <div className="space-y-1.5 shrink-0">
           <label className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
-            {t('search_modal.query_preview', '検索条件プレビュー')}
+            {t('search_modal.label_query_preview', '検索条件プレビュー')}
           </label>
           <div className="relative">
             <input
               type="text"
               readOnly
-              value={previewString || '(条件が設定されていません)'}
+              value={previewString || t('search_modal.label_no_condition', '(no conditions set)')}
               className="w-full bg-slate-950 px-3.5 py-2.5 rounded-xl border border-white/10 text-xs font-mono text-indigo-200 focus:outline-none select-all"
             />
           </div>
@@ -249,7 +249,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                 {groupIdx > 0 && (
                   <div className="flex items-center justify-center py-0.5">
                     <span className="text-[11px] font-bold text-slate-400 bg-slate-800/80 px-3 py-0.5 rounded-full border border-white/10 tracking-widest">
-                      {t('search_modal.between_groups', 'AND')}
+                      {t('search_modal.label_between_groups', 'AND')}
                     </span>
                   </div>
                 )}
@@ -259,7 +259,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                   {/* Group Header */}
                   <div className="flex items-center justify-between gap-3">
                     <span className="text-xs font-bold text-slate-300">
-                      {t('search_modal.group_label', 'グループ')} {groupIdx + 1}
+                      {t('search_modal.label_group_label', 'グループ')} {groupIdx + 1}
                     </span>
 
                     <div className="flex items-center gap-2">
@@ -278,13 +278,13 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                         }`}
                       >
                         <option value="and" className="bg-slate-900 text-white">
-                          {t('search_modal.operator_and', 'すべて含む (AND)')}
+                          {t('search_modal.label_operator_and', 'すべて含む (AND)')}
                         </option>
                         <option value="or" className="bg-slate-900 text-white">
-                          {t('search_modal.operator_or', 'いずれか含む (OR)')}
+                          {t('search_modal.label_operator_or', 'いずれか含む (OR)')}
                         </option>
                         <option value="not" className="bg-slate-900 text-white">
-                          {t('search_modal.operator_not', '除外する (NOT)')}
+                          {t('search_modal.label_operator_not', '除外する (NOT)')}
                         </option>
                       </select>
 
@@ -293,7 +293,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                         <button
                           onClick={() => handleRemoveGroup(group.id)}
                           className="p-1 text-slate-400 hover:text-red-400 hover:bg-slate-800 rounded-lg transition cursor-pointer"
-                          title={t('search_modal.remove_group', 'グループ削除')}
+                          title={t('search_modal.label_remove_group', 'グループ削除')}
                         >
                           <Trash2 className="w-3.5 h-3.5" />
                         </button>
@@ -318,7 +318,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                               handleAddTagToGroup(group.id, tagInputs[group.id] || '');
                             }
                           }}
-                          placeholder={t('search_modal.input_placeholder', 'タグ名を入力...')}
+                          placeholder={t('search_modal.label_input_placeholder', 'タグ名を入力...')}
                           className="flex-1 bg-slate-900 px-3 py-1.5 rounded-lg border border-white/10 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500/50 font-mono"
                         />
                         <button
@@ -328,7 +328,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
                           disabled={!(tagInputs[group.id] || '').trim()}
                           className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-40"
                         >
-                          {t('search_modal.add_btn', '追加')}
+                          {t('search_modal.label_add_btn', '追加')}
                         </button>
                       </div>
 
@@ -396,7 +396,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
             className="w-full py-2 bg-slate-800/60 hover:bg-slate-800 text-indigo-300 hover:text-indigo-200 rounded-xl text-xs font-bold transition border border-dashed border-indigo-500/30 flex items-center justify-center gap-1.5 cursor-pointer"
           >
             <Plus className="w-4 h-4" />
-            <span>{t('search_modal.add_group', 'グループ追加')}</span>
+            <span>{t('search_modal.label_add_group', 'グループ追加')}</span>
           </button>
         </div>
 
@@ -406,7 +406,7 @@ export const SearchModal: React.FC<SearchModalProps> = ({
             onClick={handleClearAll}
             className="px-3 py-1.5 text-xs text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 rounded-lg transition cursor-pointer font-semibold"
           >
-            {t('search_modal.clear_all', '条件をすべてクリア')}
+            {t('search_modal.label_clear_all', '条件をすべてクリア')}
           </button>
 
           <div className="flex items-center gap-2">
@@ -414,14 +414,14 @@ export const SearchModal: React.FC<SearchModalProps> = ({
               onClick={onClose}
               className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
             >
-              {t('search_modal.cancel', 'キャンセル')}
+              {t('search_modal.label_cancel', 'キャンセル')}
             </button>
             <button
               onClick={handleApply}
               className="px-5 py-2 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-xl text-xs font-semibold shadow-lg shadow-indigo-900/30 transition cursor-pointer flex items-center gap-1.5"
             >
               <Search className="w-3.5 h-3.5" />
-              <span>{t('search_modal.apply', '検索を適用')}</span>
+              <span>{t('search_modal.label_apply', '検索を適用')}</span>
             </button>
           </div>
         </div>

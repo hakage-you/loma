@@ -1015,6 +1015,51 @@ pub async fn get_scan_folders(db_state: State<'_, DbState>) -> Result<Vec<ScanFo
         .collect())
 }
 
+/// 1タグあたりに出すサンプルサムネイルの枚数。AI提案のカードと揃えてある。
+const TAG_SAMPLE_THUMBNAIL_LIMIT: usize = 5;
+
+/// タグごとのサンプルサムネイル。**表示中のタグのぶんだけまとめて引く。**
+///
+/// 1タグずつ引くと一覧の描画で件数ぶんの往復が出る（段階描画で200件なら200回）。
+/// タグごとの上限は窓関数で切るので、返る行数は tag_ids.len() * 5 を超えない。
+#[tauri::command]
+pub async fn get_tag_sample_thumbnails(
+    tag_ids: Vec<i64>,
+    db_state: State<'_, DbState>,
+) -> Result<std::collections::HashMap<i64, Vec<String>>, String> {
+    let mut out: std::collections::HashMap<i64, Vec<String>> = std::collections::HashMap::new();
+    if tag_ids.is_empty() {
+        return Ok(out);
+    }
+
+    // IN 句の要素数には上限があるので分割する
+    for chunk in tag_ids.chunks(400) {
+        let ids_str = chunk
+            .iter()
+            .map(|id| id.to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+        let rows = sqlx::query_as::<_, (i64, String)>(&format!(
+            "SELECT tag_id, thumbnail_path FROM ( \
+               SELECT mt.tag_id AS tag_id, m.thumbnail_path AS thumbnail_path, \
+                      ROW_NUMBER() OVER (PARTITION BY mt.tag_id ORDER BY m.id DESC) AS rn \
+               FROM media_tags mt JOIN media m ON m.id = mt.media_id \
+               WHERE mt.tag_id IN ({}) AND m.thumbnail_path != '' \
+             ) WHERE rn <= {}",
+            ids_str, TAG_SAMPLE_THUMBNAIL_LIMIT
+        ))
+        .fetch_all(&db_state.pool)
+        .await
+        .map_err(|e| cmd_err("get_tag_sample_thumbnails", e))?;
+
+        for (tag_id, path) in rows {
+            out.entry(tag_id).or_default().push(path);
+        }
+    }
+
+    Ok(out)
+}
+
 #[tauri::command]
 pub async fn get_media_by_tag(
     tag_id: i64,

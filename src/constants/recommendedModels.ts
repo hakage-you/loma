@@ -1,10 +1,23 @@
 export interface RecommendedModel {
   name: string;
   badge: 'Lightweight' | 'Standard' | 'High Performance';
-  badgeJa: '軽量' | '標準' | '高精度';
   size: string;
-  description: string;
+  /**
+   * 説明文のロケールキー。**本文はここに持たない。**
+   * モジュール定数なので `t()` を呼べず、描画時に解決する。
+   */
+  descriptionKey: string;
+  /** ロケールにキーが無かったときに出す文（英語） */
+  descriptionDefault: string;
 }
+
+/**
+ * 段位バッジ（英語）→ ロケールキー。
+ * 以前は `badgeJa` として日本語を別フィールドで持っており、
+ * 英語版と日本語版が同じ情報を二重に持っていた。
+ */
+export const badgeLabelKey = (badge: RecommendedModel['badge']) =>
+  `settings.label_badge_${badge.toLowerCase().replace(/ /g, '_')}`;
 
 /**
  * タグ付け用 VLM。
@@ -24,23 +37,23 @@ export const RECOMMENDED_VLM_MODELS: RecommendedModel[] = [
   {
     name: 'translategemma:4b',
     badge: 'Lightweight',
-    badgeJa: '軽量',
     size: '~2.8 GB',
-    description: '低VRAM環境向け。低情報量な画像でも幻覚せず安定して動作する',
+    descriptionKey: 'settings.model_desc_vlm_translategemma_4b',
+    descriptionDefault: "For low-VRAM setups. Stays stable without hallucinating even on low-information images",
   },
   {
     name: 'qwen3-vl:8b-instruct',
     badge: 'Standard',
-    badgeJa: '標準',
     size: '~6.1 GB',
-    description: '軸となる推奨モデル。速度・精度・複雑な指示への追従、いずれも上位モデルと同等',
+    descriptionKey: 'settings.model_desc_vlm_qwen3vl_8b',
+    descriptionDefault: "The reference model. Speed, accuracy and instruction-following all match larger models",
   },
   {
     name: 'gemma4:12b',
     badge: 'Standard',
-    badgeJa: '標準',
     size: '~7.8 GB',
-    description: 'qwen3-vl:8b-instructと同等の精度で低速。安定性を優先したい場合の代替',
+    descriptionKey: 'settings.model_desc_vlm_gemma4_12b',
+    descriptionDefault: "As accurate as qwen3-vl:8b-instruct but slower. An alternative when stability comes first",
   },
 ];
 
@@ -76,23 +89,23 @@ export const RECOMMENDED_EMBEDDING_MODELS: RecommendedModel[] = [
   {
     name: 'embeddinggemma',
     badge: 'Lightweight',
-    badgeJa: '軽量',
     size: '~0.7 GB',
-    description: '最も軽量 (768次元)。分離能力・ハブ化の少なさともにbge-m3と同等以上',
+    descriptionKey: 'settings.model_desc_emb_embeddinggemma',
+    descriptionDefault: "The lightest (768 dims). Matches or beats bge-m3 in separation and hub resistance",
   },
   {
     name: 'bge-m3',
     badge: 'Standard',
-    badgeJa: '標準',
     size: '~570 MB',
-    description: '軽量で導入しやすい多言語モデル (1024次元)。まずはこれで十分',
+    descriptionKey: 'settings.model_desc_emb_bge_m3',
+    descriptionDefault: "A light, easy multilingual model (1024 dims). Good enough to start with",
   },
   {
     name: 'qwen3-embedding:8b',
     badge: 'High Performance',
-    badgeJa: '高精度',
     size: '~5.5 GB',
-    description: '概念の分離能力が明確に高い (4096次元)。VRAMに余裕があるならこちら',
+    descriptionKey: 'settings.model_desc_emb_qwen3_8b',
+    descriptionDefault: "Clearly better at separating concepts (4096 dims). Pick this if VRAM allows",
   },
 ];
 
@@ -150,15 +163,15 @@ export const RECOMMENDED_TEXT_MODELS: RecommendedModel[] = [
   {
     name: 'qwen3.5:9b',
     badge: 'Lightweight',
-    badgeJa: '軽量',
     size: '~6.1 GB',
-    description: '割り当て精度は高いが、包括語の抽出は苦手（実測 1〜2/5）。VRAMが足りない場合の妥協案',
+    descriptionKey: 'settings.model_desc_text_qwen35_9b',
+    descriptionDefault: "Assignment accuracy is high, but hypernym extraction is weak (measured 1-2/5). A compromise when VRAM is short",
   },
   {
     name: 'gemma4:12b',
     badge: 'Standard',
-    badgeJa: '標準',
     size: '~7.0 GB',
-    description: '推奨。包括語の抽出が3回とも完全一致、発明タグ0件。より大きいモデルより速く正確',
+    descriptionKey: 'settings.model_desc_text_gemma4_12b',
+    descriptionDefault: "Recommended. Hypernym extraction matched exactly 3 times out of 3, with zero invented tags. Faster and more accurate than larger models",
   },
 ];

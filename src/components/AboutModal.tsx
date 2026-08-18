@@ -52,12 +52,12 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
         {/* Informational Details */}
         <div className="bg-slate-950/70 rounded-xl p-4 border border-white/10 space-y-3 text-xs">
           <div className="flex justify-between items-center pb-2 border-b border-white/5">
-            <span className="text-slate-400">{t('about.author', 'Author')}:</span>
+            <span className="text-slate-400">{t('about.label_author', 'Author')}:</span>
             <span className="font-semibold text-white">@hakage-you</span>
           </div>
 
           <div className="flex justify-between items-center">
-            <span className="text-slate-400">{t('about.copyright', 'Copyright')}:</span>
+            <span className="text-slate-400">{t('about.label_copyright', 'Copyright')}:</span>
             <span className="font-mono text-slate-300">©2026 hakage-you</span>
           </div>
         </div>
@@ -65,7 +65,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
         {/* Links */}
         <div className="space-y-2">
           <p className="text-[11px] font-semibold text-slate-400 uppercase tracking-wider">
-            {t('about.links', 'Official Links')}
+            {t('about.label_links', 'Official Links')}
           </p>
           <div className="grid grid-cols-2 gap-2">
             <button

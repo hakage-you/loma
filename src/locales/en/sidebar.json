@@ -1,0 +1,19 @@
+{
+  "label_title": "Filters",
+  "label_reset_all": "Reset All",
+  "label_media_type": "Media Type",
+  "label_all_media": "All Media",
+  "label_images": "Images",
+  "label_videos": "Videos",
+  "label_categories": "Categories",
+  "label_analysis_status": "Analysis Status",
+  "label_added_folders": "Scan Folders",
+  "label_parent_folders": "Parent Folders",
+  "label_file_extensions": "File Extensions",
+  "label_status_all": "All Statuses",
+  "label_status_pending": "Pending",
+  "label_status_completed": "Completed",
+  "label_status_failed": "Failed",
+  "video_no_ffmpeg": "FFmpeg is not installed. FFmpeg is required for video frame extraction & analysis.",
+  "label_status_tag_insufficient": "Too few tags (excluded from similarity)"
+}

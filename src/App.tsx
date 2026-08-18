@@ -82,7 +82,7 @@ function AppContent() {
     if (globalDownloadProgress && !globalDownloadProgress.done) {
       setErrorModal({
         open: true,
-        message: `モデル「${globalDownloadProgress.model}」のダウンロード処理が実行中です。ダウンロード完了後に解析を開始してください。`,
+        message: t('app.download_in_progress', '', { model: globalDownloadProgress.model }),
       });
       return;
     }
@@ -281,7 +281,7 @@ function AppContent() {
         <div
           onClick={() => setIsAboutOpen(true)}
           className="w-64 flex items-center gap-2.5 cursor-pointer group px-2 py-1 rounded-xl hover:bg-white/5 transition shrink-0"
-          title="Click to view About Loma"
+          title={t('app.label_title_about', 'About Loma')}
         >
           <div className="w-8 h-8 rounded-xl bg-gradient-to-tr from-indigo-600 to-violet-500 p-0.5 shadow-lg group-hover:scale-105 transition">
             <div className="w-full h-full bg-slate-950 rounded-[10px] flex items-center justify-center">
@@ -308,7 +308,7 @@ function AppContent() {
                   <button
                     onClick={resumeScan}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-lg text-xs font-semibold transition cursor-pointer shadow-lg shadow-emerald-900/30"
-                    title="Resume processing"
+                    title={t('app.label_title_resume', 'Resume processing')}
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
                     Resume
@@ -317,7 +317,7 @@ function AppContent() {
                   <button
                     onClick={pauseScan}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 text-amber-200 border border-amber-500/40 rounded-lg text-xs font-semibold transition cursor-pointer"
-                    title="Pause processing"
+                    title={t('app.label_title_pause', 'Pause processing')}
                   >
                     <Pause className="w-3.5 h-3.5 fill-current" />
                     Pause
@@ -326,7 +326,7 @@ function AppContent() {
                 <button
                   onClick={cancelScan}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 rounded-lg text-xs font-medium transition cursor-pointer"
-                  title="Cancel scan"
+                  title={t('app.label_title_cancel_scan', 'Cancel scan')}
                 >
                   <StopCircle className="w-3.5 h-3.5" />
                   Cancel
@@ -340,17 +340,17 @@ function AppContent() {
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-lg text-xs font-semibold transition shadow-lg shadow-indigo-900/30 cursor-pointer"
                 >
                   <FolderPlus className="w-3.5 h-3.5" />
-                  <span>{t('search.add_folder', 'フォルダ追加')}</span>
+                  <span>{t('search.label_add_folder', 'フォルダ追加')}</span>
                 </button>
 
                 {/* [Sync] Button */}
                 <button
                   onClick={handleSyncFolders}
                   className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-semibold transition cursor-pointer"
-                  title="Sync all registered folders"
+                  title={t('app.label_title_sync', 'Sync all registered folders')}
                 >
                   <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
-                  <span>{t('search.sync', '同期')}</span>
+                  <span>{t('search.label_sync', '同期')}</span>
                 </button>
               </>
             )}
@@ -359,10 +359,10 @@ function AppContent() {
               <button
                 onClick={handleRetryAllFailed}
                 className="flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-medium transition cursor-pointer"
-                title="Retry failed items"
+                title={t('app.label_title_retry', 'Retry failed items')}
               >
                 <RefreshCw className="w-3.5 h-3.5" />
-                <span>{t('search.retry', '再試行')} ({failedMediaItems.length})</span>
+                <span>{t('search.label_retry', '再試行')} ({failedMediaItems.length})</span>
               </button>
             )}
           </div>
@@ -372,19 +372,19 @@ function AppContent() {
             <button
               onClick={() => setIsTagManagementOpen(true)}
               className="px-2.5 py-1.5 text-slate-300 hover:text-white rounded-lg transition cursor-pointer flex items-center gap-1.5 text-xs font-medium hover:bg-slate-800"
-              title="Tag Management & Consolidation"
+              title={t('app.label_title_tags', 'Tag Management & Consolidation')}
             >
               <Tags className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{t('search.tags_btn', 'タグ管理')}</span>
+              <span>{t('search.label_tags_btn', 'タグ管理')}</span>
             </button>
 
             <button
               onClick={() => setIsFolderManagerOpen(true)}
               className="px-2.5 py-1.5 text-slate-300 hover:text-white rounded-lg transition cursor-pointer flex items-center gap-1.5 text-xs font-medium hover:bg-slate-800"
-              title="Manage Registered Folders"
+              title={t('app.label_title_folders', 'Manage Registered Folders')}
             >
               <HardDrive className="w-3.5 h-3.5 text-indigo-400" />
-              <span>{t('search.folders_btn', 'フォルダ管理')}</span>
+              <span>{t('search.label_folders_btn', 'フォルダ管理')}</span>
             </button>
           </div>
 
@@ -393,7 +393,7 @@ function AppContent() {
             <button
               onClick={() => setIsSettingsOpen(true)}
               className="p-1.5 text-slate-300 hover:text-white hover:bg-slate-800 rounded-lg transition cursor-pointer"
-              title="Settings"
+              title={t('app.label_title_settings', 'Settings')}
             >
               <Settings className="w-4 h-4 text-indigo-400" />
             </button>
@@ -593,7 +593,7 @@ function AppContent() {
             onClick={() => setIsSettingsOpen(true)}
             className="px-2.5 py-1.5 text-xs font-bold bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-200 rounded-xl border border-indigo-500/40 transition cursor-pointer"
           >
-            設定を開く
+            {t('app.label_open_settings', 'Open settings')}
           </button>
         </div>
       )}
@@ -629,6 +629,8 @@ function AppContent() {
       <ErrorModal
         open={errorModal.open}
         message={errorModal.message}
+        messageKey={errorModal.messageKey}
+        ollamaHint={errorModal.ollamaHint}
         onClose={() => setErrorModal({ open: false, message: '' })}
       />
     </div>

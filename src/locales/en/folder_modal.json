@@ -1,0 +1,10 @@
+{
+  "label_title": "Manage Scan Folders",
+  "label_add_folder": "Add New Folder",
+  "label_rescan_all": "Rescan All Folders",
+  "label_reanalyze_all": "Reanalyze All Media",
+  "label_title_scan_pending": "Process pending/new items in this folder",
+  "label_title_reanalyze": "Force re-analyze ALL items in this folder",
+  "label_title_remove": "Remove folder",
+  "label_subtitle": "Manage scan folders and re-analyze in bulk"
+}

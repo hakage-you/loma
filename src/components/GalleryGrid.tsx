@@ -4,6 +4,7 @@ import { MediaItem } from '../types';
 import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
+import { categoryLabelKey } from '../constants/categories';
 
 interface GalleryGridProps {
   items: MediaItem[];
@@ -13,21 +14,6 @@ interface GalleryGridProps {
   onSelectTagFilter?: (tagName: string) => void;
   onFindSimilar?: (item: MediaItem) => void;
 }
-
-const CATEGORY_NAME_JA: Record<string, string> = {
-  screenshot: 'スクリーンショット',
-  document: '書類・文書',
-  landscape: '風景・自然',
-  food: '料理・食べ物',
-  character: 'キャラクター',
-  animal: '動物・ペット',
-  person: '人物・顔写真',
-  item_product: '商品・雑貨',
-  art_illustration: 'イラスト・アート',
-  text_heavy: '文字主体',
-  tech: 'IT・技術',
-  other: 'その他',
-};
 
 export const GalleryGrid: React.FC<GalleryGridProps> = ({
   items,
@@ -109,18 +95,18 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                   {item.analysis_status === 'pending' && (
                     <span className="flex items-center gap-1 px-2 py-0.5 bg-amber-500/90 backdrop-blur-md text-slate-950 rounded-full text-[10px] font-bold shadow-lg animate-pulse-subtle">
                       <Clock className="w-3 h-3" />
-                      {t('sidebar.status_pending', '未解析')}
+                      {t('sidebar.label_status_pending', '未解析')}
                     </span>
                   )}
                   {item.analysis_status === 'failed' && (
                     <span className="flex items-center gap-1 px-2 py-0.5 bg-red-500/90 backdrop-blur-md text-white rounded-full text-[10px] font-bold shadow-lg">
                       <AlertCircle className="w-3 h-3" />
-                      {t('sidebar.status_failed', '解析失敗')}
+                      {t('sidebar.label_status_failed', '解析失敗')}
                     </span>
                   )}
                   {item.categories && item.categories.length > 0 && (
                     <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-600/90 backdrop-blur-md text-white rounded-full text-[10px] font-medium shadow-lg ml-auto">
-                      {CATEGORY_NAME_JA[item.categories[0]] || item.categories[0]}
+                      {t(categoryLabelKey(item.categories[0]), item.categories[0])}
                     </span>
                   )}
                 </div>
@@ -144,10 +130,10 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                       title={
                         isTagInsufficient(item)
                           ? t(
-                              'spectrum.badge_excluded',
+                              'spectrum.label_badge_excluded',
                               'タグが {n} 個未満のため、似ているメディアの検索の対象外です',
                             ).replace('{n}', String(MIN_BASIC_TAGS))
-                          : t('spectrum.trigger', '似ているメディアを探す')
+                          : t('spectrum.label_trigger', '似ているメディアを探す')
                       }
                       className="p-2 bg-white/20 hover:bg-indigo-500/70 backdrop-blur-md rounded-full text-white transition disabled:opacity-40 disabled:cursor-not-allowed disabled:hover:bg-white/20"
                     >
@@ -186,7 +172,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                             }
                           }}
                           className="inline-flex items-center gap-0.5 px-1.5 py-0.5 bg-slate-800 text-slate-300 hover:text-indigo-200 hover:bg-indigo-900/50 rounded text-[10px] truncate max-w-[120px] cursor-pointer transition"
-                          title="Click to search this tag"
+                          title={t('gallery.label_title_search_tag', 'Click to search this tag')}
                         >
                           <Tag className="w-2.5 h-2.5 text-indigo-400 shrink-0" />
                           <span className="truncate">{displayTag}</span>

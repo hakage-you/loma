@@ -1,0 +1,11 @@
+{
+  "label_title": "お知らせ / エラー",
+  "label_subtitle": "処理中に問題が発生しました",
+  "label_btn_close": "閉じる",
+  "fetch_media": "メディア一覧の取得に失敗しました。",
+  "reanalyze_folder": "フォルダの再解析に失敗しました。",
+  "custom_video": "指定場面での動画解析に失敗しました。",
+  "retry_media": "解析の再試行に失敗しました。",
+  "reanalyze_media": "メディアの再解析に失敗しました。",
+  "ollama_notice": "GPUのVRAM不足またはOllamaプロセスの異常終了が発生した可能性があります。\n設定画面から「軽量なモデル（例: llava:7b や moondream など）」に変更するか、Ollamaの再起動をお試しください。"
+}
