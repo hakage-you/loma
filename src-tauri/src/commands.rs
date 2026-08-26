@@ -1,4 +1,4 @@
-use crate::batch::{fetch_ollama_models, run_scan_and_batch};
+use crate::batch::{fetch_ollama_models, fetch_vision_capable_models, run_scan_and_batch};
 use crate::db::DbState;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -78,6 +78,15 @@ pub struct MediaItem {
     pub file_size: i64,
     pub analysis_status: String,
     pub analysis_error: Option<String>,
+    /// 失敗の種別コード（`llm::error_kind`）。失敗一覧のグループ化に使う
+    pub analysis_error_kind: Option<String>,
+    /// 同じ種別で連続して失敗した回数
+    pub consecutive_failures: i64,
+    /// 再試行しても直らない見込みで、ユーザーの判断を要するか。
+    /// 判定基準は `llm::needs_attention` にだけ置き、フロントには複製しない
+    pub needs_attention: bool,
+    /// 解析対象から外されているか（`excluded_paths` に載っている）
+    pub excluded: bool,
     pub categories: Vec<String>,
     pub tags: Vec<TagPairItem>,
 }
@@ -176,7 +185,9 @@ pub async fn get_media(
 
     let mut query = String::from(
         r#"
-        SELECT m.id, m.file_path, m.parent_folder, m.thumbnail_path, m.file_size, m.analysis_status, m.analysis_error
+        SELECT m.id, m.file_path, m.parent_folder, m.thumbnail_path, m.file_size, m.analysis_status, m.analysis_error,
+               m.analysis_error_kind, m.consecutive_failures,
+               EXISTS(SELECT 1 FROM excluded_paths e WHERE e.path = m.file_path)
         FROM media m
         WHERE 1=1
         "#,
@@ -230,7 +241,10 @@ pub async fn get_media(
 
     query.push_str(" ORDER BY m.id DESC");
 
-    let rows = sqlx::query_as::<_, (i64, String, String, String, i64, String, Option<String>)>(&query)
+    let rows = sqlx::query_as::<
+        _,
+        (i64, String, String, String, i64, String, Option<String>, Option<String>, i64, i64),
+    >(&query)
         .fetch_all(pool)
         .await
         .map_err(|e| cmd_err("get_media", e))?;
@@ -276,7 +290,19 @@ pub async fn get_media(
     }
 
     let mut result = Vec::new();
-    for (id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error) in rows {
+    for (
+        id,
+        file_path,
+        parent_folder,
+        thumbnail_path,
+        file_size,
+        analysis_status,
+        analysis_error,
+        analysis_error_kind,
+        consecutive_failures,
+        excluded_flag,
+    ) in rows
+    {
         let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
 
         // フィルタリング適用 (ステータスフィルタのメモリ上ダブルチェック)
@@ -337,6 +363,14 @@ pub async fn get_media(
             }
         }
 
+        let needs_attention = analysis_status == "failed"
+            && crate::llm::needs_attention(
+                analysis_error_kind
+                    .as_deref()
+                    .unwrap_or(crate::llm::error_kind::UNKNOWN),
+                consecutive_failures,
+            );
+
         result.push(MediaItem {
             id,
             file_path,
@@ -345,6 +379,10 @@ pub async fn get_media(
             file_size,
             analysis_status,
             analysis_error,
+            analysis_error_kind,
+            consecutive_failures,
+            needs_attention,
+            excluded: excluded_flag != 0,
             categories,
             tags,
         });
@@ -596,6 +634,27 @@ pub async fn get_available_models(db_state: State<'_, DbState>) -> Result<Vec<St
         .unwrap_or_else(|| "http://localhost:11434".to_string());
 
     fetch_ollama_models(&url).await.map_err(|e| e.to_string())
+}
+
+/// `get_available_models` のうち、Ollama が `vision` を宣言しているモデルの名前だけを返す。
+///
+/// VLM のプルダウンはこれで絞り込む。**宣言があっても解析が安定する保証は無い**ため、
+/// 呼び出し側で「動作確認済み」と読めるラベルを付けないこと。
+/// `refresh` を true にすると `/api/show` の結果を取り直す（「モデル一覧を取得」ボタン用）。
+#[tauri::command]
+pub async fn get_vision_capable_models(
+    db_state: State<'_, DbState>,
+    refresh: bool,
+) -> Result<Vec<String>, String> {
+    let url: String = sqlx::query_scalar("SELECT value FROM settings WHERE key = 'ollama_url'")
+        .fetch_optional(&db_state.pool)
+        .await
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "http://localhost:11434".to_string());
+
+    fetch_vision_capable_models(&url, refresh)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -994,6 +1053,199 @@ pub async fn retry_media(
     });
 
     Ok(())
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ExcludedPathItem {
+    pub path: String,
+    pub reason: Option<String>,
+    pub created_at: i64,
+}
+
+/// 指定したメディアを解析対象から外す。ファイルもDBレコードも消さない。
+///
+/// 除外は `media` の列ではなく `excluded_paths` に置く。`delete_media` で
+/// media 行を消しても除外が残るようにするため。
+#[tauri::command]
+pub async fn exclude_media(
+    media_ids: Vec<i64>,
+    reason: Option<String>,
+    db_state: State<'_, DbState>,
+) -> Result<usize, String> {
+    if media_ids.is_empty() {
+        return Ok(0);
+    }
+    let pool = &db_state.pool;
+
+    let ids_str = media_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let paths = sqlx::query_scalar::<_, String>(&format!(
+        "SELECT file_path FROM media WHERE id IN ({})",
+        ids_str
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| cmd_err("exclude_media", e))?;
+
+    let mut excluded = 0usize;
+    for path in &paths {
+        let res = sqlx::query(
+            "INSERT OR IGNORE INTO excluded_paths (path, reason) VALUES (?1, ?2)",
+        )
+        .bind(path)
+        .bind(reason.as_deref())
+        .execute(pool)
+        .await
+        .map_err(|e| cmd_err("exclude_media", e))?;
+        excluded += res.rows_affected() as usize;
+    }
+
+    crate::logger::log_info(&format!(
+        "[Exclude] Marked {} file(s) as not-to-analyze (reason: {})",
+        excluded,
+        reason.as_deref().unwrap_or("-")
+    ));
+
+    Ok(excluded)
+}
+
+/// 指定したメディアをライブラリから削除する。ファイル本体は消さない。
+///
+/// レコードを消すだけでは次のスキャンで再登録されるため、除外も併せて登録する。
+#[tauri::command]
+pub async fn delete_media(
+    media_ids: Vec<i64>,
+    reason: Option<String>,
+    db_state: State<'_, DbState>,
+) -> Result<usize, String> {
+    if media_ids.is_empty() {
+        return Ok(0);
+    }
+    let pool = &db_state.pool;
+
+    let ids_str = media_ids
+        .iter()
+        .map(|id| id.to_string())
+        .collect::<Vec<_>>()
+        .join(",");
+
+    let rows = sqlx::query_as::<_, (String, String)>(&format!(
+        "SELECT file_path, thumbnail_path FROM media WHERE id IN ({})",
+        ids_str
+    ))
+    .fetch_all(pool)
+    .await
+    .map_err(|e| cmd_err("delete_media", e))?;
+
+    for (path, _) in &rows {
+        sqlx::query("INSERT OR IGNORE INTO excluded_paths (path, reason) VALUES (?1, ?2)")
+            .bind(path)
+            .bind(reason.as_deref())
+            .execute(pool)
+            .await
+            .map_err(|e| cmd_err("delete_media", e))?;
+    }
+
+    let mut tx = pool.begin().await.map_err(|e| cmd_err("delete_media", e))?;
+    for chunk in media_ids.chunks(500) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        let q_tags = format!("DELETE FROM media_tags WHERE media_id IN ({})", placeholders);
+        let mut query_tags = sqlx::query(&q_tags);
+        for id in chunk {
+            query_tags = query_tags.bind(id);
+        }
+        query_tags
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| cmd_err("delete_media", e))?;
+
+        let q_media = format!("DELETE FROM media WHERE id IN ({})", placeholders);
+        let mut query_media = sqlx::query(&q_media);
+        for id in chunk {
+            query_media = query_media.bind(id);
+        }
+        query_media
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| cmd_err("delete_media", e))?;
+    }
+    tx.commit().await.map_err(|e| cmd_err("delete_media", e))?;
+
+    // 浮いたタグの自動削除
+    let _ = sqlx::query(
+        "DELETE FROM tags WHERE is_category = 0 AND id NOT IN (SELECT DISTINCT tag_id FROM media_tags)",
+    )
+    .execute(pool)
+    .await;
+
+    for (_, thumb) in &rows {
+        if !thumb.is_empty() {
+            let p = std::path::Path::new(thumb);
+            if p.exists() {
+                let _ = std::fs::remove_file(p);
+            }
+        }
+    }
+
+    crate::logger::log_info(&format!(
+        "[Delete] Removed {} media record(s) from the library and excluded them from future scans",
+        rows.len()
+    ));
+
+    Ok(rows.len())
+}
+
+/// 除外を解除する。次のスキャンで再登録され、解析対象に戻る。
+#[tauri::command]
+pub async fn unexclude_paths(
+    paths: Vec<String>,
+    db_state: State<'_, DbState>,
+) -> Result<usize, String> {
+    if paths.is_empty() {
+        return Ok(0);
+    }
+    let pool = &db_state.pool;
+
+    let mut removed = 0usize;
+    for path in &paths {
+        let res = sqlx::query("DELETE FROM excluded_paths WHERE path = ?1")
+            .bind(path)
+            .execute(pool)
+            .await
+            .map_err(|e| cmd_err("unexclude_paths", e))?;
+        removed += res.rows_affected() as usize;
+    }
+
+    crate::logger::log_info(&format!("[Exclude] Cleared {} exclusion(s)", removed));
+
+    Ok(removed)
+}
+
+/// 除外中のパス一覧。
+#[tauri::command]
+pub async fn get_excluded_paths(
+    db_state: State<'_, DbState>,
+) -> Result<Vec<ExcludedPathItem>, String> {
+    let rows = sqlx::query_as::<_, (String, Option<String>, i64)>(
+        "SELECT path, reason, COALESCE(created_at, 0) FROM excluded_paths ORDER BY created_at DESC, path",
+    )
+    .fetch_all(&db_state.pool)
+    .await
+    .map_err(|e| cmd_err("get_excluded_paths", e))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(path, reason, created_at)| ExcludedPathItem {
+            path,
+            reason,
+            created_at,
+        })
+        .collect())
 }
 
 #[tauri::command]

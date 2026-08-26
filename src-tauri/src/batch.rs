@@ -4,11 +4,12 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::{Pool, Sqlite};
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
@@ -55,6 +56,20 @@ struct OllamaTagsResponse {
 pub struct OllamaModel {
     pub name: String,
 }
+
+/// `/api/show` の応答。使うのは `capabilities` だけ。
+#[derive(Deserialize)]
+struct OllamaShowResponse {
+    #[serde(default)]
+    capabilities: Vec<String>,
+}
+
+/// モデル名 → `vision` を宣言しているか。
+///
+/// `/api/show` はモデル1件につき1リクエストで、モデル一覧の取得は設定画面を開くたびに走る
+/// （`fetch_ollama_models` のコメント参照）。同じ名前のモデルで宣言が変わることはまず無いので、
+/// プロセスが生きている間は使い回す。取り直しは `refresh` を渡したときだけ。
+static VISION_CAPABILITY_CACHE: Mutex<Option<HashMap<String, bool>>> = Mutex::new(None);
 
 /// 動画マルチフレーム解析の Ollama オプション。
 ///
@@ -146,7 +161,25 @@ pub fn normalize_tag_en(raw_tag: &str) -> String {
 const IMAGE_EXTENSIONS: &[&str] = &["jpg", "jpeg", "png", "webp", "bmp"];
 const VIDEO_EXTENSIONS: &[&str] = &["mp4", "mkv", "avi", "mov", "webm", "gif"];
 
+/// macOS が残すメタデータ。拡張子は本物の画像と同じなので名前で弾くしかない。
+/// - `._` 始まり: AppleDouble（先頭4バイトが 00 05 16 07 で、画像デコーダは開けない）
+/// - `__MACOSX/` 配下: mac で作った zip を Windows で展開したときに残るフォルダ
+pub fn is_macos_metadata(path: &Path) -> bool {
+    if path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("._"))
+    {
+        return true;
+    }
+    path.components()
+        .any(|c| c.as_os_str().to_str() == Some("__MACOSX"))
+}
+
 pub fn is_supported_file(path: &Path) -> bool {
+    if is_macos_metadata(path) {
+        return false;
+    }
     if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
         let ext_lower = ext.to_lowercase();
         IMAGE_EXTENSIONS.contains(&ext_lower.as_str())
@@ -188,14 +221,16 @@ pub fn generate_thumbnail(
         .to_lowercase();
 
     if IMAGE_EXTENSIONS.contains(&ext.as_str()) {
-        let img = image::open(file_path)?;
+        // 拡張子ではなく中身でデコーダを選ぶ。ここで image::open を使うと
+        // 中身JPEGの .png がサムネイル無しのまま残る（実測13件がこれだった）
+        let img = crate::image_io::decode_image(file_path)?;
         let resized = img.thumbnail(512, 512);
         resized.save(&thumb_path)?;
         Ok(thumb_path)
     } else if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
         // GIF等の処理、あるいはFFmpeg呼び出し
         if ext == "gif" {
-            if let Ok(img) = image::open(file_path) {
+            if let Ok(img) = crate::image_io::decode_image(file_path) {
                 let resized = img.thumbnail(512, 512);
                 resized.save(&thumb_path)?;
                 return Ok(thumb_path);
@@ -289,6 +324,94 @@ pub async fn fetch_ollama_models(base_url: &str) -> Result<Vec<String>> {
     let res = client.get(format!("{}/api/tags", base_url)).send().await?;
     let tags_res: OllamaTagsResponse = res.json().await?;
     Ok(tags_res.models.into_iter().map(|m| m.name).collect())
+}
+
+/// `/api/tags` のモデルのうち、`/api/show` の `capabilities` に `"vision"` を含むものを返す。
+///
+/// **宣言は「選択肢に出してよい」の根拠でしかない。** `gemma4:e4b` は vision を宣言していながら
+/// 解析の成否が大きくばらつく（2026-07-30 に tools/prompt-check で実測。同一12枚で LIGHT 6/12）。
+/// 呼び出し側でこれを「動く保証」として見せないこと。
+///
+/// `/api/show` が失敗したモデルは vision 無しとして扱うが、**キャッシュには入れない**
+/// （一時的な失敗を焼き付けず、次の取得でやり直せるようにするため）。
+pub async fn fetch_vision_capable_models(base_url: &str, refresh: bool) -> Result<Vec<String>> {
+    let names = fetch_ollama_models(base_url).await?;
+
+    if refresh {
+        if let Ok(mut cache) = VISION_CAPABILITY_CACHE.lock() {
+            *cache = None;
+        }
+    }
+
+    // キャッシュ済みと未取得をここで仕分けし、ロックは await をまたぐ前に手放す
+    let mut known: HashMap<String, bool> = HashMap::new();
+    let mut unknown: Vec<String> = Vec::new();
+    {
+        let guard = VISION_CAPABILITY_CACHE.lock().ok();
+        let cached = guard.as_ref().and_then(|c| c.as_ref());
+        for name in &names {
+            match cached.and_then(|c| c.get(name)) {
+                Some(&vision) => {
+                    known.insert(name.clone(), vision);
+                }
+                None => unknown.push(name.clone()),
+            }
+        }
+    }
+
+    if !unknown.is_empty() {
+        // 逐次で回すとモデル数に比例して設定画面が待たされる。
+        // 接続プールは Client が持つので、clone しても TCP 接続は使い回される。
+        let client = Client::builder()
+            .timeout(std::time::Duration::from_secs(10))
+            .build()
+            .unwrap_or_else(|_| Client::new());
+        let endpoint = format!("{}/api/show", base_url.trim_end_matches('/'));
+
+        let mut tasks = tokio::task::JoinSet::new();
+        for name in unknown {
+            let client = client.clone();
+            let endpoint = endpoint.clone();
+            tasks.spawn(async move {
+                let vision = match client
+                    .post(&endpoint)
+                    .json(&serde_json::json!({ "model": name }))
+                    .send()
+                    .await
+                {
+                    Ok(res) => res
+                        .json::<OllamaShowResponse>()
+                        .await
+                        .ok()
+                        .map(|show| show.capabilities.iter().any(|c| c == "vision")),
+                    Err(_) => None,
+                };
+                (name, vision)
+            });
+        }
+
+        let mut fetched: Vec<(String, bool)> = Vec::new();
+        while let Some(joined) = tasks.join_next().await {
+            if let Ok((name, Some(vision))) = joined {
+                fetched.push((name, vision));
+            }
+        }
+
+        if let Ok(mut guard) = VISION_CAPABILITY_CACHE.lock() {
+            let cache = guard.get_or_insert_with(HashMap::new);
+            for (name, vision) in &fetched {
+                cache.insert(name.clone(), *vision);
+            }
+        }
+        for (name, vision) in fetched {
+            known.insert(name, vision);
+        }
+    }
+
+    Ok(names
+        .into_iter()
+        .filter(|name| known.get(name).copied().unwrap_or(false))
+        .collect())
 }
 
 // Ollamaモデルの明示的アンロード（VRAM即時解放）
@@ -535,6 +658,13 @@ pub async fn run_scan_and_batch(
     // ファイルシステム上に存在しない孤立メディアの自動クリーンアップ
     let _ = cleanup_missing_media(&pool).await;
 
+    // 旧バージョンが登録した macOS メタデータ（__MACOSX/._*）の除去
+    let _ = cleanup_macos_metadata_media(&pool).await;
+
+    // ユーザーが解析対象から外したパス。ファイル1件ずつ問い合わせると
+    // 走査のたびに数千クエリになるので、先にまとめて読み込む
+    let excluded_paths = load_excluded_paths(&pool).await;
+
     // フォルダ登録 DB & 対象ファイルの集約
     let mut files_to_process = Vec::new();
     for folder in &target_folders {
@@ -549,7 +679,10 @@ pub async fn run_scan_and_batch(
                 return Ok(());
             }
             let path = entry.path();
-            if path.is_file() && is_supported_file(path) {
+            if path.is_file()
+                && is_supported_file(path)
+                && !excluded_paths.contains(&path.to_string_lossy().to_string())
+            {
                 files_to_process.push(path.to_path_buf());
             }
         }
@@ -726,6 +859,13 @@ pub async fn run_scan_and_batch(
         }
         query.fetch_all(&pool).await?
     };
+
+    // 除外されたパスは解析キューから外す。走査で弾いても、除外前に登録済みの
+    // レコードが pending のまま残っているため、ここでも落とす必要がある
+    let pending_items: Vec<_> = pending_items
+        .into_iter()
+        .filter(|(_, file_path, _, _, _)| !excluded_paths.contains(file_path))
+        .collect();
 
     let total_pending = pending_items.len();
     let mut consecutive_errors = 0;
@@ -904,7 +1044,14 @@ pub async fn run_scan_and_batch(
         } else {
             // 動画等でサムネイル生成失敗時は動画バイナリを送らずスキップ
             crate::logger::log_error(&format!("No thumbnail available for video {:?}, skipping Ollama analysis", path));
-            let _ = sqlx::query("UPDATE media SET analysis_status = 'failed', analysis_error = 'No thumbnail frame generated' WHERE id = ?1")
+            let _ = sqlx::query(
+                "UPDATE media SET analysis_status = 'failed', analysis_error = ?1,
+                 consecutive_failures = CASE WHEN analysis_error_kind = ?2 THEN consecutive_failures + 1 ELSE 1 END,
+                 analysis_error_kind = ?2
+                 WHERE id = ?3",
+            )
+                .bind(crate::llm::NO_VIDEO_FRAME_ERROR)
+                .bind(crate::llm::error_kind::NO_VIDEO_FRAME)
                 .bind(media_id)
                 .execute(&pool)
                 .await;
@@ -1017,7 +1164,7 @@ pub async fn run_scan_and_batch(
                 ));
 
 
-                sqlx::query("UPDATE media SET analysis_status = 'completed', analysis_error = NULL WHERE id = ?1")
+                sqlx::query("UPDATE media SET analysis_status = 'completed', analysis_error = NULL, analysis_error_kind = NULL, consecutive_failures = 0 WHERE id = ?1")
                     .bind(media_id)
                     .execute(&pool)
                     .await?;
@@ -1035,15 +1182,34 @@ pub async fn run_scan_and_batch(
             }
 
             Err(e) => {
-                consecutive_errors += 1;
                 let err_msg = e.to_string();
+                // そのファイル固有の入力エラーは、次のファイルなら成功する。
+                // サーバー障害用の連続エラー打ち切りに数えてしまうと、壊れた
+                // ファイルが3件並んでいるだけでスキャン全体が進まなくなる。
+                let error_kind = crate::llm::classify_error(&err_msg);
+                let input_error = crate::llm::is_media_input_error(&err_msg);
+                if !input_error {
+                    consecutive_errors += 1;
+                }
                 crate::logger::log_error(&format!(
-                    "[{}] Failed to analyze {}: {}",
-                    llm_provider.name(), file_name_short, err_msg
+                    "[{}] Failed to analyze {}: {}{}",
+                    llm_provider.name(),
+                    file_name_short,
+                    err_msg,
+                    if input_error { " (this file only; scan continues)" } else { "" }
                 ));
 
-                sqlx::query("UPDATE media SET analysis_status = 'failed', analysis_error = ?1 WHERE id = ?2")
+                // 同じ種別で連続して失敗した回数を数える。種別が変われば1に戻す。
+                // SQLite は SET の右辺を更新前の値で評価するので、同じ文の中で
+                // analysis_error_kind を比較しつつ上書きできる
+                sqlx::query(
+                    "UPDATE media SET analysis_status = 'failed', analysis_error = ?1,
+                     consecutive_failures = CASE WHEN analysis_error_kind = ?2 THEN consecutive_failures + 1 ELSE 1 END,
+                     analysis_error_kind = ?2
+                     WHERE id = ?3",
+                )
                     .bind(&err_msg)
+                    .bind(error_kind)
                     .bind(media_id)
                     .execute(&pool)
                     .await?;
@@ -1315,7 +1481,7 @@ pub async fn custom_analyze_video_media(
                     .await?;
             }
 
-            sqlx::query("UPDATE media SET analysis_status = 'completed', analysis_error = NULL, thumbnail_path = ?1 WHERE id = ?2")
+            sqlx::query("UPDATE media SET analysis_status = 'completed', analysis_error = NULL, analysis_error_kind = NULL, consecutive_failures = 0, thumbnail_path = ?1 WHERE id = ?2")
                 .bind(thumb_path.to_string_lossy().to_string())
                 .bind(media_id)
                 .execute(&mut *tx)
@@ -1367,7 +1533,7 @@ async fn analyze_multi_frame_with_ollama(
     let mut images_b64 = Vec::new();
 
     let encode_jpg = |path: &Path| -> Result<String> {
-        let img = image::open(path)?;
+        let img = crate::image_io::decode_image(path)?;
         let mut buffer = std::io::Cursor::new(Vec::new());
         img.write_to(&mut buffer, image::ImageFormat::Jpeg)?;
         Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buffer.into_inner()))
@@ -1567,7 +1733,7 @@ pub async fn reanalyze_single_media(
             .await?;
     }
 
-    sqlx::query("UPDATE media SET analysis_status = 'completed', analysis_error = NULL WHERE id = ?1")
+    sqlx::query("UPDATE media SET analysis_status = 'completed', analysis_error = NULL, analysis_error_kind = NULL, consecutive_failures = 0 WHERE id = ?1")
         .bind(media_id)
         .execute(&mut *tx)
         .await?;
@@ -1667,6 +1833,86 @@ pub async fn cleanup_missing_media(pool: &Pool<Sqlite>) -> Result<usize> {
     if deleted_count > 0 {
         crate::logger::log_info(&format!("Cleaned up {} missing media records", deleted_count));
     }
+
+    Ok(deleted_count)
+}
+
+/// ユーザーが解析対象から外したパスの集合を読み込む。
+///
+/// 読み取りに失敗した場合は空集合を返す。除外が効かずに解析されるのは
+/// やり直せるが、ここで失敗を伝播させるとスキャン自体が始まらなくなる。
+pub async fn load_excluded_paths(pool: &Pool<Sqlite>) -> HashSet<String> {
+    sqlx::query_scalar::<_, String>("SELECT path FROM excluded_paths")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .collect()
+}
+
+// 拡張子だけで対応判定していた頃に登録された macOS メタデータのレコードを除去する。
+// `__MACOSX/._*.png` は中身が AppleDouble なので解析すると必ず失敗し、
+// 解析キューの先頭に居座ってスキャン全体を止める原因になっていた。
+pub async fn cleanup_macos_metadata_media(pool: &Pool<Sqlite>) -> Result<usize> {
+    let all_media = sqlx::query_as::<_, (i64, String, String)>(
+        "SELECT id, file_path, thumbnail_path FROM media"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut ids_to_delete = Vec::new();
+    let mut thumbs_to_delete = Vec::new();
+
+    for (id, file_path_str, thumb_path_str) in all_media {
+        if is_macos_metadata(Path::new(&file_path_str)) {
+            ids_to_delete.push(id);
+            if !thumb_path_str.is_empty() {
+                thumbs_to_delete.push(thumb_path_str);
+            }
+        }
+    }
+
+    if ids_to_delete.is_empty() {
+        return Ok(0);
+    }
+
+    for thumb_path in thumbs_to_delete {
+        let p = Path::new(&thumb_path);
+        if p.exists() {
+            let _ = fs::remove_file(p);
+        }
+    }
+
+    let deleted_count = ids_to_delete.len();
+    let mut tx = pool.begin().await?;
+    for chunk in ids_to_delete.chunks(500) {
+        let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+        let query_tags = format!("DELETE FROM media_tags WHERE media_id IN ({})", placeholders);
+        let mut q_tags = sqlx::query(&query_tags);
+        for id in chunk {
+            q_tags = q_tags.bind(id);
+        }
+        q_tags.execute(&mut *tx).await?;
+
+        let query_media = format!("DELETE FROM media WHERE id IN ({})", placeholders);
+        let mut q_media = sqlx::query(&query_media);
+        for id in chunk {
+            q_media = q_media.bind(id);
+        }
+        q_media.execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+
+    // 浮いたタグの自動削除
+    let _ = sqlx::query("DELETE FROM tags WHERE is_category = 0 AND id NOT IN (SELECT DISTINCT tag_id FROM media_tags)")
+        .execute(pool)
+        .await;
+
+    crate::logger::log_info(&format!(
+        "Removed {} macOS metadata records (__MACOSX/ or '._' prefixed) from database",
+        deleted_count
+    ));
 
     Ok(deleted_count)
 }
@@ -1846,6 +2092,33 @@ async fn cleanup_and_detect_moves(
 mod tests {
     use super::*;
     use std::time::{Duration, Instant};
+
+    /// macOS のメタデータは拡張子が本物の画像と同じなので、拡張子だけで
+    /// 判定すると解析キューに入り込む。実際に `__MACOSX/._全統合版.png`
+    /// （中身は AppleDouble）が登録され、スキャンを止めた。
+    #[test]
+    fn macos_metadata_files_are_not_supported_media() {
+        for junk in [
+            r"D:\pic\__MACOSX\葉陰ユウさん_20240104\._全統合版.png",
+            r"D:\pic\._単体_エフェクト有.png",
+            r"D:\pic\__MACOSX\clip.mp4",
+        ] {
+            assert!(
+                !is_supported_file(Path::new(junk)),
+                "解析対象から外れていない: {junk}"
+            );
+        }
+
+        // 名前が似ているだけの通常ファイルは巻き添えにしない
+        for ok in [
+            r"D:\pic\葉陰ユウさん_20240104\全統合版.png",
+            r"D:\pic\_単体.png",
+            r"D:\pic\a._b.png",
+            r"D:\__MACOSX_backup\photo.png",
+        ] {
+            assert!(is_supported_file(Path::new(ok)), "誤って除外された: {ok}");
+        }
+    }
 
     /// 打ち切られた応答を「JSONが壊れている」と誤診しないことの回帰テスト。
     /// 途切れた thinking を代替に使うと、原因が生成上限であることが隠れる。

@@ -49,6 +49,9 @@ function buildMedia(): MediaItem[] {
         thumbnail_path: `mock-asset://${fileName}`,
         file_size: 200_000 + fileIndex * 1234,
         analysis_status: 'completed',
+        consecutive_failures: 0,
+        needs_attention: false,
+        excluded: false,
         categories: [def.category],
         tags: isDescriptiveSample ? [...basicTags, ...SAMPLE_DESCRIPTIVE_TAGS] : basicTags,
       });
@@ -66,6 +69,9 @@ function buildMedia(): MediaItem[] {
       thumbnail_path: `mock-asset://${fileName}`,
       file_size: 180_000 + fileIndex * 999,
       analysis_status: 'pending',
+      consecutive_failures: 0,
+      needs_attention: false,
+      excluded: false,
       categories: [],
       tags: [],
     });
@@ -83,6 +89,32 @@ function buildMedia(): MediaItem[] {
       file_size: 210_000,
       analysis_status: 'failed',
       analysis_error: 'Ollama への接続がタイムアウトしました(モックデータ)',
+      analysis_error_kind: 'server_unavailable',
+      consecutive_failures: 1,
+      needs_attention: false,
+      excluded: false,
+      categories: [],
+      tags: [],
+    });
+    fileIndex++;
+  }
+
+  // 恒久失敗の2件 — 「要確認」のグループ表示と仕分け操作の確認用。
+  // 実物と同じく、拡張子が .png で中身が別物のファイルを想定している
+  for (let i = 0; i < 2; i++) {
+    const fileName = `mock_broken_${fileIndex}.png`;
+    items.push({
+      id: id++,
+      file_path: `mock-asset://${fileName}`,
+      parent_folder: 'Misc',
+      thumbnail_path: '',
+      file_size: 176,
+      analysis_status: 'failed',
+      analysis_error: `Not a decodable image: D:/mock/${fileName} (Format error decoding Png: Invalid PNG signature.)`,
+      analysis_error_kind: 'not_decodable',
+      consecutive_failures: 2,
+      needs_attention: true,
+      excluded: false,
       categories: [],
       tags: [],
     });
@@ -146,6 +178,10 @@ export const MOCK_SETTINGS: Record<string, string> = {
 // qwen3-vl:8b-instruct のみインストール済みにして、他の推奨カード（要DL）と
 // 混在した表示を mock モードでも確認できるようにする
 export const MOCK_AVAILABLE_MODELS: string[] = ['qwen3-vl:8b-instruct', 'qwen2.5:7b'];
+
+// vision を宣言しているのは片方だけ。VLM プルダウンの絞り込みと
+// 「vision 未宣言のモデルも表示」トグルを mock モードで確認できるようにする
+export const MOCK_VISION_MODELS: string[] = ['qwen3-vl:8b-instruct'];
 
 export const MOCK_VRAM_GB = 12.0;
 

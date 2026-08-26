@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use async_trait::async_trait;
 use anyhow::{anyhow, Result};
@@ -6,7 +5,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::traits::LlmProvider;
-use super::{get_vlm_prompt, parse_analysis_result, AnalysisResult, PromptConfig};
+use super::{
+    get_vlm_prompt, parse_analysis_result, AnalysisResult, PromptConfig, IMAGE_ENCODE_ERROR,
+};
 
 #[derive(Serialize)]
 struct ImageSource {
@@ -71,22 +72,19 @@ impl ClaudeProvider {
     }
 
     fn prepare_base64_image(image_path: &Path) -> Result<String> {
-        match image::open(image_path) {
-            Ok(img) => {
-                let rgb_img = img.to_rgb8();
-                let mut buffer = std::io::Cursor::new(Vec::new());
-                if rgb_img.write_to(&mut buffer, image::ImageFormat::Jpeg).is_ok() {
-                    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buffer.into_inner()))
-                } else {
-                    let img_bytes = fs::read(image_path)?;
-                    Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
-                }
-            }
-            Err(_) => {
-                let img_bytes = fs::read(image_path)?;
-                Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
-            }
-        }
+        // デコードできないファイルを生バイトのまま送らないこと。送るとAPI側が
+        // 400 を返し、ファイル1件の問題がスキャン全体の中断に化ける。
+        // 拡張子ではなく中身でデコーダを選ぶ理由は decode_image のコメントを参照。
+        let img = crate::image_io::decode_image(image_path)?;
+        let rgb_img = img.to_rgb8();
+        let mut buffer = std::io::Cursor::new(Vec::new());
+        rgb_img
+            .write_to(&mut buffer, image::ImageFormat::Jpeg)
+            .map_err(|e| anyhow!("{}: {} ({})", IMAGE_ENCODE_ERROR, image_path.display(), e))?;
+        Ok(base64::Engine::encode(
+            &base64::engine::general_purpose::STANDARD,
+            buffer.into_inner(),
+        ))
     }
 }
 

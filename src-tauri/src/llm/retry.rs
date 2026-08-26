@@ -39,31 +39,17 @@ impl RetryingLlmProvider {
     }
 
     fn is_rate_limit(err_msg: &str) -> bool {
-        err_msg.contains("429")
-            || err_msg.contains("Quota Exceeded")
-            || err_msg.contains("Rate Limit")
-            || err_msg.contains("RESOURCE_EXHAUSTED")
+        super::is_rate_limit(err_msg)
     }
 
     /// コンテキスト枯渇はリトライしても同じ結果になるため、一時障害として扱わない。
     /// （OllamaProvider 側で num_ctx を拡張して再試行済み）
     fn is_context_exhausted(err_msg: &str) -> bool {
-        err_msg.contains("Ollama context exhausted")
+        super::is_context_exhausted(err_msg)
     }
 
     fn is_transient_server_error(err_msg: &str) -> bool {
-        err_msg.contains("503")
-            || err_msg.contains("500")
-            || err_msg.contains("502")
-            || err_msg.contains("504")
-            || err_msg.contains("Service Unavailable")
-            || err_msg.contains("UNAVAILABLE")
-            || err_msg.contains("Internal Error")
-            || err_msg.contains("high demand")
-            || err_msg.contains("overloaded")
-            || err_msg.contains("Overloaded")
-            || err_msg.contains("empty response")
-            || err_msg.contains("Failed to parse AnalysisResult JSON")
+        super::is_transient_server_error(err_msg)
     }
 
     /// クォータ復旧待ち時間を大きく確保するバックオフ秒数の計算 (429 Rate Limit 用)

@@ -26,6 +26,120 @@ pub struct AnalysisResult {
     pub descriptive_tags: Vec<TagPair>,
 }
 
+/// 画像として開けなかったファイルのエラー文言。
+pub const NOT_AN_IMAGE_ERROR: &str = "Not a decodable image";
+
+/// JPEG への再エンコードに失敗した場合のエラー文言。
+pub const IMAGE_ENCODE_ERROR: &str = "Image encoding failed";
+
+/// 動画からサムネイル用フレームを取り出せなかった場合のエラー文言。
+pub const NO_VIDEO_FRAME_ERROR: &str = "No thumbnail frame generated";
+
+/// 失敗の種別コード。`media.analysis_error_kind` に保存し、失敗一覧の
+/// グループ化に使う。**DBに残る値なので、既存のコードは改名しないこと。**
+///
+/// ここに列挙されていない失敗は必ず `UNKNOWN` に落ちる。種別を事前に
+/// 数え上げきる前提は置かない。未知は UI 側でエラー文面ごとに束ねる。
+pub mod error_kind {
+    pub const NOT_DECODABLE: &str = "not_decodable";
+    pub const ENCODE_FAILED: &str = "encode_failed";
+    pub const IMAGE_REJECTED: &str = "image_rejected";
+    pub const NO_VIDEO_FRAME: &str = "no_video_frame";
+    pub const CONTEXT_EXHAUSTED: &str = "context_exhausted";
+    pub const RATE_LIMIT: &str = "rate_limit";
+    pub const SERVER_UNAVAILABLE: &str = "server_unavailable";
+    pub const UNKNOWN: &str = "unknown";
+}
+
+/// クォータ超過・レート制限か。
+pub fn is_rate_limit(err_msg: &str) -> bool {
+    err_msg.contains("429")
+        || err_msg.contains("Quota Exceeded")
+        || err_msg.contains("Rate Limit")
+        || err_msg.contains("RESOURCE_EXHAUSTED")
+}
+
+/// コンテキスト枯渇はリトライしても同じ結果になるため、一時障害として扱わない。
+/// （OllamaProvider 側で num_ctx を拡張して再試行済み）
+pub fn is_context_exhausted(err_msg: &str) -> bool {
+    err_msg.contains("Ollama context exhausted")
+}
+
+/// サーバー側の一時障害か。
+pub fn is_transient_server_error(err_msg: &str) -> bool {
+    err_msg.contains("503")
+        || err_msg.contains("500")
+        || err_msg.contains("502")
+        || err_msg.contains("504")
+        || err_msg.contains("Service Unavailable")
+        || err_msg.contains("UNAVAILABLE")
+        || err_msg.contains("Internal Error")
+        || err_msg.contains("high demand")
+        || err_msg.contains("overloaded")
+        || err_msg.contains("Overloaded")
+        || err_msg.contains("empty response")
+        || err_msg.contains("Failed to parse AnalysisResult JSON")
+}
+
+/// エラー文言から種別コードを求める。判定は文字列一致に頼るので、
+/// 対象の文言は必ず上の定数から組み立てること。
+pub fn classify_error(err_msg: &str) -> &'static str {
+    // ファイル個別の問題を先に見る。サーバー側の判定は数字の部分一致
+    // （"500" 等）を含むため、後に置かないと巻き込む
+    if err_msg.contains(NOT_AN_IMAGE_ERROR) {
+        error_kind::NOT_DECODABLE
+    } else if err_msg.contains(IMAGE_ENCODE_ERROR) {
+        error_kind::ENCODE_FAILED
+    } else if err_msg.contains("Failed to load image or audio file") {
+        // Ollama が受け取った画像ペイロードを解釈できなかったときの応答
+        error_kind::IMAGE_REJECTED
+    } else if err_msg.contains(NO_VIDEO_FRAME_ERROR) {
+        error_kind::NO_VIDEO_FRAME
+    } else if is_context_exhausted(err_msg) {
+        error_kind::CONTEXT_EXHAUSTED
+    } else if is_rate_limit(err_msg) {
+        error_kind::RATE_LIMIT
+    } else if is_transient_server_error(err_msg) {
+        error_kind::SERVER_UNAVAILABLE
+    } else {
+        error_kind::UNKNOWN
+    }
+}
+
+/// その種別が「再試行しても直らない」ものか。
+/// `UNKNOWN` はここでは false を返す。未知を恒久失敗と決めつけず、
+/// 連続失敗回数で降格させる（判定は UI 側）。
+pub fn is_permanent_kind(kind: &str) -> bool {
+    kind == error_kind::NOT_DECODABLE
+        || kind == error_kind::ENCODE_FAILED
+        || kind == error_kind::IMAGE_REJECTED
+        || kind == error_kind::NO_VIDEO_FRAME
+        || kind == error_kind::CONTEXT_EXHAUSTED
+}
+
+/// 未知のエラーを「要確認」に降格させる連続失敗回数。
+/// 1回目は一時障害の可能性を残し、同じエラーで再度失敗したら降格させる。
+pub const UNKNOWN_FAILURE_ATTENTION_THRESHOLD: i64 = 2;
+
+/// 再試行しても直らない見込みで、ユーザーの判断を要するか。
+///
+/// この判定はフロントに複製しない。閾値も恒久種別の一覧もここだけに置き、
+/// 結果だけを `MediaItem.needs_attention` として返す。
+pub fn needs_attention(kind: &str, consecutive_failures: i64) -> bool {
+    is_permanent_kind(kind)
+        || (kind == error_kind::UNKNOWN
+            && consecutive_failures >= UNKNOWN_FAILURE_ATTENTION_THRESHOLD)
+}
+
+/// そのファイル固有の入力エラーか（＝別のファイルなら成功しうるか）を判定する。
+/// サーバー障害と区別し、スキャン全体を打ち切る連続エラー数に数えないために使う。
+pub fn is_media_input_error(err_msg: &str) -> bool {
+    let kind = classify_error(err_msg);
+    kind == error_kind::NOT_DECODABLE
+        || kind == error_kind::ENCODE_FAILED
+        || kind == error_kind::IMAGE_REJECTED
+}
+
 /// LLMからの生のテキストレスポンスから JSON 部分を抽出して AnalysisResult にパースする堅牢なヘルパー関数
 pub fn parse_analysis_result(raw_response: &str) -> anyhow::Result<AnalysisResult> {
     let clean = raw_response.trim();
@@ -340,6 +454,73 @@ mod tests {
 
     fn config(granularity: TagGranularity, force_detailed: bool) -> PromptConfig {
         PromptConfig { granularity, force_detailed }
+    }
+
+    /// ファイル1件の入力エラーと、サーバー側の障害を取り違えないこと。
+    /// 取り違えると前者で連続エラー打ち切りが働き、スキャンが先に進まない。
+    #[test]
+    fn per_file_input_errors_are_distinguished_from_server_failures() {
+        let not_an_image = format!("{}: D:/pic/._a.png (invalid PNG signature)", NOT_AN_IMAGE_ERROR);
+        assert!(is_media_input_error(&not_an_image));
+        assert!(is_media_input_error(&format!("{}: D:/pic/a.png (io)", IMAGE_ENCODE_ERROR)));
+        assert!(is_media_input_error(
+            r#"Ollama API Error (400 Bad Request): {"error":{"message":"Failed to load image or audio file"}}"#
+        ));
+
+        // サーバー障害・モデル未取得は打ち切りの対象のまま
+        assert!(!is_media_input_error("Ollama API Error (503 Service Unavailable): "));
+        assert!(!is_media_input_error("Ollama API Error (404 Not Found): model 'x' not found"));
+        assert!(!is_media_input_error("error sending request for url (http://localhost:11434/api/generate)"));
+    }
+
+    /// 種別コードは DB に保存され、失敗一覧のグループ化キーになる。
+    /// ファイル個別の判定はサーバー側の判定より先に効くこと（後者は "500" の
+    /// ような数字の部分一致を含むので、順序を崩すと巻き込む）。
+    #[test]
+    fn each_error_lands_on_its_kind() {
+        let cases: &[(&str, &str)] = &[
+            (
+                "Not a decodable image: D:/pic/a.png (Format error decoding Png: Invalid PNG signature.)",
+                error_kind::NOT_DECODABLE,
+            ),
+            ("Image encoding failed: D:/pic/a.png (io)", error_kind::ENCODE_FAILED),
+            (
+                r#"Ollama API Error (400 Bad Request): {"error":{"message":"Failed to load image or audio file"}}"#,
+                error_kind::IMAGE_REJECTED,
+            ),
+            ("No thumbnail frame generated", error_kind::NO_VIDEO_FRAME),
+            ("Ollama context exhausted at num_ctx=32768", error_kind::CONTEXT_EXHAUSTED),
+            ("Gemini API Error (429): Quota Exceeded", error_kind::RATE_LIMIT),
+            ("Ollama API Error (503 Service Unavailable): ", error_kind::SERVER_UNAVAILABLE),
+            ("Failed to parse AnalysisResult JSON", error_kind::SERVER_UNAVAILABLE),
+        ];
+        for (msg, expected) in cases {
+            assert_eq!(classify_error(msg), *expected, "分類が違う: {msg}");
+        }
+
+        // 知らないエラーは必ず UNKNOWN に落ちる。種別を数え上げきる前提は置かない
+        assert_eq!(
+            classify_error("Ollama API Error (404 Not Found): model 'x' not found"),
+            error_kind::UNKNOWN
+        );
+        assert_eq!(classify_error("something nobody has seen yet"), error_kind::UNKNOWN);
+    }
+
+    /// 未知のエラーを恒久失敗と決めつけないこと。決めつけると、Ollama 側の
+    /// 新しい一時エラーが「直らないもの」として再試行対象から消える。
+    #[test]
+    fn unknown_errors_are_demoted_only_after_repeating() {
+        assert!(!needs_attention(error_kind::UNKNOWN, 1), "1回目で降格している");
+        assert!(needs_attention(error_kind::UNKNOWN, 2), "2回目で降格していない");
+        assert!(needs_attention(error_kind::UNKNOWN, 7));
+
+        // 恒久種別は初回から要確認
+        assert!(needs_attention(error_kind::NOT_DECODABLE, 1));
+        assert!(needs_attention(error_kind::NO_VIDEO_FRAME, 1));
+
+        // 一時障害は何回続いても要確認にしない。Ollama を起動し直せば直る
+        assert!(!needs_attention(error_kind::SERVER_UNAVAILABLE, 9));
+        assert!(!needs_attention(error_kind::RATE_LIMIT, 9));
     }
 
     #[test]

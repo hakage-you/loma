@@ -828,8 +828,13 @@ async fn load_media_items(
     }
     let ids_str = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
 
-    let rows = sqlx::query_as::<_, (i64, String, String, String, i64, String, Option<String>)>(&format!(
-        "SELECT id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error
+    let rows = sqlx::query_as::<
+        _,
+        (i64, String, String, String, i64, String, Option<String>, Option<String>, i64, i64),
+    >(&format!(
+        "SELECT id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error,
+                analysis_error_kind, consecutive_failures,
+                EXISTS(SELECT 1 FROM excluded_paths e WHERE e.path = media.file_path)
          FROM media WHERE id IN ({})",
         ids_str
     ))
@@ -859,23 +864,47 @@ async fn load_media_items(
 
     Ok(rows
         .into_iter()
-        .map(|(id, file_path, parent_folder, thumbnail_path, file_size, analysis_status, analysis_error)| {
-            let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
-            (
+        .map(
+            |(
                 id,
-                crate::commands::MediaItem {
+                file_path,
+                parent_folder,
+                thumbnail_path,
+                file_size,
+                analysis_status,
+                analysis_error,
+                analysis_error_kind,
+                consecutive_failures,
+                excluded_flag,
+            )| {
+                let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
+                let needs_attention = analysis_status == "failed"
+                    && crate::llm::needs_attention(
+                        analysis_error_kind
+                            .as_deref()
+                            .unwrap_or(crate::llm::error_kind::UNKNOWN),
+                        consecutive_failures,
+                    );
+                (
                     id,
-                    file_path,
-                    parent_folder,
-                    thumbnail_path,
-                    file_size,
-                    analysis_status,
-                    analysis_error,
-                    categories,
-                    tags,
-                },
-            )
-        })
+                    crate::commands::MediaItem {
+                        id,
+                        file_path,
+                        parent_folder,
+                        thumbnail_path,
+                        file_size,
+                        analysis_status,
+                        analysis_error,
+                        analysis_error_kind,
+                        consecutive_failures,
+                        needs_attention,
+                        excluded: excluded_flag != 0,
+                        categories,
+                        tags,
+                    },
+                )
+            },
+        )
         .collect())
 }
 
