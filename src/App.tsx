@@ -14,11 +14,12 @@ import { TagManagementModal } from './components/TagManagementModal';
 import { invoke } from '@tauri-apps/api/core';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import { MediaItem, OllamaPullProgressPayload, SearchGroup, TagFilterNode } from './types';
-import { Sparkles, FolderPlus, RefreshCw, Tags, HardDrive, Settings, Play, Pause, StopCircle, Loader2 } from 'lucide-react';
+import { Sparkles, FolderPlus, RefreshCw, Tags, HardDrive, Settings, Play, Pause, StopCircle, Loader2, AlertTriangle } from 'lucide-react';
 import { I18nProvider, useTranslation } from './contexts/I18nContext';
 import { AboutModal } from './components/AboutModal';
 import { SearchModal } from './components/SearchModal';
 import { SpectrumModal } from './components/SpectrumModal';
+import { FailureTriageModal } from './components/FailureTriageModal';
 import { STATUS_TAG_INSUFFICIENT } from './constants/spectrum';
 
 function AppContent() {
@@ -51,6 +52,10 @@ function AppContent() {
     openFile,
     openFolder,
     retryMedia,
+    excludeMedia,
+    deleteMedia,
+    unexcludePaths,
+    getExcludedPaths,
     renameTag,
     mergeTags,
     addTagToMedia,
@@ -103,6 +108,7 @@ function AppContent() {
   const [gridColumns, setGridColumns] = useState<number>(5);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isFolderManagerOpen, setIsFolderManagerOpen] = useState(false);
+  const [isFailureTriageOpen, setIsFailureTriageOpen] = useState(false);
   const [isLogsModalOpen, setIsLogsModalOpen] = useState(false);
   const [isLogConsoleOpen, setIsLogConsoleOpen] = useState(false);
   const [isTagManagementOpen, setIsTagManagementOpen] = useState(false);
@@ -252,7 +258,16 @@ function AppContent() {
   };
 
   const failedMediaItems = media.filter((m) => m.analysis_status === 'failed');
+  /** 再試行しても直らない見込みのもの。判定は Rust の `llm::needs_attention` が返す */
+  const needsAttentionCount = failedMediaItems.filter((m) => m.needs_attention).length;
+
+  // 失敗をまとめて再試行するのは、直らないものが混ざっていない場合だけにする。
+  // 混ざっていると同じ失敗を延々と繰り返し、リストからも消えない
   const handleRetryAllFailed = async () => {
+    if (needsAttentionCount > 0) {
+      setIsFailureTriageOpen(true);
+      return;
+    }
     const failedIds = failedMediaItems.map((m) => m.id);
     if (failedIds.length > 0) {
       await retryMedia(failedIds);
@@ -358,12 +373,22 @@ function AppContent() {
 
             {!scanning && failedMediaItems.length > 0 && (
               <button
-                onClick={handleRetryAllFailed}
-                className="flex items-center gap-1.5 px-2.5 py-1.5 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-medium transition cursor-pointer"
+                onClick={() => setIsFailureTriageOpen(true)}
+                className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-xs font-medium transition cursor-pointer border ${
+                  needsAttentionCount > 0
+                    ? 'bg-red-600/20 hover:bg-red-600/30 text-red-300 border-red-500/30'
+                    : 'bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border-amber-500/30'
+                }`}
                 title={t('app.label_title_retry', 'Retry failed items')}
               >
-                <RefreshCw className="w-3.5 h-3.5" />
-                <span>{t('search.label_retry', '再試行')} ({failedMediaItems.length})</span>
+                {needsAttentionCount > 0 ? (
+                  <AlertTriangle className="w-3.5 h-3.5" />
+                ) : (
+                  <RefreshCw className="w-3.5 h-3.5" />
+                )}
+                <span>
+                  {t('failure_modal.label_tab_failed', '解析失敗')} ({failedMediaItems.length})
+                </span>
               </button>
             )}
           </div>
@@ -514,6 +539,20 @@ function AppContent() {
           setSpectrumBase(null);
           setSelectedStatus(STATUS_TAG_INSUFFICIENT);
         }}
+      />
+
+      {/* 解析できなかったファイルの仕分け */}
+      <FailureTriageModal
+        open={isFailureTriageOpen}
+        failedItems={failedMediaItems}
+        scanning={scanning}
+        onClose={() => setIsFailureTriageOpen(false)}
+        onRetry={retryMedia}
+        onExclude={excludeMedia}
+        onDelete={deleteMedia}
+        onUnexclude={unexcludePaths}
+        onLoadExcluded={getExcludedPaths}
+        onOpenFolder={openFolder}
       />
 
       {/* Folder Manager Modal */}

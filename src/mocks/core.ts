@@ -48,8 +48,57 @@ function matchesFilters(item: MediaItem, args: Record<string, any>): boolean {
   return true;
 }
 
+/** 解析対象から外したパス（モック側の `excluded_paths`） */
+const excludedState: { path: string; reason?: string | null; created_at: number }[] = [];
+
 const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_media: (args) => mediaState.filter((item) => matchesFilters(item, args)),
+  get_excluded_paths: () => excludedState,
+  exclude_media: (args) => {
+    const ids: number[] = args.mediaIds ?? [];
+    let n = 0;
+    for (const item of mediaState.filter((m) => ids.includes(m.id))) {
+      if (excludedState.some((e) => e.path === item.file_path)) continue;
+      excludedState.push({
+        path: item.file_path,
+        reason: args.reason ?? null,
+        created_at: Math.floor(Date.now() / 1000),
+      });
+      item.excluded = true;
+      n++;
+    }
+    return n;
+  },
+  delete_media: (args) => {
+    const ids: number[] = args.mediaIds ?? [];
+    const targets = mediaState.filter((m) => ids.includes(m.id));
+    for (const item of targets) {
+      if (!excludedState.some((e) => e.path === item.file_path)) {
+        excludedState.push({
+          path: item.file_path,
+          reason: args.reason ?? null,
+          created_at: Math.floor(Date.now() / 1000),
+        });
+      }
+      const at = mediaState.indexOf(item);
+      if (at >= 0) mediaState.splice(at, 1);
+    }
+    return targets.length;
+  },
+  unexclude_paths: (args) => {
+    const paths: string[] = args.paths ?? [];
+    let n = 0;
+    for (const path of paths) {
+      const at = excludedState.findIndex((e) => e.path === path);
+      if (at >= 0) {
+        excludedState.splice(at, 1);
+        n++;
+      }
+      const item = mediaState.find((m) => m.file_path === path);
+      if (item) item.excluded = false;
+    }
+    return n;
+  },
   get_all_tags: () => tagState,
   get_parent_folders: () => MOCK_PARENT_FOLDERS,
   get_scan_folders: () => scanFoldersState,

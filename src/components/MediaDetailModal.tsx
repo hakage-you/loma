@@ -193,6 +193,17 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       <AlertTriangle className="w-3.5 h-3.5" /> {t('sidebar.label_status_failed', '解析失敗')}
                     </span>
                   )}
+                  {item.needs_attention && (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-red-600/20 text-red-300 border border-red-500/30 rounded-full text-xs font-semibold">
+                      <AlertTriangle className="w-3.5 h-3.5" />{' '}
+                      {t('failure_modal.label_needs_attention', '要確認')}
+                    </span>
+                  )}
+                  {item.excluded && (
+                    <span className="flex items-center gap-1 px-2.5 py-0.5 bg-slate-600/30 text-slate-300 border border-slate-500/30 rounded-full text-xs font-semibold">
+                      {t('failure_modal.label_excluded_badge', '解析対象外')}
+                    </span>
+                  )}
                 </div>
               </div>
               <button
@@ -442,9 +453,27 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             </div>
           )}
 
+          {/* 失敗の理由。DBには入っていたのに画面のどこにも出ていなかったので、
+              ユーザーは再試行を押す以外に判断のしようがなかった */}
+          {item.analysis_status === 'failed' && item.analysis_error && (
+            <div className="rounded-xl border border-rose-500/25 bg-rose-950/25 p-3 space-y-1">
+              <p className="text-[11px] text-rose-200/90 break-all font-mono">
+                {item.analysis_error}
+              </p>
+              {item.needs_attention && (
+                <p className="text-[11px] text-slate-300">
+                  {t(
+                    'failure_modal.needs_attention_hint',
+                    '再試行しても同じ結果になる見込みのファイルです。ファイル自体が壊れているか、対応していない形式の可能性があります。',
+                  )}
+                </p>
+              )}
+            </div>
+          )}
+
           {/* Action Buttons */}
           <div className="flex items-center justify-between gap-3 pt-3 border-t border-white/10">
-            {item.analysis_status === 'failed' && (
+            {item.analysis_status === 'failed' && !item.needs_attention && (
               <button
                 onClick={() => onRetry(item.id)}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-amber-900/20"

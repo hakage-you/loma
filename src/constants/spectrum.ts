@@ -17,6 +17,12 @@ export const MIN_BASIC_TAGS = 3;
 /** クライアント側だけで解決する疑似ステータス（`analysis_status` には存在しない） */
 export const STATUS_TAG_INSUFFICIENT = 'tag_insufficient';
 
+/**
+ * ユーザーが解析対象から外したメディアの疑似ステータス。
+ * 実体は `excluded_paths` テーブルで、`analysis_status` には現れない。
+ */
+export const STATUS_EXCLUDED = 'excluded';
+
 /** そのメディアが basic タグ不足で類似検索の対象外かどうか */
 export function isTagInsufficient(item: { analysis_status: string; tags: { kind: string }[] }): boolean {
   if (item.analysis_status !== 'completed') return false;

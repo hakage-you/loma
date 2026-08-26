@@ -1,4 +1,3 @@
-use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use async_trait::async_trait;
@@ -7,7 +6,9 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
 use super::traits::LlmProvider;
-use super::{get_vlm_prompt_info, parse_analysis_result, AnalysisResult, PromptConfig};
+use super::{
+    get_vlm_prompt_info, parse_analysis_result, AnalysisResult, PromptConfig, IMAGE_ENCODE_ERROR,
+};
 
 /// num_ctx 自動拡張の上限。これ以上はVRAM消費が現実的でないため打ち切る。
 const NUM_CTX_HARD_CAP: usize = 32768;
@@ -157,45 +158,43 @@ impl OllamaProvider {
 
 /// 画像を（必要なら縮小して）JPEG base64 化する。CPU バウンドな同期処理。
 fn prepare_base64_image(image_path: &Path, max_image_edge: u32) -> Result<String> {
-    match image::open(image_path) {
-        Ok(img) => {
-            // 長辺を max_image_edge まで縮小してから送る。
-            // 12MP のスマホ写真をそのまま送ると画像だけで約4000トークンを消費し、
-            // 生成に使えるコンテキストを圧迫するため。
-            let img = if max_image_edge > 0 {
-                let (w, h) = (img.width(), img.height());
-                if w.max(h) > max_image_edge {
-                    let resized = img.resize(
-                        max_image_edge,
-                        max_image_edge,
-                        image::imageops::FilterType::Triangle,
-                    );
-                    crate::logger::log_debug(&format!(
-                        "[Ollama Debug] Downscaled image {}x{} -> {}x{}",
-                        w, h, resized.width(), resized.height()
-                    ));
-                    resized
-                } else {
-                    img
-                }
-            } else {
-                img
-            };
+    // デコードできないファイルを生バイトのまま送らないこと。送ると Ollama が
+    // 400 Bad Request を返し、ファイル1件の問題がスキャン全体の中断に化ける。
+    // 拡張子ではなく中身でデコーダを選ぶ理由は decode_image のコメントを参照。
+    let img = crate::image_io::decode_image(image_path)?;
 
-            let rgb_img = img.to_rgb8();
-            let mut buffer = std::io::Cursor::new(Vec::new());
-            if rgb_img.write_to(&mut buffer, image::ImageFormat::Jpeg).is_ok() {
-                Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, buffer.into_inner()))
-            } else {
-                let img_bytes = fs::read(image_path)?;
-                Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
-            }
+    // 長辺を max_image_edge まで縮小してから送る。
+    // 12MP のスマホ写真をそのまま送ると画像だけで約4000トークンを消費し、
+    // 生成に使えるコンテキストを圧迫するため。
+    let img = if max_image_edge > 0 {
+        let (w, h) = (img.width(), img.height());
+        if w.max(h) > max_image_edge {
+            let resized = img.resize(
+                max_image_edge,
+                max_image_edge,
+                image::imageops::FilterType::Triangle,
+            );
+            crate::logger::log_debug(&format!(
+                "[Ollama Debug] Downscaled image {}x{} -> {}x{}",
+                w, h, resized.width(), resized.height()
+            ));
+            resized
+        } else {
+            img
         }
-        Err(_) => {
-            let img_bytes = fs::read(image_path)?;
-            Ok(base64::Engine::encode(&base64::engine::general_purpose::STANDARD, img_bytes))
-        }
-    }
+    } else {
+        img
+    };
+
+    let rgb_img = img.to_rgb8();
+    let mut buffer = std::io::Cursor::new(Vec::new());
+    rgb_img
+        .write_to(&mut buffer, image::ImageFormat::Jpeg)
+        .map_err(|e| anyhow!("{}: {} ({})", IMAGE_ENCODE_ERROR, image_path.display(), e))?;
+    Ok(base64::Engine::encode(
+        &base64::engine::general_purpose::STANDARD,
+        buffer.into_inner(),
+    ))
 }
 
 impl OllamaProvider {

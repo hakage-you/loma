@@ -14,8 +14,26 @@ export interface MediaItem {
   file_size: number;
   analysis_status: 'pending' | 'completed' | 'failed';
   analysis_error?: string;
+  /** 失敗の種別コード。Rust の `llm::error_kind` と1対1。未知は 'unknown' */
+  analysis_error_kind?: string | null;
+  /** 同じ種別で連続して失敗した回数 */
+  consecutive_failures: number;
+  /**
+   * 再試行しても直らない見込みで、ユーザーの判断を要するか。
+   * **判定基準はフロントに持たない。** Rust の `llm::needs_attention` が決める。
+   */
+  needs_attention: boolean;
+  /** 解析対象から外されているか */
+  excluded: boolean;
   categories: string[];
   tags: TagPairItem[];
+}
+
+/** 解析対象から外されたパス（`excluded_paths`） */
+export interface ExcludedPathItem {
+  path: string;
+  reason?: string | null;
+  created_at: number;
 }
 
 export interface TagItem {

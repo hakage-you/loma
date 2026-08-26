@@ -3,6 +3,8 @@ mod commands;
 mod credentials;
 mod db;
 mod embedding;
+/// 画像のデコード。拡張子ではなく中身でデコーダを選ぶ
+mod image_io;
 mod llm;
 mod logger;
 mod proc;
@@ -63,6 +65,10 @@ pub fn run() {
             commands::reanalyze_folder,
             commands::remove_scan_folder,
             commands::retry_media,
+            commands::exclude_media,
+            commands::delete_media,
+            commands::unexclude_paths,
+            commands::get_excluded_paths,
             commands::unload_model,
             commands::get_app_logs,
             commands::clear_app_logs,

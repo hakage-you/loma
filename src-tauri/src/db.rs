@@ -189,7 +189,118 @@ pub async fn create_tables(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {
         .execute(pool)
         .await;
 
+    // 失敗の種別コード（`llm::error_kind`）。失敗一覧のグループ化に使う。
+    // 既存の失敗レコードは NULL のままで、次に解析を試みたときに埋まる
+    let _ = sqlx::query("ALTER TABLE media ADD COLUMN analysis_error_kind TEXT;")
+        .execute(pool)
+        .await;
+
+    // 同じ種別で連続して失敗した回数。未知のエラーを「要確認」に降格させる判定に使う
+    let _ = sqlx::query(
+        "ALTER TABLE media ADD COLUMN consecutive_failures INTEGER NOT NULL DEFAULT 0;",
+    )
+    .execute(pool)
+    .await;
+
+    // 解析対象から外したファイル。
+    //
+    // `media` の列にしない理由: 「ライブラリから削除」で media 行ごと消えると
+    // 除外情報も一緒に消え、次のスキャンで同じファイルが再登録されてしまう。
+    // media から独立してパスを覚えておく必要がある。
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS excluded_paths (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            path TEXT NOT NULL UNIQUE,
+            reason TEXT,
+            created_at INTEGER DEFAULT (strftime('%s', 'now'))
+        );
+        "#,
+    )
+    .execute(pool)
+    .await?;
+
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// マイグレーションの ALTER TABLE は `let _ =` で失敗を捨てている
+    /// （既存DBでは「列が既にある」で必ず失敗するため）。
+    /// 綴りを間違えても気付けないので、結果として列が在ることを直接確かめる。
+    #[tokio::test]
+    async fn the_schema_has_the_failure_triage_columns_and_table() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_tables(&pool).await.unwrap();
+
+        let columns: Vec<String> = sqlx::query_scalar("SELECT name FROM pragma_table_info('media')")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        for expected in ["analysis_error_kind", "consecutive_failures"] {
+            assert!(
+                columns.iter().any(|c| c == expected),
+                "media に {expected} が無い: {columns:?}"
+            );
+        }
+
+        // 除外は media から独立して残す必要がある（削除しても覚えておくため）
+        sqlx::query("INSERT INTO excluded_paths (path, reason) VALUES ('D:/a.png', 'broken')")
+            .execute(&pool)
+            .await
+            .expect("excluded_paths が作られていない");
+
+        let paths = crate::batch::load_excluded_paths(&pool).await;
+        assert!(paths.contains("D:/a.png"));
+
+        // 同じパスを二重に登録しない
+        let dup = sqlx::query("INSERT OR IGNORE INTO excluded_paths (path) VALUES ('D:/a.png')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(dup.rows_affected(), 0, "同じパスが重複して入る");
+    }
+
+    /// 連続失敗の数え方。種別が変われば1に戻ること。
+    #[tokio::test]
+    async fn consecutive_failures_reset_when_the_kind_changes() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        create_tables(&pool).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO media (id, file_path, parent_folder, thumbnail_path, file_size, file_modified_at)
+             VALUES (1, 'D:/a.png', 'x', '', 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let fail = |kind: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query(
+                    "UPDATE media SET analysis_status = 'failed', analysis_error = 'e',
+                     consecutive_failures = CASE WHEN analysis_error_kind = ?1 THEN consecutive_failures + 1 ELSE 1 END,
+                     analysis_error_kind = ?1
+                     WHERE id = 1",
+                )
+                .bind(kind)
+                .execute(&pool)
+                .await
+                .unwrap();
+                sqlx::query_scalar::<_, i64>("SELECT consecutive_failures FROM media WHERE id = 1")
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+
+        assert_eq!(fail("unknown").await, 1);
+        assert_eq!(fail("unknown").await, 2, "同じ種別で増えていない");
+        assert_eq!(fail("server_unavailable").await, 1, "種別が変わっても1に戻っていない");
+    }
 }
 
 async fn seed_initial_data(pool: &Pool<Sqlite>) -> Result<(), sqlx::Error> {

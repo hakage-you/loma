@@ -1,8 +1,15 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
-import { MediaItem, TagItem, ScanFolderItem, ProgressPayload, TagFilterNode } from '../types';
-import { STATUS_TAG_INSUFFICIENT, isTagInsufficient } from '../constants/spectrum';
+import {
+  MediaItem,
+  TagItem,
+  ScanFolderItem,
+  ProgressPayload,
+  TagFilterNode,
+  ExcludedPathItem,
+} from '../types';
+import { STATUS_TAG_INSUFFICIENT, STATUS_EXCLUDED, isTagInsufficient } from '../constants/spectrum';
 
 export interface FilterState {
   categories?: string[];
@@ -76,12 +83,13 @@ export function useMedia() {
         tagFilterTree: currentFilters.tagFilterTree ? JSON.stringify(currentFilters.tagFilterTree) : null,
         parentFolderFilter: currentFilters.parentFolder || null,
         scanFolderFilter: currentFilters.scanFolder || null,
-        // 疑似ステータス（unanalyzed / tag_insufficient）はバックエンドの
+        // 疑似ステータス（unanalyzed / tag_insufficient / excluded）はバックエンドの
         // analysis_status に存在しないため送らず、下で結果から絞り込む
         statusFilter:
           currentFilters.status &&
           currentFilters.status !== 'unanalyzed' &&
-          currentFilters.status !== STATUS_TAG_INSUFFICIENT
+          currentFilters.status !== STATUS_TAG_INSUFFICIENT &&
+          currentFilters.status !== STATUS_EXCLUDED
             ? currentFilters.status
             : null,
         mediaTypeFilter: currentFilters.mediaType && currentFilters.mediaType !== 'all' ? currentFilters.mediaType : null,
@@ -93,6 +101,10 @@ export function useMedia() {
         // 類似検索の候補集合から外れているメディア。黙って除外せず、
         // ユーザーがタグを手で足せるよう一覧できるようにする
         setMedia(result.filter(isTagInsufficient));
+      } else if (currentFilters.status === STATUS_EXCLUDED) {
+        // 解析対象から外したメディア。除外したことを忘れて「解析されない」と
+        // 読まれないよう、ここから辿れるようにしておく
+        setMedia(result.filter((item) => item.excluded));
       } else {
         setMedia(result);
       }
@@ -364,6 +376,55 @@ export function useMedia() {
     }
   };
 
+  /** 指定したメディアを解析対象から外す。ファイルもレコードも消さない */
+  const excludeMedia = async (mediaIds: number[], reason?: string) => {
+    if (mediaIds.length === 0) return 0;
+    try {
+      const n = await invoke<number>('exclude_media', { mediaIds, reason: reason ?? null });
+      await fetchMedia();
+      return n;
+    } catch (e: any) {
+      setErrorModal({ open: true, message: `Could not exclude media: ${e}` });
+      return 0;
+    }
+  };
+
+  /** ライブラリから削除する。ファイル本体は消さない。除外も併せて登録される */
+  const deleteMedia = async (mediaIds: number[], reason?: string) => {
+    if (mediaIds.length === 0) return 0;
+    try {
+      const n = await invoke<number>('delete_media', { mediaIds, reason: reason ?? null });
+      await fetchMedia();
+      await fetchMasterData();
+      return n;
+    } catch (e: any) {
+      setErrorModal({ open: true, message: `Could not delete media: ${e}` });
+      return 0;
+    }
+  };
+
+  /** 除外を解除する。次のスキャンで再登録され、解析対象に戻る */
+  const unexcludePaths = async (paths: string[]) => {
+    if (paths.length === 0) return 0;
+    try {
+      const n = await invoke<number>('unexclude_paths', { paths });
+      await fetchMedia();
+      return n;
+    } catch (e: any) {
+      setErrorModal({ open: true, message: `Could not clear exclusions: ${e}` });
+      return 0;
+    }
+  };
+
+  const getExcludedPaths = async (): Promise<ExcludedPathItem[]> => {
+    try {
+      return await invoke<ExcludedPathItem[]>('get_excluded_paths');
+    } catch (e: any) {
+      console.error('Failed to get excluded paths:', e);
+      return [];
+    }
+  };
+
   const retryMedia = async (mediaIds: number[]) => {
     if (mediaIds.length === 0) return;
     setScanning(true);
@@ -555,6 +616,10 @@ export function useMedia() {
     openFile,
     openFolder,
     retryMedia,
+    excludeMedia,
+    deleteMedia,
+    unexcludePaths,
+    getExcludedPaths,
     renameTag,
     mergeTags,
     addTagToMedia,

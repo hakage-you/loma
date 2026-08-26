@@ -2,11 +2,11 @@ import React, { useState } from 'react';
 import { 
   Filter, Folder, Tag, CheckSquare, Square, Layers, Dog, User, ShoppingBag, Palette, 
   Monitor, FileText, Mountain, Utensils, Smile, Cpu, HelpCircle, Film, Image as ImageIcon,
-  ChevronDown, ChevronRight, FileCode, CheckCircle, Clock, AlertTriangle, FolderGit2, Radar
+  ChevronDown, ChevronRight, FileCode, CheckCircle, Clock, AlertTriangle, FolderGit2, Radar, EyeOff
 } from 'lucide-react';
 import { TagItem, ScanFolderItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
-import { STATUS_TAG_INSUFFICIENT } from '../constants/spectrum';
+import { STATUS_TAG_INSUFFICIENT, STATUS_EXCLUDED } from '../constants/spectrum';
 import { CATEGORY_IDS, categoryLabelKey } from '../constants/categories';
 
 interface SidebarProps {
@@ -277,6 +277,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
               { id: 'failed', label: t('sidebar.label_status_failed', '解析失敗'), icon: <AlertTriangle className="w-3.5 h-3.5 text-red-400" /> },
               // 類似検索の対象外。タグを手で足せば対象に入るので、辿れるようにしておく
               { id: STATUS_TAG_INSUFFICIENT, label: t('sidebar.label_status_tag_insufficient', 'タグ不足（類似検索の対象外）'), icon: <Radar className="w-3.5 h-3.5 text-slate-400" /> },
+              // ユーザーが解析対象から外したもの。除外したことを忘れて「解析されない」と読まれないよう辿れるようにする
+              { id: STATUS_EXCLUDED, label: t('failure_modal.label_excluded_badge', '解析対象外'), icon: <EyeOff className="w-3.5 h-3.5 text-slate-400" /> },
             ].map((st) => (
               <button
                 key={st.id}

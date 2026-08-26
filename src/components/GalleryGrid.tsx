@@ -1,7 +1,7 @@
 import React from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem } from '../types';
-import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar } from 'lucide-react';
+import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar, EyeOff } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 import { categoryLabelKey } from '../constants/categories';
@@ -98,11 +98,18 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                       {t('sidebar.label_status_pending', '未解析')}
                     </span>
                   )}
-                  {item.analysis_status === 'failed' && (
-                    <span className="flex items-center gap-1 px-2 py-0.5 bg-red-500/90 backdrop-blur-md text-white rounded-full text-[10px] font-bold shadow-lg">
-                      <AlertCircle className="w-3 h-3" />
-                      {t('sidebar.label_status_failed', '解析失敗')}
+                  {item.excluded ? (
+                    <span className="flex items-center gap-1 px-2 py-0.5 bg-slate-600/90 backdrop-blur-md text-slate-200 rounded-full text-[10px] font-bold shadow-lg">
+                      <EyeOff className="w-3 h-3" />
+                      {t('failure_modal.label_excluded_badge', '解析対象外')}
                     </span>
+                  ) : (
+                    item.analysis_status === 'failed' && (
+                      <span className="flex items-center gap-1 px-2 py-0.5 bg-red-500/90 backdrop-blur-md text-white rounded-full text-[10px] font-bold shadow-lg">
+                        <AlertCircle className="w-3 h-3" />
+                        {t('sidebar.label_status_failed', '解析失敗')}
+                      </span>
+                    )
                   )}
                   {item.categories && item.categories.length > 0 && (
                     <span className="flex items-center gap-1 px-2 py-0.5 bg-indigo-600/90 backdrop-blur-md text-white rounded-full text-[10px] font-medium shadow-lg ml-auto">
