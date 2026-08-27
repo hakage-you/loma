@@ -179,8 +179,19 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     ],
     reclaimable_bytes: tagState.length * 16384,
   }),
-  cleanup_unused_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
-  discard_embeddings: () => ({ deleted_rows: 0, freed_bytes: 0, vacuumed: false }),
+  // 上の storage_info と揃えた値を返す。0 のままだと結果表示が「削除するベクトルは
+  // ありませんでした」しか出ず、件数と解放量の表示を確認できない。
+  // discard 側は VACUUM が走らなかった場合（ファイルが縮まない）の表示を出す
+  cleanup_unused_embeddings: () => ({
+    deleted_rows: tagState.length,
+    freed_bytes: tagState.length * 16384,
+    vacuumed: true,
+  }),
+  discard_embeddings: () => ({
+    deleted_rows: tagState.length,
+    freed_bytes: tagState.length * 4096,
+    vacuumed: false,
+  }),
   // 実測値（bge-m3 / centering ON / 1,007件）に寄せた形。判定表示を確認できるようにする。
   // 引数の centering / includeDescriptive をそのまま反映して、
   // トグルが即時に効くことを画面で確認できるようにする

@@ -123,6 +123,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
   const [storageInfo, setStorageInfo] = useState<EmbeddingStorageInfo | null>(null);
   const [isCleaningUp, setIsCleaningUp] = useState(false);
+  /** 削除・破棄の実行結果。件数と解放量を出さないと、押しても何が起きたか分からない */
+  const [cleanupResult, setCleanupResult] = useState<EmbeddingCleanupResult | null>(null);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   /** 埋め込みモデルを切り替えて保存しようとしたときの確認 */
   const [confirmModelSwitch, setConfirmModelSwitch] = useState<{ from: string; to: string } | null>(null);
@@ -437,6 +439,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
    */
   const handleGenerateEmbeddings = async () => {
     setEmbeddingError(null);
+    setCleanupResult(null);
     setIsGeneratingEmbeddings(true);
     setEmbeddingProgress({ total: 0, current: 0, status: 'running' });
     const unlistenPromise = listen<EmbeddingProgressPayload>('embedding_progress', (event) => {
@@ -457,8 +460,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleCleanupEmbeddings = async () => {
     setIsCleaningUp(true);
     setEmbeddingError(null);
+    setCleanupResult(null);
     try {
-      await invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings');
+      setCleanupResult(await invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings'));
       await refreshEmbeddingStatus();
     } catch (e) {
       setEmbeddingError(String(e));
@@ -492,9 +496,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleDiscardEmbeddings = async () => {
     setIsCleaningUp(true);
     setEmbeddingError(null);
+    setCleanupResult(null);
     setConfirmDiscard(false);
     try {
-      await invoke<EmbeddingCleanupResult>('discard_embeddings');
+      setCleanupResult(await invoke<EmbeddingCleanupResult>('discard_embeddings'));
       await refreshEmbeddingStatus();
       // 破棄後の分布を出したままにすると、消えたデータの結果を見せ続けることになる
       setDiagnostics(null);
@@ -1346,6 +1351,33 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   {embeddingError && (
                     <div className="mt-2 p-2 rounded-lg bg-red-950/40 border border-red-500/30 text-[11px] text-red-200">
                       {embeddingError}
+                    </div>
+                  )}
+
+                  {/* 削除・破棄の結果。件数と解放量を出さないと、消えたのかどうかが分からない */}
+                  {cleanupResult && (
+                    <div className="mt-2 p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-200 flex items-start gap-1.5">
+                      <Check className="w-3.5 h-3.5 shrink-0 mt-px text-emerald-400" />
+                      <span>
+                        {cleanupResult.deleted_rows > 0 ? (
+                          <>
+                            {t('settings.spectrum_cleanup_done', '{rows}件のベクトルを削除しました（{size} MB）。', {
+                              rows: cleanupResult.deleted_rows,
+                              size: (cleanupResult.freed_bytes / 1e6).toFixed(1),
+                            })}{' '}
+                            {/* VACUUM が走らないとファイルは縮まない。DB のサイズを見て「削除が失敗した」と
+                                読まれるのを防ぐため、縮んだかどうかを必ず添える */}
+                            {cleanupResult.vacuumed
+                              ? t('settings.spectrum_cleanup_vacuumed', 'DBファイルも縮んでいます。')
+                              : t(
+                                  'settings.spectrum_cleanup_not_vacuumed',
+                                  'DBファイルはまだ縮んでいません。空いた領域は次にベクトルを作り直すときに再利用されます。',
+                                )}
+                          </>
+                        ) : (
+                          t('settings.spectrum_cleanup_none', '削除するベクトルはありませんでした。')
+                        )}
+                      </span>
                     </div>
                   )}
 
