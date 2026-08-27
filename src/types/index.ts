@@ -217,6 +217,34 @@ export interface EmbeddingModelStorage {
   in_use: boolean;
 }
 
+/** 設定の一括保存に渡す1項目 */
+export interface SettingEntry {
+  key: string;
+  value: string;
+}
+
+/** API キーは保存先が OS の資格情報ストアなので、設定本体とは別に渡す */
+export interface ApiKeyEntry {
+  provider: string;
+  api_key: string;
+}
+
+export interface ApiKeyFailure {
+  provider: string;
+  message: string;
+}
+
+/**
+ * 設定の一括保存の結果。
+ * 設定本体は1トランザクションなので、成功なら全部入っている。
+ * API キーだけは1件ずつ失敗しうるので、失敗したプロバイダーを別に返す。
+ */
+export interface SaveSettingsResult {
+  settings_saved: number;
+  api_keys_saved: number;
+  api_key_failures: ApiKeyFailure[];
+}
+
 export interface EmbeddingStorageInfo {
   current_model: string;
   total_tags: number;

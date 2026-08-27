@@ -112,6 +112,18 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   update_setting: (args) => {
     settingsState = { ...settingsState, [args.key]: args.value };
   },
+  save_settings: (args) => {
+    // 実バックエンドは1トランザクション。途中まで入った状態は作らない
+    const entries: { key: string; value: string }[] = args.entries ?? [];
+    const next = { ...settingsState };
+    for (const entry of entries) next[entry.key] = entry.value;
+    settingsState = next;
+    return {
+      settings_saved: entries.length,
+      api_keys_saved: (args.apiKeys ?? []).length,
+      api_key_failures: [],
+    };
+  },
   remove_scan_folder: (args) => {
     scanFoldersState = scanFoldersState.filter((f) => f.id !== args.folderId);
   },
@@ -344,7 +356,25 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   ],
 };
 
+/**
+ * `?debugSlowCommand=<コマンド名>:<ミリ秒>` を付けると、そのコマンドだけ応答を遅らせる。
+ *
+ * 実行中の表示やブロックは**応答が返るまでの間しか出ない**ので、即座に返るモックのままでは
+ * 検証できない。`scanSimulator` の `?debugScan=` と同じ、モック限定の検証用フック。
+ */
+const slowCommand: { cmd: string; ms: number } | null = (() => {
+  const raw = new URLSearchParams(window.location.search).get('debugSlowCommand');
+  if (!raw) return null;
+  const [cmd, ms] = raw.split(':');
+  const delay = Number(ms);
+  if (!cmd || !Number.isFinite(delay) || delay <= 0) return null;
+  return { cmd, ms: delay };
+})();
+
 export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Promise<T> {
+  if (slowCommand && slowCommand.cmd === cmd) {
+    await new Promise((resolve) => setTimeout(resolve, slowCommand.ms));
+  }
   const handler = handlers[cmd];
   if (!handler) {
     console.warn(`[mock invoke] unhandled command "${cmd}"`, args);

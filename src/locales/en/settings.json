@@ -160,5 +160,7 @@
   "download_note_2": "* You can keep watching the progress in Settings or in the background while it downloads.",
   "compare_hint": "Compares the analysis results for Lv1 / Lv2 / Lv3.",
   "label_btn_close": "Close",
-  "label_done": "done"
+  "label_done": "done",
+  "label_save_failed": "Could not save",
+  "api_key_save_failed": "Settings were saved, but these API keys could not be stored.\n{list}"
 }

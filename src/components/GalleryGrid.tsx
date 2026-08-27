@@ -1,7 +1,7 @@
 import React from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem } from '../types';
-import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar, EyeOff } from 'lucide-react';
+import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar, EyeOff, Loader2 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 import { categoryLabelKey } from '../constants/categories';
@@ -29,7 +29,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
       <div className="flex-1 flex items-center justify-center min-h-[400px]">
         <div className="flex flex-col items-center gap-3 text-slate-400">
           <div className="w-8 h-8 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-          <p className="text-sm">Loading media items...</p>
+          <p className="text-sm">{t('gallery.label_loading', '読み込み中')}</p>
         </div>
       </div>
     );
@@ -41,9 +41,11 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
         <div className="p-4 bg-slate-800/50 rounded-2xl text-slate-500 mb-3 border border-white/5">
           <ImageIcon className="w-8 h-8" />
         </div>
-        <h3 className="text-base font-semibold text-slate-200">No media found</h3>
+        <h3 className="text-base font-semibold text-slate-200">
+          {t('gallery.label_empty_title', '該当するメディアがありません')}
+        </h3>
         <p className="text-xs text-slate-400 max-w-sm mt-1">
-          Scan a folder using the "Scan Folder" button or adjust your filter settings.
+          {t('gallery.empty_hint', '「フォルダ追加」から取り込むか、絞り込みを変えてください。')}
         </p>
       </div>
     );
@@ -63,8 +65,26 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
   const currentGridClass = gridClassMap[gridColumns] || 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5';
 
   return (
-    <div className="flex-1 overflow-y-auto pr-2 pb-4 min-h-0">
-      <div className={`grid ${currentGridClass} gap-4 auto-rows-max`}>
+    <div className="flex-1 overflow-y-auto pr-2 pb-4 min-h-0 relative">
+      {/*
+        絞り込み直しの間に出す表示。**一覧は消さない**（消すと画面が跳ねる）。
+        スピナーの回転は当てにしないこと —— 取得後の再描画はメインスレッドを
+        占有するので、その間アニメーションは止まる。「いま読み込んでいる」という
+        事実を出すのが目的
+      */}
+      {loading && (
+        <div className="sticky top-0 z-20 flex justify-center pointer-events-none">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/95 border border-indigo-500/30 shadow-lg text-[11px] text-slate-200">
+            <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
+            {t('gallery.label_loading', '読み込み中')}
+          </div>
+        </div>
+      )}
+      <div
+        className={`grid ${currentGridClass} gap-4 auto-rows-max transition-opacity ${
+          loading ? 'opacity-40' : ''
+        }`}
+      >
         {items.map((item) => {
           const imageSrc = item.thumbnail_path
             ? convertFileSrc(item.thumbnail_path)

@@ -1,0 +1,12 @@
+{
+  "label_saving_settings": "Saving settings",
+  "label_editing_tags": "Updating tags",
+  "label_applying_tag_merges": "Applying tag merges",
+  "label_building_tag_suggestions": "Building tag suggestions",
+  "label_syncing_folders": "Syncing folders",
+  "label_reanalyzing_media": "Re-analyzing media",
+  "label_processing_embeddings": "Processing embeddings",
+  "label_wait": "Please wait until it finishes",
+  "blocked_reason": "Another operation is running, so this cannot be started right now.",
+  "blocked_reason_scanning": "Tags and folders cannot be changed while analysis is running. Wait for it to finish or stop it first."
+}
