@@ -62,6 +62,8 @@ let GRANULARITY = arg('granularity', null);
 const FORMAT_MODE = arg('format-json', 'off'); // off | on | both
 const LIMIT = parseInt(arg('limit', '0'), 10);
 let SAMPLE = parseInt(arg('sample', '5'), 10); // test_assets/100files から拾う枚数
+// 画像を明示のディレクトリから拾う。ファイル名の `__<ラベル>` が group になる
+const IMAGES_DIR = arg('images-dir', null);
 // 1 なら llm/ollama.rs の単画像経路、2 以上なら batch.rs の動画マルチフレーム経路を再現する
 const FRAMES = parseInt(arg('frames', '1'), 10);
 // batch.rs の値を上書きして num_predict の影響を測るためのもの（回帰の再現用）
@@ -325,7 +327,7 @@ async function main() {
   );
 
   const generatedDir = path.join(HERE, 'generated-images');
-  let images = collectImages(REPO_ROOT, generatedDir, SAMPLE);
+  let images = collectImages(REPO_ROOT, generatedDir, SAMPLE, IMAGES_DIR);
   if (LIMIT > 0) images = images.slice(0, LIMIT);
   if (!images.length) {
     console.error('検証対象の画像がありません。test_assets/ に画像を置いてください。');

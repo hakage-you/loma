@@ -91,8 +91,21 @@ export function generateSparseImages(dir) {
  * 検証対象の画像一覧を返す。
  * test_assets/ は .gitignore されており各自の環境で中身が違うため、存在するものだけを拾う。
  */
-export function collectImages(repoRoot, generatedDir, sampleCount = 5) {
+export function collectImages(repoRoot, generatedDir, sampleCount = 5, imagesDir = null) {
   const imgs = [];
+
+  // ディレクトリを明示されたときは、そこだけを対象にする（test_assets も sparse も混ぜない）。
+  // ファイル名の `__<ラベル>` を group にするので、同じ素材の条件違いを1回の実行で並べられる。
+  // 例: `02_neine__keep.jpg` / `02_neine__checker.jpg` -> group は keep / checker
+  if (imagesDir) {
+    for (const f of fs.readdirSync(imagesDir).filter((f) => /\.(png|jpe?g|webp|bmp)$/i.test(f)).sort()) {
+      // ラベルは英字だけ。素材名に `_` が入っていても最後の `__` だけを拾う
+      const m = /__([a-z]+)\.[a-z]+$/i.exec(f);
+      imgs.push({ path: path.join(imagesDir, f), name: f, group: m ? m[1] : 'dir' });
+    }
+    return imgs;
+  }
+
   const push = (p, group) => {
     if (fs.existsSync(p)) imgs.push({ path: p, name: path.basename(p), group });
   };

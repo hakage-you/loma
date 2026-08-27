@@ -233,10 +233,41 @@ export function candidateVariants(rust) {
       '(e.g. "lighting_bright", "lighting_dim", "lighting_natural", "lighting_artificial"). This is mandatory in every response.',
   ].join('\n');
 
+  /**
+   * 透過画像の背景を無視させる候補（2026-08-27）。
+   *
+   * 透過画像は JPEG に落とす時点でアルファが消えるため、VLM には必ず何かの色の背景として
+   * 届く。塗る色を決めても「その色の背景」というタグが付く可能性は残るので、
+   * 背景そのものを無視させられるかを測る。
+   *
+   * 対象は LIGHT。軸に据えている qwen3-vl:8b-instruct は 8B で、get_vlm_prompt_info の
+   * 10B しきい値を下回るため本番でも LIGHT が渡る。
+   *
+   * LIGHT は極小であること自体が設計意図なので、1行足すだけで壊れうる。
+   * タグ本数・パース失敗率・空応答率を対照画像と併せて見ること。
+   *
+   * 追記位置は本体の analyze_multi_frame (ollama.rs) が Note を足しているのと同じく末尾。
+   * 採用するならその形になるので、測るのも同じ形にする。
+   */
+  const TRANSPARENT_NOTE =
+    '\n\nNote: This image originally had a transparent background, which has been replaced ' +
+    'with a placeholder fill. The fill is not part of the picture. Do NOT output any tag ' +
+    'describing the background, its color, or its pattern.';
+
   return {
     CONSTRAINED: {
       prompt: `${rules}\n\n${extra}${MARKER}${rust.DETAILED_ATOMIC.slice(idx + MARKER.length)}`,
       numCtx: rust.numCtx.atomic,
+    },
+    LIGHT_TRANSPARENT_NOTE: {
+      prompt: rust.LIGHT + TRANSPARENT_NOTE,
+      numCtx: rust.numCtx.light,
+    },
+    // 実利用の設定が force_detailed_prompt=true / granularity=descriptive だったため、
+    // 本番で渡っているのはこちら。LIGHT 側だけ測っても的外れになる
+    DETAILED_DESCRIPTIVE_TRANSPARENT_NOTE: {
+      prompt: rust.DETAILED_DESCRIPTIVE + TRANSPARENT_NOTE,
+      numCtx: rust.numCtx.descriptive,
     },
   };
 }
