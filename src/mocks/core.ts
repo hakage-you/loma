@@ -116,16 +116,44 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     scanFoldersState = scanFoldersState.filter((f) => f.id !== args.folderId);
   },
   add_tag_to_media: (args) => {
-    const item = mediaState.find((m) => m.id === args.mediaId);
-    if (item && !item.tags.some((t) => t.name === args.tagName)) {
+    // タグ表（tagState）にも登録する。実バックエンドの get_or_create_tag と同じく、
+    // 既にあれば使い回し、無ければ採番する。ここを飛ばすと get_all_tags に出てこず、
+    // 追加した直後のタグを削除できない
+    let tag = tagState.find((t) => t.name === args.tagName);
+    if (!tag) {
       // 手動追加タグは常に basic 種別（バックエンド get_or_create_tag と同じ挙動）
-      item.tags = [...item.tags, { name: args.tagName, name_ja: args.tagNameJa, kind: 'basic' }];
+      tag = {
+        id: Math.max(0, ...tagState.map((t) => t.id)) + 1,
+        name: args.tagName,
+        name_ja: args.tagNameJa,
+        is_category: false,
+        count: 0,
+        kind: 'basic',
+      };
+      tagState = [...tagState, tag];
     }
-    return { id: 0, name: args.tagName, name_ja: args.tagNameJa, is_category: false, count: 1, kind: 'basic' };
+    // let のままだとコールバック内で型が絞れないので const に写す
+    const resolved = tag;
+    const item = mediaState.find((m) => m.id === args.mediaId);
+    if (item && !item.tags.some((t) => t.name === resolved.name)) {
+      item.tags = [...item.tags, { name: resolved.name, name_ja: resolved.name_ja, kind: resolved.kind }];
+      resolved.count++;
+    }
+    return { ...resolved };
   },
   remove_tag_from_media: (args) => {
+    // 実バックエンドは media_tags を (media_id, tag_id) で消す。
+    // ここも **tagId をタグ表の id として引く**。以前は item.tags の添字として
+    // 扱っていて、関係のないタグが消えていた
+    const tag = tagState.find((t) => t.id === args.tagId);
     const item = mediaState.find((m) => m.id === args.mediaId);
-    if (item) item.tags = item.tags.filter((_, idx) => idx !== args.tagId);
+    if (!tag || !item) return;
+    const before = item.tags.length;
+    item.tags = item.tags.filter((t) => t.name !== tag.name);
+    if (item.tags.length === before) return;
+    tag.count--;
+    // 実バックエンドは、どのメディアからも外れた非カテゴリタグを tags 表から消す
+    if (tag.count <= 0 && !tag.is_category) tagState = tagState.filter((t) => t.id !== tag.id);
   },
   start_scan: () => {
     scanning = false;
@@ -323,7 +351,12 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
     return undefined as unknown as T;
   }
   const result = handler(args);
-  return result as T;
+  // 実際の Tauri IPC は戻り値を毎回シリアライズするので、呼び出し側は
+  // 毎回別のオブジェクトを受け取る。モックが内部 state の参照をそのまま返すと、
+  // 画面が抱えている古いオブジェクトまで一緒に書き換わり、
+  // 「更新しないと画面が追従しない」種類の不具合をモックだけが隠してしまう。
+  // （詳細モーダルのタグ削除が追従しなかった不具合が、まさにこれで再現しなかった）
+  return structuredClone(result) as T;
 }
 
 export function convertFileSrc(filePath: string, _protocol = 'asset'): string {

@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { useMedia } from './hooks/useMedia';
 import { SearchBar } from './components/SearchBar';
@@ -115,7 +115,16 @@ function AppContent() {
   const [isAboutOpen, setIsAboutOpen] = useState(false);
   const [isSearchModalOpen, setIsSearchModalOpen] = useState(false);
   const [ffmpegInstalled, setFfmpegInstalled] = useState<boolean>(true);
-  const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
+  // 詳細モーダルに渡すメディア。クリックした時点のオブジェクトを抱えたままにすると、
+  // タグを消しても詳細画面が追従しない —— 削除後の fetchMedia() が作り直すのは
+  // media 配列の中身だけで、抱えている側は古いままだから。
+  // 描画の直前に media から id で引き直し、見つからないときだけ受け取った
+  // オブジェクトを使う（探索モーダルの結果など、今の絞り込みに含まれないメディア）。
+  const [selectedMediaSeed, setSelectedMedia] = useState<MediaItem | null>(null);
+  const selectedMedia = useMemo(
+    () => (selectedMediaSeed ? media.find((m) => m.id === selectedMediaSeed.id) ?? selectedMediaSeed : null),
+    [media, selectedMediaSeed]
+  );
 
   useEffect(() => {
     invoke<boolean>('check_ffmpeg_installed')
