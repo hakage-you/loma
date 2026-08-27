@@ -200,6 +200,39 @@ pub fn compute_light_hash(path: &Path) -> Result<String> {
 }
 
 // サムネイル生成
+/// サムネイルのファイル名はパスの SHA-256 で決まる。**規則をここ以外に書かない。**
+pub fn thumbnail_name_hash(file_path_str: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(file_path_str.as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+/// 既存のサムネイルを捨てて作り直す。
+///
+/// `generate_thumbnail` は `thumb_path.exists()` で早期 return するので、
+/// 合成の仕様を変えても既存分は古いまま残る。作り直しにはファイルの削除が要る。
+pub fn regenerate_thumbnail(file_path: &Path, thumb_dir: &Path) -> Result<PathBuf> {
+    let name_hash = thumbnail_name_hash(&file_path.to_string_lossy());
+    let existing = thumb_dir.join(format!("{}.jpg", name_hash));
+    let _ = fs::remove_file(&existing);
+    generate_thumbnail(file_path, thumb_dir, &name_hash)
+}
+
+/// サムネイルも VLM に送る画像と同じ市松で合成する。
+///
+/// **サムネイルは常に `.jpg` で保存される**（下の `thumb_path`）ため、合成しなければ
+/// 透過部分は VLM に送る画像とまったく同じ理由で黒くなる。画面に出るサムネイルと
+/// VLM が見る画像を食い違わせないためにも、同じ下地を使う。
+///
+/// 合成してから縮小する。縮小してから合成すると、境界の半透明画素が周囲の RGB
+/// （多くは黒）と混ざったあとに合成されることになり、縁に黒が残る。
+fn composite_for_thumbnail(img: &image::DynamicImage) -> image::DynamicImage {
+    image::DynamicImage::ImageRgb8(crate::image_io::composite_over(
+        img,
+        crate::image_io::Background::Checker,
+    ))
+}
+
 pub fn generate_thumbnail(
     file_path: &Path,
     thumb_dir: &Path,
@@ -224,14 +257,14 @@ pub fn generate_thumbnail(
         // 拡張子ではなく中身でデコーダを選ぶ。ここで image::open を使うと
         // 中身JPEGの .png がサムネイル無しのまま残る（実測13件がこれだった）
         let img = crate::image_io::decode_image(file_path)?;
-        let resized = img.thumbnail(512, 512);
+        let resized = composite_for_thumbnail(&img).thumbnail(512, 512);
         resized.save(&thumb_path)?;
         Ok(thumb_path)
     } else if VIDEO_EXTENSIONS.contains(&ext.as_str()) {
         // GIF等の処理、あるいはFFmpeg呼び出し
         if ext == "gif" {
             if let Ok(img) = crate::image_io::decode_image(file_path) {
-                let resized = img.thumbnail(512, 512);
+                let resized = composite_for_thumbnail(&img).thumbnail(512, 512);
                 resized.save(&thumb_path)?;
                 return Ok(thumb_path);
             }
@@ -720,9 +753,7 @@ pub async fn run_scan_and_batch(
             let file_hash = compute_light_hash(file_path).unwrap_or_default();
 
             // パスハッシュから決定論的なサムネイルファイル名を生成
-            let mut hasher = Sha256::new();
-            hasher.update(file_path_str.as_bytes());
-            let name_hash = format!("{:x}", hasher.finalize());
+            let name_hash = thumbnail_name_hash(&file_path_str);
 
             let thumb_path_str = generate_thumbnail(file_path, &thumb_dir, &name_hash)
                 .map(|p| p.to_string_lossy().to_string())
@@ -1077,6 +1108,14 @@ pub async fn run_scan_and_batch(
             Ok(result) => {
                 consecutive_errors = 0;
                 processed_count += 1;
+
+                // 市松で埋めた画像に対してだけ、下地由来のタグを落とす。
+                // 市松が実際に写っている画像に適用すると正しいタグを消すので、
+                // ここで元ファイルの透過を見て判定する（デコード実測 11ms/件）
+                let mut result = result;
+                if crate::image_io::file_has_visible_transparency(target_img_path) {
+                    result.drop_fill_artifact_tags();
+                }
 
                 // 1. カテゴリを登録
                 for cat_en in &result.categories {
@@ -1667,7 +1706,10 @@ pub async fn reanalyze_single_media(
         return Err(anyhow!("No valid image file or thumbnail frame found for analysis"));
     };
 
-    let result = llm_provider.analyze_image(target_img_path).await?;
+    let mut result = llm_provider.analyze_image(target_img_path).await?;
+    if crate::image_io::file_has_visible_transparency(target_img_path) {
+        result.drop_fill_artifact_tags();
+    }
 
     let mut tx = pool.begin().await?;
     sqlx::query("DELETE FROM media_tags WHERE media_id = ?1").bind(media_id).execute(&mut *tx).await?;

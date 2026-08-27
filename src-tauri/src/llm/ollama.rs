@@ -166,34 +166,28 @@ fn prepare_base64_image(image_path: &Path, max_image_edge: u32) -> Result<String
     // 長辺を max_image_edge まで縮小してから送る。
     // 12MP のスマホ写真をそのまま送ると画像だけで約4000トークンを消費し、
     // 生成に使えるコンテキストを圧迫するため。
-    let img = if max_image_edge > 0 {
-        let (w, h) = (img.width(), img.height());
-        if w.max(h) > max_image_edge {
-            let resized = img.resize(
-                max_image_edge,
-                max_image_edge,
-                image::imageops::FilterType::Triangle,
-            );
-            crate::logger::log_debug(&format!(
-                "[Ollama Debug] Downscaled image {}x{} -> {}x{}",
-                w, h, resized.width(), resized.height()
-            ));
-            resized
-        } else {
-            img
-        }
-    } else {
-        img
-    };
-
-    let rgb_img = img.to_rgb8();
-    let mut buffer = std::io::Cursor::new(Vec::new());
-    rgb_img
-        .write_to(&mut buffer, image::ImageFormat::Jpeg)
-        .map_err(|e| anyhow!("{}: {} ({})", IMAGE_ENCODE_ERROR, image_path.display(), e))?;
+    //
+    // **縮小と RGB 化は image_io に集約している。** 計測ツールが同じ関数を呼んで
+    // 同じバイト列を作れるようにするため（別実装で測ると本番と違うものを測ることになる）。
+    let (w, h) = (img.width(), img.height());
+    let jpeg = crate::image_io::encode_jpeg_for_vlm(
+        &img,
+        max_image_edge,
+        // 透過画像は市松で埋める。合成しないと透明画素の下の RGB（多くは黒）が
+        // そのまま出て、VLM が「黒背景」に相当するタグを付ける。
+        // 見える透過が無い画像には何もしない（`composite_over` が素通しする）
+        crate::image_io::Background::Checker,
+    )
+    .map_err(|e| anyhow!("{}: {} ({})", IMAGE_ENCODE_ERROR, image_path.display(), e))?;
+    if max_image_edge > 0 && w.max(h) > max_image_edge {
+        crate::logger::log_debug(&format!(
+            "[Ollama Debug] Downscaled image {}x{} (max edge {})",
+            w, h, max_image_edge
+        ));
+    }
     Ok(base64::Engine::encode(
         &base64::engine::general_purpose::STANDARD,
-        buffer.into_inner(),
+        jpeg,
     ))
 }
 
@@ -412,6 +406,96 @@ impl LlmProvider for OllamaProvider {
 mod tests {
     use super::*;
     use crate::llm::TagGranularity;
+
+    /// **本番の送信経路そのもの**で透過画像を解析し、タグを目で見るための計測用テスト。
+    ///
+    /// `tools/prompt-check` は合成済みのファイルを送るので、`prepare_base64_image` が
+    /// 実際に市松で埋めているか・`drop_fill_artifact_tags` が効いているかは通らない。
+    /// ここは `OllamaProvider::analyze_image` を直接叩くので、本番と同じ経路を通る。
+    ///
+    /// ```bash
+    /// LOMA_VERIFY_IMAGES=<パス一覧のファイル> LOMA_VERIFY_MODEL=qwen3-vl:8b-instruct     ///   cargo test --release verify_transparent_pipeline -- --ignored --nocapture
+    /// ```
+    #[tokio::test]
+    #[ignore]
+    async fn verify_transparent_pipeline() {
+        let list_path = std::env::var("LOMA_VERIFY_IMAGES")
+            .expect("LOMA_VERIFY_IMAGES にパス一覧のファイルを指定してください");
+        let model = std::env::var("LOMA_VERIFY_MODEL")
+            .unwrap_or_else(|_| "qwen3-vl:8b-instruct".to_string());
+        let max_edge: u32 = std::env::var("LOMA_MAX_EDGE")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(1280);
+        let want: usize = std::env::var("LOMA_VERIFY_COUNT")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8);
+
+        // 実利用の設定に合わせる（force_detailed = true / granularity = descriptive）
+        let provider = OllamaProvider::new(
+            "http://localhost:11434".to_string(),
+            model.clone(),
+            PromptConfig {
+                granularity: TagGranularity::Descriptive,
+                force_detailed: true,
+            },
+            0,
+            max_edge,
+        );
+
+        let list = std::fs::read_to_string(&list_path).unwrap();
+        let mut done = 0usize;
+        let mut with_dark = 0usize;
+        let mut with_checker = 0usize;
+        for line in list.lines().map(str::trim).filter(|l| !l.is_empty()) {
+            if done >= want {
+                break;
+            }
+            let path = std::path::Path::new(line);
+            if !crate::image_io::file_has_visible_transparency(path) {
+                continue;
+            }
+            match provider.analyze_image(path).await {
+                Ok(mut result) => {
+                    result.drop_fill_artifact_tags();
+                    let names: Vec<String> = result
+                        .tags
+                        .iter()
+                        .chain(result.descriptive_tags.iter())
+                        .map(|t| t.en.to_lowercase())
+                        .collect();
+                    let dark = names.iter().any(|n| {
+                        n.contains("black_background")
+                            || n.contains("dark_background")
+                            || n.contains("black_backdrop")
+                    });
+                    let checker = names.iter().any(|n| n.contains("checker"));
+                    if dark {
+                        with_dark += 1;
+                    }
+                    if checker {
+                        with_checker += 1;
+                    }
+                    println!(
+                        "{} tags={} desc={} {}{}
+    {}",
+                        path.file_name().unwrap_or_default().to_string_lossy(),
+                        result.tags.len(),
+                        result.descriptive_tags.len(),
+                        if dark { "[黒背景タグあり] " } else { "" },
+                        if checker { "[市松タグ残り] " } else { "" },
+                        names.join(", ")
+                    );
+                }
+                Err(e) => println!("{}  失敗: {}", path.display(), e),
+            }
+            done += 1;
+        }
+        println!("
+{done} 件 / 黒背景タグ {with_dark} 件 / 市松タグの残り {with_checker} 件");
+        assert_eq!(with_checker, 0, "市松のタグが除去できていない");
+    }
 
     fn provider_with(granularity: TagGranularity, num_ctx: usize, max_edge: u32) -> OllamaProvider {
         OllamaProvider::new(

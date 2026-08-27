@@ -26,6 +26,30 @@ pub struct AnalysisResult {
     pub descriptive_tags: Vec<TagPair>,
 }
 
+impl AnalysisResult {
+    /// 市松の下地を「絵の一部」として拾ったタグを落とす。
+    ///
+    /// 透過画像は JPEG に落とす時点で必ず何かで埋まる（`image_io::Background::Checker`）。
+    /// 2026-08-27 の実測（qwen3-vl:8b-instruct / DETAILED descriptive / 16試行）では、
+    /// 8回が `transparent_background` を返し、残りが市松そのものを名指しした
+    /// （`checkered_background` / `checkerboard_background` / `checkerboard_pattern` など）。
+    ///
+    /// **`transparent_background` は正しい情報なので残す。市松を名指ししたものだけ落とす。**
+    /// 実測に出た語彙がすべて `checker` を含む形だったので部分一致で足りる。
+    ///
+    /// **透過画像にだけ適用すること。** 市松が実際に写っている画像（チェス盤など）に
+    /// 適用すると、正しいタグを消してしまう。
+    pub fn drop_fill_artifact_tags(&mut self) {
+        fn is_artifact(name: &str) -> bool {
+            let n = name.to_lowercase();
+            n.contains("checker") || n.contains("chequer")
+        }
+        self.tags.retain(|t| !is_artifact(&t.en));
+        self.descriptive_tags.retain(|t| !is_artifact(&t.en));
+        self.categories.retain(|c| !is_artifact(c));
+    }
+}
+
 /// 画像として開けなかったファイルのエラー文言。
 pub const NOT_AN_IMAGE_ERROR: &str = "Not a decodable image";
 
@@ -650,6 +674,49 @@ mod tests {
             recommended_num_ctx(VlmPromptType::Detailed, TagGranularity::Descriptive)
                 >= OBSERVED_WORST_CASE_TOKENS
         );
+    }
+
+    /// 市松の下地を名指ししたタグだけが落ち、`transparent_background` は残ること。
+    /// **実測に出た語彙**（checkered_background / checkerboard_background /
+    /// checkerboard_pattern_background / checkerboard_pattern）を並べてある。
+    #[test]
+    fn drop_fill_artifact_tags_removes_only_the_checker_naming() {
+        let pair = |en: &str| TagPair { en: en.to_string(), ja: String::new() };
+        let mut r = AnalysisResult {
+            categories: vec!["art".into(), "checkerboard".into()],
+            tags: vec![
+                pair("transparent_background"),
+                pair("checkered_background"),
+                pair("checkerboard_background"),
+                pair("cat"),
+            ],
+            descriptive_tags: vec![
+                pair("checkerboard_pattern_background"),
+                pair("checkerboard_pattern"),
+                pair("white_tank_top"),
+            ],
+        };
+        r.drop_fill_artifact_tags();
+
+        let tags: Vec<&str> = r.tags.iter().map(|t| t.en.as_str()).collect();
+        assert_eq!(tags, vec!["transparent_background", "cat"], "市松以外まで落ちている");
+        let desc: Vec<&str> = r.descriptive_tags.iter().map(|t| t.en.as_str()).collect();
+        assert_eq!(desc, vec!["white_tank_top"]);
+        assert_eq!(r.categories, vec!["art"]);
+    }
+
+    /// 表記の揺れ（大文字・英式綴り）でもすり抜けないこと。
+    #[test]
+    fn drop_fill_artifact_tags_is_case_and_spelling_tolerant() {
+        let pair = |en: &str| TagPair { en: en.to_string(), ja: String::new() };
+        let mut r = AnalysisResult {
+            categories: vec![],
+            tags: vec![pair("Checkered_Background"), pair("chequered_backdrop"), pair("dog")],
+            descriptive_tags: vec![],
+        };
+        r.drop_fill_artifact_tags();
+        let tags: Vec<&str> = r.tags.iter().map(|t| t.en.as_str()).collect();
+        assert_eq!(tags, vec!["dog"]);
     }
 
     #[test]
