@@ -11,9 +11,19 @@ async function openSettings(page: Page) {
   await expect(settingsHeading(page)).toBeVisible();
 }
 
+/**
+ * ヘッダの歯車ボタン。アイコンだけのボタンなのでアクセシブル名は `title` から来る。
+ *
+ * **英語リテラルの属性値で待たない。** 以前は `button[title="Settings"]` を指していたが、
+ * `title` は `t('app.label_title_settings')` で、モックの既定は ja なので実際の属性値は
+ * 「設定」になる。属性値そのものを指すとロケールを増やすたびに壊れる。
+ * `exact: true` は「設定を保存」への部分一致を避けるために必要。
+ */
+const settingsButton = (page: Page) => page.getByRole('button', { name: '設定', exact: true });
+
 /** ページを再読み込みせずに設定モーダルを開き直す（モックの設定状態を保つため） */
 async function reopenSettings(page: Page) {
-  await page.locator('button[title="Settings"]').click();
+  await settingsButton(page).click();
   await expect(settingsHeading(page)).toBeVisible();
 }
 

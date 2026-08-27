@@ -116,10 +116,9 @@ test.describe('概念スペクトラム検索', () => {
     await openSpectrum(page);
     await expect(page.getByText(/タグ共有で除外: 2/)).toBeVisible();
     // 理由が読めること。「なぜ明らかに似た画像が出ないのか」への答えになる
-    const help = page
-      .getByText(/タグ共有で除外: 2/)
-      .locator('xpath=./*[local-name()="svg" or self::div]')
-      .first();
+    // TooltipHelp は portal 化で `<span>` に包まれ、直下の svg / div を指す xpath では
+    // 届かなくなった。囲みの構造ではなく、ホバーの対象そのもの（HelpCircle の svg）を指す
+    const help = page.getByText(/タグ共有で除外: 2/).locator('svg');
     await help.hover();
     await expect(page.getByText(/タグ検索で見つけられるため/)).toBeVisible();
   });
