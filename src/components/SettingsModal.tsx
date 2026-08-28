@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar } from 'lucide-react';
+import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar, Eye, EyeOff } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -183,6 +183,19 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [claudeModel, setClaudeModel] = useState(settings.claude_model || 'claude-3-5-sonnet-20241022');
   const [claudeTextModel, setClaudeTextModel] = useState(settings.claude_text_model || 'claude-3-5-haiku-20241022');
   const [claudeApiKey, setClaudeApiKey] = useState('');
+  /**
+   * API キーの読み出しに失敗したプロバイダー。
+   * 欄が空なのが「未設定」なのか「読めなかった」なのかは、出さないと区別できない。
+   */
+  const [apiKeyReadFailed, setApiKeyReadFailed] = useState<Record<string, boolean>>({});
+  /**
+   * ユーザーが実際に触った API キー。**触っていないものは保存に含めない。**
+   * 読み出しに失敗すると state は空のままなので、そのまま送ると
+   * 資格情報ストアに保存済みのキーを空文字で上書きして消してしまう。
+   */
+  const [apiKeyDirty, setApiKeyDirty] = useState<Record<string, boolean>>({});
+  /** API キーは伏せ字が既定。入力し直さずに確認できるよう切り替えられるようにする */
+  const [showApiKey, setShowApiKey] = useState(false);
 
   // External LLM Settings
   const [extMaxBatchItems, setExtMaxBatchItems] = useState(settings.ext_llm_max_batch_items || '50');
@@ -238,17 +251,29 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (settings.ui_language) setUiLanguage(settings.ui_language as any);
     if (settings.ffmpeg_notice_enabled !== undefined) setFfmpegNoticeEnabled(settings.ffmpeg_notice_enabled !== 'false');
 
-    // Fetch API keys from Windows Credential Store
-    invoke<string>('get_provider_api_key', { provider: 'gemini' })
-      .then((key) => setGeminiApiKey(key || ''))
-      .catch(() => { });
-    invoke<string>('get_provider_api_key', { provider: 'openai' })
-      .then((key) => setOpenaiApiKey(key || ''))
-      .catch(() => { });
-    invoke<string>('get_provider_api_key', { provider: 'claude' })
-      .then((key) => setClaudeApiKey(key || ''))
-      .catch(() => { });
   }, [settings, open]);
+
+  /**
+   * API キーを OS の資格情報ストアから読む。
+   *
+   * **`settings` の変化では読み直さない。** 以前は上の useEffect に同居していたため、
+   * 設定を保存するたびに読み直され、入力中の値を上書きする経路になっていた。
+   */
+  useEffect(() => {
+    if (!open) return;
+    setApiKeyDirty({});
+    setApiKeyReadFailed({});
+    const load = (name: string, set: (value: string) => void) =>
+      invoke<string>('get_provider_api_key', { provider: name })
+        .then((key) => set(key || ''))
+        .catch(() => {
+          set('');
+          setApiKeyReadFailed((prev) => ({ ...prev, [name]: true }));
+        });
+    void load('gemini', setGeminiApiKey);
+    void load('openai', setOpenaiApiKey);
+    void load('claude', setClaudeApiKey);
+  }, [open]);
 
   // 現在選択中のプロバイダー・モデル・強制フラグから、実際に使用されるプロンプト種別を都度問い合わせる。
   // 未保存の選択状態（モデルのドロップダウンを変えた直後など）も正しく反映するため、
@@ -364,6 +389,44 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     await doSave();
   };
 
+  /** 現在のプロバイダーが使うモデル設定のキーと、いま画面に出ている値 */
+  const cloudModel =
+    provider === 'gemini' ? geminiModel : provider === 'openai' ? openaiModel : claudeModel;
+
+  const setCloudModel = (value: string) => {
+    if (provider === 'gemini') setGeminiModel(value);
+    else if (provider === 'openai') setOpenaiModel(value);
+    else if (provider === 'claude') setClaudeModel(value);
+  };
+
+  /** プロバイダーごとの既定モデル。db.rs の初期値と揃える */
+  const CLOUD_MODEL_PLACEHOLDER: Record<string, string> = {
+    gemini: 'gemini-2.0-flash',
+    openai: 'gpt-4o-mini',
+    claude: 'claude-3-5-sonnet-20241022',
+  };
+
+  const apiKey =
+    provider === 'gemini' ? geminiApiKey : provider === 'openai' ? openaiApiKey : claudeApiKey;
+
+  const setApiKey = (value: string) => {
+    setApiKeyDirty((prev) => ({ ...prev, [provider]: true }));
+    if (provider === 'gemini') setGeminiApiKey(value);
+    else if (provider === 'openai') setOpenaiApiKey(value);
+    else if (provider === 'claude') setClaudeApiKey(value);
+  };
+
+  const dirtyApiKeyEntries = (): ApiKeyEntry[] =>
+    (
+      [
+        ['gemini', geminiApiKey],
+        ['openai', openaiApiKey],
+        ['claude', claudeApiKey],
+      ] as const
+    )
+      .filter(([name]) => apiKeyDirty[name])
+      .map(([name, value]) => ({ provider: name, api_key: value }));
+
   const doSave = async () => {
     setConfirmModelSwitch(null);
     setSaveError(null);
@@ -392,6 +455,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           { key: 'tag_granularity', value: tagGranularity },
 
           { key: 'gemini_model', value: geminiModel },
+          // *_text_model はクラウド側では **Rust のどこからも読まれていない**
+          // （読まれるのは ollama_text_model だけ / tag_organize.rs）。
+          // 動かない入力欄を作らないため UI は用意していない。既定値を書き戻すだけ
           { key: 'gemini_text_model', value: geminiTextModel },
 
           { key: 'openai_base_url', value: openaiBaseUrl },
@@ -410,12 +476,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           { key: 'spectrum_include_descriptive', value: spectrumIncludeDescriptive ? 'true' : 'false' },
           { key: 'spectrum_centering', value: spectrumCentering ? 'true' : 'false' },
         ],
-        // API キーの保存先は OS の資格情報ストア。設定本体とは別に扱われる
-        [
-          { provider: 'gemini', api_key: geminiApiKey },
-          { provider: 'openai', api_key: openaiApiKey },
-          { provider: 'claude', api_key: claudeApiKey },
-        ]
+        // API キーの保存先は OS の資格情報ストア。設定本体とは別に扱われる。
+        // **触っていないキーは送らない。** 読み出しに失敗していると state は空のままで、
+        // 送ると保存済みのキーを空文字で消してしまう
+        dirtyApiKeyEntries()
       );
 
       // 設定本体は入ったが API キーだけ入らなかった、を黙って成功にしない
@@ -1079,6 +1143,98 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     })}
                   </div>
                 </div>
+              </div>
+            </div>
+          )}
+
+          {/* Provider Specific Settings (外部LLM)
+              Ollama のモデル選択と同じ位置に置く。プロバイダーを切り替えたときに
+              「モデルを選ぶ欄が消えた」ようには見せない */}
+          {provider !== 'ollama' && (
+            <div className="space-y-4 p-4 bg-slate-900/50 rounded-xl border border-white/5">
+              <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
+                <Cpu className="w-3.5 h-3.5" />
+                {t('settings.label_cloud_section', 'モデルとAPIキー')}
+              </h4>
+
+              {/* OpenAI 互換エンドポイント。互換サーバーを指すために要る */}
+              {provider === 'openai' && (
+                <div>
+                  <div className="flex items-center gap-1.5 mb-1.5">
+                    <Server className="w-3.5 h-3.5 text-indigo-400" />
+                    <label className="text-xs font-semibold text-slate-300">
+                      {t('settings.label_openai_base_url', 'OpenAI 互換エンドポイント URL')}
+                    </label>
+                    <TooltipHelp text={t('settings.openai_base_url_help', 'OpenAI 互換のAPIを提供するサーバーのURLです。')} />
+                  </div>
+                  <input
+                    type="text"
+                    value={openaiBaseUrl}
+                    onChange={(e) => setOpenaiBaseUrl(e.target.value)}
+                    placeholder="https://api.openai.com/v1"
+                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
+                  />
+                </div>
+              )}
+
+              {/* モデル名。一覧の取得には対応していないので直接入力させる */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <Cpu className="w-3.5 h-3.5 text-indigo-400" />
+                  <label className="text-xs font-semibold text-slate-300">
+                    {t('settings.label_cloud_model', '使用するモデル')}
+                  </label>
+                  <TooltipHelp text={t('settings.cloud_model_help', 'モデル一覧の取得には対応していないため、プロバイダーが公開しているモデルIDをそのまま入力してください。')} />
+                </div>
+                <input
+                  type="text"
+                  value={cloudModel}
+                  onChange={(e) => setCloudModel(e.target.value)}
+                  placeholder={CLOUD_MODEL_PLACEHOLDER[provider]}
+                  className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
+                />
+              </div>
+
+              {/* API キー */}
+              <div>
+                <div className="flex items-center gap-1.5 mb-1.5">
+                  <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
+                  <label className="text-xs font-semibold text-slate-300">
+                    {t('settings.label_api_key', 'APIキー')}
+                  </label>
+                  <TooltipHelp text={t('settings.api_key_help', 'OSの資格情報ストアに保存します。設定ファイルやデータベースには書き込みません。')} />
+                </div>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type={showApiKey ? 'text' : 'password'}
+                    value={apiKey}
+                    onChange={(e) => setApiKey(e.target.value)}
+                    placeholder={t('settings.label_api_key_placeholder', '未設定')}
+                    autoComplete="off"
+                    spellCheck={false}
+                    className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowApiKey((v) => !v)}
+                    title={
+                      showApiKey
+                        ? t('settings.label_api_key_hide', '隠す')
+                        : t('settings.label_api_key_show', '表示する')
+                    }
+                    className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer shrink-0"
+                  >
+                    {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                  </button>
+                </div>
+
+                {/* 空欄の意味を取り違えさせない。読めなかっただけなら、保存しても消えない */}
+                {apiKeyReadFailed[provider] && (
+                  <div className="mt-2 p-2 rounded-lg bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-1.5">
+                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-400" />
+                    <span>{t('settings.api_key_read_failed', '保存済みのキーを読み出せませんでした。空欄のまま保存しても消えません。入力すると上書きします。')}</span>
+                  </div>
+                )}
               </div>
             </div>
           )}

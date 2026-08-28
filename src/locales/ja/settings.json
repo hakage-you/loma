@@ -162,5 +162,16 @@
   "label_btn_close": "閉じる",
   "label_done": "完了",
   "label_save_failed": "保存できませんでした",
-  "api_key_save_failed": "設定は保存しましたが、次のAPIキーは保存できませんでした。\n{list}"
+  "api_key_save_failed": "設定は保存しましたが、次のAPIキーは保存できませんでした。\n{list}",
+  "label_cloud_section": "モデルとAPIキー",
+  "label_cloud_model": "使用するモデル",
+  "cloud_model_help": "モデル一覧の取得には対応していないため、プロバイダーが公開しているモデルIDをそのまま入力してください。",
+  "label_openai_base_url": "OpenAI 互換エンドポイント URL",
+  "openai_base_url_help": "OpenAI 互換のAPIを提供するサーバーのURLです。",
+  "label_api_key": "APIキー",
+  "api_key_help": "OSの資格情報ストアに保存します。設定ファイルやデータベースには書き込みません。",
+  "label_api_key_placeholder": "未設定",
+  "label_api_key_show": "表示する",
+  "label_api_key_hide": "隠す",
+  "api_key_read_failed": "保存済みのキーを読み出せませんでした。空欄のまま保存しても消えません。入力すると上書きします。"
 }

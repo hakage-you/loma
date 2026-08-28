@@ -162,5 +162,16 @@
   "label_btn_close": "Close",
   "label_done": "done",
   "label_save_failed": "Could not save",
-  "api_key_save_failed": "Settings were saved, but these API keys could not be stored.\n{list}"
+  "api_key_save_failed": "Settings were saved, but these API keys could not be stored.\n{list}",
+  "label_cloud_section": "Model and API key",
+  "label_cloud_model": "Model to use",
+  "cloud_model_help": "Model lists cannot be fetched, so type the model ID exactly as the provider publishes it.",
+  "label_openai_base_url": "OpenAI-compatible endpoint URL",
+  "openai_base_url_help": "URL of a server that exposes an OpenAI-compatible API.",
+  "label_api_key": "API key",
+  "api_key_help": "Stored in the OS credential store. It is never written to the config file or the database.",
+  "label_api_key_placeholder": "Not set",
+  "label_api_key_show": "Show",
+  "label_api_key_hide": "Hide",
+  "api_key_read_failed": "The stored key could not be read. Saving with the field empty will not erase it; typing a value overwrites it."
 }
