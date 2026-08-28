@@ -1995,11 +1995,35 @@ async fn cleanup_and_detect_moves(
             .await?;
 
     let mut missing_records = Vec::new();
+    // ファイルは在るのにサムネイルだけ消えている行。パスを空にして作り直させる
+    let mut stale_thumb_ids = Vec::new();
     for row in db_rows {
         let (id, file_path, size, hash, thumb) = row;
         if !Path::new(&file_path).exists() {
             missing_records.push((id, file_path, size, hash, thumb));
+        } else if !thumb.is_empty() && !Path::new(&thumb).exists() {
+            stale_thumb_ids.push(id);
         }
+    }
+
+    // **ここが消えたサムネイルパスを掃除する唯一の経路。**
+    // 以前はタグ管理モーダルを開くたびに `cleanup_missing_media` が全メディアの
+    // 存在確認をしていて、冷えた状態で約3秒かかっていた。同じ走査をここで
+    // すでにやっているので、明示的な同期のときにまとめて片付ける
+    if !stale_thumb_ids.is_empty() {
+        for chunk in stale_thumb_ids.chunks(500) {
+            let placeholders = chunk.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+            let query = format!("UPDATE media SET thumbnail_path = '' WHERE id IN ({})", placeholders);
+            let mut q = sqlx::query(&query);
+            for id in chunk {
+                q = q.bind(id);
+            }
+            let _ = q.execute(pool).await;
+        }
+        crate::logger::log_info(&format!(
+            "Cleared {} stale thumbnail paths from database",
+            stale_thumb_ids.len()
+        ));
     }
 
     if missing_records.is_empty() {
