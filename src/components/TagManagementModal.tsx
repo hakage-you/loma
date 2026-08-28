@@ -392,17 +392,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     );
   });
 
-  useEffect(() => {
-    if (!open) return;
-    // 【一時】暫定対処の計測用（計画 §4）。開くたびに全メディアの存在確認が走るので、
-    // その所要時間を提案の読み込みと分けて出す
-    const t0 = performance.now();
-    invoke('cleanup_missing_media')
-      .then(() =>
-        console.log(`[tag-perf] cleanup_missing_media=${Math.round(performance.now() - t0)}ms`)
-      )
-      .catch(() => {});
-  }, [open]);
+  // **開くたびに `cleanup_missing_media` を呼んでいたのをやめた。**
+  // 全メディアの `Path::exists()` を回るので冷えた状態で約3秒かかり、
+  // その間ずっと提案の読み込みと DB を取り合っていた。実データでの回収は0件。
+  // 掃除は「同期」の `cleanup_and_detect_moves` が引き継いでいる。
 
   /** 保存済みの判定と実行状態を読み直す */
   const reloadSuggestions = React.useCallback(async () => {

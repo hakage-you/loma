@@ -1625,6 +1625,13 @@ pub async fn remove_scan_folder(
 }
 
 #[tauri::command]
+/// 消えたファイルの行と、消えたサムネイルのパスを掃除する。
+///
+/// **定常的にはここを呼ばない。** 全メディアの `Path::exists()` を回るので、
+/// 冷えた状態では実測で約3秒かかる（メディア 4,941件）。
+/// 通常は「同期」が `cleanup_and_detect_moves` で同じ掃除をする
+/// （そちらは移動の検出も兼ねるので、消えた扱いにする前に追随できる）。
+/// これは移動検出を挟まずに片付けたいときの入口として残してある。
 pub async fn cleanup_missing_media(db_state: State<'_, DbState>) -> Result<usize, String> {
     crate::batch::cleanup_missing_media(&db_state.pool)
         .await
@@ -2457,6 +2464,56 @@ pub enum TargetPolicy {
 /// `reason_of` はグループのメンバーIDを受け取り、表示用の理由文字列を返す。
 /// **方式ごとに主張の強さが違う**ので、文言は呼び出し側が決める
 /// （「類似度 0.85 以上」と「AI: 包括関係」では、外れたときの裏切りの大きさが違う）。
+/// 提案カードに出すサムネイルの枚数。
+const SUGGESTION_SAMPLE_THUMBNAIL_LIMIT: usize = 5;
+
+/// `build_suggestions` がグループごとに必要とするものを、まとめて引く。
+///
+/// 返すのは (タグ→メディアID, 実在するメディアID, メディアID→サムネイルのパス)。
+/// クエリはタグの分割数 + 1 回で、**グループ数には依存しない**。
+async fn fetch_group_media(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    groups: &[Vec<i64>],
+) -> (
+    std::collections::HashMap<i64, Vec<i64>>,
+    std::collections::HashSet<i64>,
+    std::collections::HashMap<i64, String>,
+) {
+    let mut tag_media: std::collections::HashMap<i64, Vec<i64>> = std::collections::HashMap::new();
+    let mut tag_ids: Vec<i64> = groups.iter().flatten().copied().collect();
+    tag_ids.sort_unstable();
+    tag_ids.dedup();
+
+    // IN 句の要素数には上限があるので分割する（get_tag_sample_thumbnails と同じ）
+    for chunk in tag_ids.chunks(400) {
+        let ids_str = chunk.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
+        let rows = sqlx::query_as::<_, (i64, i64)>(&format!(
+            "SELECT tag_id, media_id FROM media_tags WHERE tag_id IN ({})",
+            ids_str
+        ))
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+        for (tag_id, media_id) in rows {
+            tag_media.entry(tag_id).or_default().push(media_id);
+        }
+    }
+
+    // media 側は1回。存在確認とサムネイルの両方をこれで賄う
+    let media_rows = sqlx::query_as::<_, (i64, String)>("SELECT id, thumbnail_path FROM media")
+        .fetch_all(pool)
+        .await
+        .unwrap_or_default();
+    let existing_media: std::collections::HashSet<i64> =
+        media_rows.iter().map(|(id, _)| *id).collect();
+    let thumb_of: std::collections::HashMap<i64, String> = media_rows
+        .into_iter()
+        .filter(|(_, path)| !path.is_empty())
+        .collect();
+
+    (tag_media, existing_media, thumb_of)
+}
+
 pub async fn build_suggestions<F>(
     pool: &sqlx::Pool<sqlx::Sqlite>,
     groups: &[Vec<i64>],
@@ -2468,6 +2525,13 @@ where
     F: Fn(&[i64]) -> (String, Vec<String>),
 {
     let mut suggestions = Vec::new();
+
+    // **グループごとに DB を叩かない。**
+    // 以前はグループ1つにつき「サムネイル5枚」と「総枚数」で2クエリを逐次に投げていた。
+    // 実データでは ① だけで 4,215 グループ = 8,430 クエリになり、モーダルを開くたび・
+    // 方式を切り替えるたび・適用のたびに走っていた。
+    // 先にまとめて引いてメモリ上で組み立てる（実測 427ms → 34ms・結果は一致）。
+    let (tag_media, existing_media, thumb_of) = fetch_group_media(pool, groups).await;
 
     for (group_idx, members) in groups.iter().enumerate() {
         // **代表が消えていたら Pinned は成立しない。**
@@ -2503,25 +2567,33 @@ where
         let target_tag = tag_map[&member_ids[0]].clone();
         let source_tags: Vec<TagItem> = member_ids[1..].iter().map(|id| tag_map[id].clone()).collect();
 
-        // 代表的な画像サムネイルをグループ内から最大5件抽出
-        let ids_str = member_ids.iter().map(|id| id.to_string()).collect::<Vec<_>>().join(",");
-        let sample_thumbnails = sqlx::query_scalar::<_, String>(&format!(
-            "SELECT DISTINCT m.thumbnail_path FROM media m JOIN media_tags mt ON m.id = mt.media_id \
-             WHERE mt.tag_id IN ({}) AND m.thumbnail_path != '' LIMIT 5",
-            ids_str
-        ))
-        .fetch_all(pool)
-        .await
-        .unwrap_or_default();
+        // グループに属するメディア。**media に無い media_tags の行は数えない**
+        // （以前の JOIN と同じ）。孤児が残っていると総枚数が実物より多く出る
+        let mut media_ids: Vec<i64> = Vec::new();
+        for id in &member_ids {
+            if let Some(ids) = tag_media.get(id) {
+                media_ids.extend(ids.iter().copied().filter(|m| existing_media.contains(m)));
+            }
+        }
+        media_ids.sort_unstable_by(|a, b| b.cmp(a));
+        media_ids.dedup();
+        let total_images_count = media_ids.len();
 
-        let total_images_count = sqlx::query_scalar::<_, i64>(&format!(
-            "SELECT COUNT(DISTINCT m.id) FROM media m JOIN media_tags mt ON m.id = mt.media_id \
-             WHERE mt.tag_id IN ({})",
-            ids_str
-        ))
-        .fetch_one(pool)
-        .await
-        .unwrap_or(0) as usize;
+        // 代表的な画像サムネイルをグループ内から最大5件抽出。
+        // 以前は LIMIT 5 に順序指定が無く、同じグループでも並びが変わりえた。
+        // 新しいメディアから採る（get_tag_sample_thumbnails と同じ向き）
+        let mut sample_thumbnails: Vec<String> = Vec::new();
+        let mut seen_paths: std::collections::HashSet<&str> = std::collections::HashSet::new();
+        for media_id in &media_ids {
+            if sample_thumbnails.len() >= SUGGESTION_SAMPLE_THUMBNAIL_LIMIT {
+                break;
+            }
+            if let Some(path) = thumb_of.get(media_id) {
+                if seen_paths.insert(path.as_str()) {
+                    sample_thumbnails.push(path.clone());
+                }
+            }
+        }
 
         let (reason, rules) = reason_of(&member_ids);
         suggestions.push(MergeSuggestion {
@@ -3087,6 +3159,118 @@ mod target_policy_tests {
         })
         .await;
         assert_eq!(most_used[0].target_tag.name, "table", "同義語ではこちらが正しい");
+    }
+
+    /// メディアを1件足し、指定したタグに紐づける
+    async fn add_media(pool: &sqlx::Pool<sqlx::Sqlite>, media_id: i64, thumb: &str, tag_ids: &[i64]) {
+        sqlx::query("INSERT INTO media (id, thumbnail_path) VALUES (?1, ?2)")
+            .bind(media_id)
+            .bind(thumb)
+            .execute(pool)
+            .await
+            .unwrap();
+        for tag_id in tag_ids {
+            link_media(pool, media_id, *tag_id).await;
+        }
+    }
+
+    /// `media` に対応する行を作らずに紐づけだけ足す（孤児の再現に使う）
+    async fn link_media(pool: &sqlx::Pool<sqlx::Sqlite>, media_id: i64, tag_id: i64) {
+        sqlx::query("INSERT INTO media_tags (media_id, tag_id) VALUES (?1, ?2)")
+            .bind(media_id)
+            .bind(tag_id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn one_suggestion(
+        pool: &sqlx::Pool<sqlx::Sqlite>,
+        tags: &[(i64, &str, i64)],
+        members: Vec<i64>,
+    ) -> MergeSuggestion {
+        let tag_map = map(tags);
+        let groups = vec![members];
+        build_suggestions(pool, &groups, &tag_map, TargetPolicy::MostUsed, |_| {
+            (String::new(), vec![])
+        })
+        .await
+        .remove(0)
+    }
+
+    /// 総枚数はグループ全体で重複を除いた実数。
+    /// 2つのタグが同じメディアに付いていても1枚。
+    #[tokio::test]
+    async fn total_count_is_distinct_media_across_the_whole_group() {
+        let tags = [(1i64, "cat", 5i64), (2, "kitten", 3)];
+        let pool = pool_with_tags(&tags).await;
+        add_media(&pool, 10, "a.jpg", &[1, 2]).await; // 両方に付く
+        add_media(&pool, 11, "b.jpg", &[1]).await;
+        add_media(&pool, 12, "c.jpg", &[2]).await;
+
+        let s = one_suggestion(&pool, &tags, vec![1, 2]).await;
+        assert_eq!(s.total_images_count, 3);
+    }
+
+    /// **`media` に無い `media_tags` の行は数えない。**
+    /// 以前の実装は `JOIN media` していたので孤児は落ちていた。
+    /// まとめて引く形にしたときに、ここを落とすと総枚数が実物より多く出る。
+    #[tokio::test]
+    async fn orphan_media_tags_rows_are_not_counted() {
+        let tags = [(1i64, "cat", 5i64)];
+        let pool = pool_with_tags(&tags).await;
+        add_media(&pool, 10, "a.jpg", &[1]).await;
+        link_media(&pool, 999, 1).await; // media に対応する行が無い
+
+        let s = one_suggestion(&pool, &tags, vec![1, 1]).await;
+        assert_eq!(s.total_images_count, 1, "孤児を数えていない");
+    }
+
+    /// サムネイルは最大5枚。空欄は飛ばし、同じパスは1回しか出さない。
+    #[tokio::test]
+    async fn thumbnails_skip_blanks_and_duplicates_and_stop_at_five() {
+        let tags = [(1i64, "cat", 5i64), (2, "kitten", 3)];
+        let pool = pool_with_tags(&tags).await;
+        add_media(&pool, 20, "", &[1]).await; // サムネイル未生成
+        add_media(&pool, 21, "same.jpg", &[1]).await;
+        add_media(&pool, 22, "same.jpg", &[2]).await; // 同じパス
+        for id in 23..30 {
+            add_media(&pool, id, &format!("t{}.jpg", id), &[2]).await;
+        }
+
+        let s = one_suggestion(&pool, &tags, vec![1, 2]).await;
+        assert_eq!(s.sample_thumbnails.len(), 5);
+        assert!(!s.sample_thumbnails.iter().any(|p| p.is_empty()));
+        let mut sorted = s.sample_thumbnails.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(sorted.len(), 5, "同じパスを2回出していない");
+        // 新しいメディアから採るので、末尾の id が先に来る
+        assert_eq!(s.sample_thumbnails[0], "t29.jpg");
+    }
+
+    /// グループ数が増えてもクエリ本数が増えないこと自体は測れないが、
+    /// **複数グループを一度に渡しても各グループの値が混ざらない**ことは確かめられる。
+    #[tokio::test]
+    async fn groups_do_not_leak_into_each_other() {
+        let tags = [(1i64, "cat", 5i64), (2, "kitten", 3), (3, "dog", 4), (4, "puppy", 2)];
+        let pool = pool_with_tags(&tags).await;
+        add_media(&pool, 10, "cat1.jpg", &[1, 2]).await;
+        add_media(&pool, 11, "dog1.jpg", &[3]).await;
+        add_media(&pool, 12, "dog2.jpg", &[4]).await;
+
+        let tag_map = map(&tags);
+        let groups = vec![vec![1, 2], vec![3, 4]];
+        let out = build_suggestions(&pool, &groups, &tag_map, TargetPolicy::MostUsed, |_| {
+            (String::new(), vec![])
+        })
+        .await;
+
+        let cat = out.iter().find(|s| s.target_tag.name == "cat").unwrap();
+        let dog = out.iter().find(|s| s.target_tag.name == "dog").unwrap();
+        assert_eq!(cat.total_images_count, 1);
+        assert_eq!(dog.total_images_count, 2);
+        assert_eq!(cat.sample_thumbnails, vec!["cat1.jpg"]);
     }
 
     fn sug(id: &str, target: i64, sources: &[i64], rule: &str) -> MergeSuggestion {
