@@ -17,6 +17,32 @@ import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 // 実際の @tauri-apps/api/core の invoke / convertFileSrc を置き換える。
 
 let mediaState: MediaItem[] = MOCK_MEDIA.map((m) => ({ ...m, tags: [...m.tags], categories: [...m.categories] }));
+
+/**
+ * `?debugMediaCount=<件数>` を付けると、その件数になるまで水増しする。
+ *
+ * 既定は 23件で、**段階描画のように「多いときだけ効く」挙動を検証できない**。
+ * 既定値は変えない（概念スペクトラム検索のテストが件数に依存している）。
+ */
+(() => {
+  const raw = new URLSearchParams(window.location.search).get('debugMediaCount');
+  const want = raw ? Number(raw) : 0;
+  if (!Number.isFinite(want) || want <= mediaState.length) return;
+  const base = mediaState[0];
+  const padded = [...mediaState];
+  for (let i = mediaState.length; i < want; i++) {
+    const id = 10_000 + i;
+    padded.push({
+      ...base,
+      id,
+      file_path: `mock-asset://padded_${id}.jpg`,
+      thumbnail_path: `mock-asset://padded_${id}.jpg`,
+      tags: base.tags.map((t) => ({ ...t })),
+      categories: [...base.categories],
+    });
+  }
+  mediaState = padded;
+})();
 let tagState: TagItem[] = MOCK_TAGS.map((t) => ({ ...t }));
 let settingsState: Record<string, string> = { ...MOCK_SETTINGS };
 let scanFoldersState = MOCK_SCAN_FOLDERS.map((f) => ({ ...f }));
@@ -34,8 +60,14 @@ function matchesFilters(item: MediaItem, args: Record<string, any>): boolean {
     if (!categoryFilter.some((c) => item.categories.includes(c))) return false;
   }
   if (tagFilter && tagFilter.length > 0) {
-    const itemTagNames = item.tags.map((t) => t.name);
-    if (!tagFilter.some((t) => itemTagNames.includes(t))) return false;
+    // **英語名だけで見ない。** 実バックエンドは name と name_ja の両方で照合する
+    // （`evaluate_tag_filter` / `get_media` の tag_filter）。ギャラリーのカードは
+    // 日本語表示のとき name_ja を送るので、英語名だけだと必ず0件になる
+    const matches = (target: string) =>
+      item.tags.some(
+        (t) => t.name.toLowerCase() === target.toLowerCase() || (t.name_ja ?? '') === target
+      );
+    if (!tagFilter.some(matches)) return false;
   }
   if (parentFolderFilter && item.parent_folder !== parentFolderFilter) return false;
   if (scanFolderFilter && !item.file_path.includes(scanFolderFilter)) return false;

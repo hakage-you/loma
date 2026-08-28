@@ -205,6 +205,39 @@ function AppContent() {
     ? filterTreeToDisplayString(groupsToFilterTree(advancedSearchGroups)!)
     : '';
 
+  /**
+   * 絞り込みの内容を表す文字列。**GalleryGrid の `key` にする。**
+   *
+   * ギャラリーは段階描画で、出す枚数と読み終えた位置を内部に持つ。
+   * 絞り込みを変えたときはそれを捨てて先頭から出し直したいが、
+   * スキャン中の再取得（1秒ごと）やタグ編集では捨てたくない。
+   * `items` の変化を見て判定すると両者を区別できないので、
+   * 絞り込みそのものを鍵にして作り直す。
+   */
+  const galleryKey = useMemo(
+    () =>
+      JSON.stringify([
+        selectedCategories,
+        selectedTags,
+        advancedSearchGroups,
+        selectedParentFolder,
+        selectedScanFolder,
+        selectedStatus,
+        selectedMediaType,
+        selectedExtensions,
+      ]),
+    [
+      selectedCategories,
+      selectedTags,
+      advancedSearchGroups,
+      selectedParentFolder,
+      selectedScanFolder,
+      selectedStatus,
+      selectedMediaType,
+      selectedExtensions,
+    ]
+  );
+
   useEffect(() => {
     const tree = isAdvancedSearchActive ? groupsToFilterTree(advancedSearchGroups) : undefined;
     fetchMedia({
@@ -506,6 +539,7 @@ function AppContent() {
 
           {/* Media Grid */}
           <GalleryGrid
+            key={galleryKey}
             items={media}
             loading={loading}
             gridColumns={gridColumns}
