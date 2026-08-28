@@ -1681,16 +1681,27 @@ async fn analyze_multi_frame_with_ollama(
     ))
 }
 
+/// 再解析の対象になるメディアの `file_path` と `thumbnail_path` を引く。
+///
+/// `media_id` の bind を忘れると `?1` が NULL になり、`id = NULL` は常に偽なので
+/// 全 ID で 0 件になる。それが「no rows returned by a query that expected to
+/// return at least one row」として出ていた。行が無い場合は ID の分かる文言で返す。
+async fn fetch_media_paths(pool: &Pool<Sqlite>, media_id: i64) -> Result<(String, String)> {
+    sqlx::query_as::<_, (String, String)>(
+        "SELECT file_path, thumbnail_path FROM media WHERE id = ?1"
+    )
+    .bind(media_id)
+    .fetch_optional(pool)
+    .await?
+    .ok_or_else(|| anyhow!("Media id {} not found in the database", media_id))
+}
+
 /// 単一メディア（画像/動画サムネイル）の再解析を実行する
 pub async fn reanalyze_single_media(
     pool: &Pool<Sqlite>,
     media_id: i64,
 ) -> Result<()> {
-    let (file_path_str, thumb_path_str) = sqlx::query_as::<_, (String, String)>(
-        "SELECT file_path, thumbnail_path FROM media WHERE id = ?1"
-    )
-    .fetch_one(pool)
-    .await?;
+    let (file_path_str, thumb_path_str) = fetch_media_paths(pool, media_id).await?;
 
     let (llm_provider, _) = crate::llm::factory::create_llm_provider(pool).await?;
 
@@ -2247,5 +2258,35 @@ mod tests {
         };
 
         assert_eq!(result, Some("analyzed"));
+    }
+
+    /// 再解析の対象を ID で引けることの回帰テスト。
+    /// bind が抜けていると `?1` が NULL になり、行が有っても 0 件になって
+    /// 「この画像を再解析」が必ず失敗していた。
+    #[tokio::test]
+    async fn fetch_media_paths_returns_the_row_for_the_given_id() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        crate::db::create_tables(&pool).await.unwrap();
+
+        for (id, name) in [(1_i64, "a"), (2, "b")] {
+            sqlx::query(
+                "INSERT INTO media (id, file_path, parent_folder, thumbnail_path, file_size, file_modified_at)
+                 VALUES (?1, ?2, 'D:/pic', ?3, 1, 0)",
+            )
+            .bind(id)
+            .bind(format!("D:/pic/{name}.png"))
+            .bind(format!("D:/thumb/{name}.jpg"))
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let (file_path, thumb_path) = fetch_media_paths(&pool, 2).await.unwrap();
+        assert_eq!(file_path, "D:/pic/b.png");
+        assert_eq!(thumb_path, "D:/thumb/b.jpg");
+
+        // 消えた ID は、どの ID で失敗したのか分かる文言で返す
+        let err = fetch_media_paths(&pool, 999).await.unwrap_err().to_string();
+        assert!(err.contains("999"), "対象 ID が分からない文言: {err}");
     }
 }
