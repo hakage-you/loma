@@ -1,3 +1,6 @@
 {
-  "label_title_search_tag": "Click to search this tag"
+  "label_title_search_tag": "Click to search this tag",
+  "label_loading": "Loading",
+  "label_empty_title": "No media found",
+  "empty_hint": "Add a folder with \"Add folder\", or change the filters."
 }

@@ -1,0 +1,12 @@
+{
+  "label_saving_settings": "設定を保存しています",
+  "label_editing_tags": "タグを更新しています",
+  "label_applying_tag_merges": "タグの統合を適用しています",
+  "label_building_tag_suggestions": "タグの提案を作っています",
+  "label_syncing_folders": "フォルダを同期しています",
+  "label_reanalyzing_media": "メディアを再解析しています",
+  "label_processing_embeddings": "ベクトルを処理しています",
+  "label_wait": "完了するまでお待ちください",
+  "blocked_reason": "別の処理が実行中のため、いまは実行できません。",
+  "blocked_reason_scanning": "解析の実行中はタグやフォルダを変更できません。完了するか、停止してから操作してください。"
+}

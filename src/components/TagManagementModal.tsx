@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
+import { runExclusive } from '../hooks/useBusy';
+import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
 import { listen } from '@tauri-apps/api/event';
 // **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
 // confirm は false 相当になるため、確認を出したつもりで何も起きない状態になる。
@@ -288,6 +290,8 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 }) => {
   // タグ一覧の map では変数名 `t` がタグを指すため、翻訳関数に別名を用意しておく
   const { t, t: translate, language } = useTranslation();
+  // 統合・提案の再計算・タグ名の変更はすべて Rust の排他ロックを取る
+  const exclusive = useExclusiveGuard();
   const [activeTab, setActiveTab] = useState<'all' | 'suggestions'>('all');
   const [search, setSearch] = useState('');
   const [editingTagId, setEditingTagId] = useState<number | null>(null);
@@ -695,7 +699,9 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
       setSuggestions([]);
       setCustomMasterTags({});
       setExcludedTagIds({});
-      await invoke<MergeSuggestion[]>(spec.command, fullRescan ? { fullRescan: true } : {});
+      await runExclusive('building_tag_suggestions', () =>
+        invoke<MergeSuggestion[]>(spec.command, fullRescan ? { fullRescan: true } : {})
+      );
       // 実行結果は保存されているので、読み出し経路に一本化する
       await reloadSuggestions();
     } catch (e) {
@@ -877,11 +883,13 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
       }
 
       setApplyProgressText(t('tag_modal.label_applying_count', 'Applying {n}...', { n: items.length }));
-      const result = await invoke<{
-        merged_tags: number;
-        targets: number;
-        conflicts: { tag_id: number; target_ids: number[] }[];
-      }>('apply_tag_merges', { items });
+      const result = await runExclusive('applying_tag_merges', () =>
+        invoke<{
+          merged_tags: number;
+          targets: number;
+          conflicts: { tag_id: number; target_ids: number[] }[];
+        }>('apply_tag_merges', { items })
+      );
 
       // **競合があると何も適用されない。** どのタグが競合したかを名前で見せる
       if (result.conflicts.length > 0) {
@@ -1001,7 +1009,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
               <button
                 onClick={() => handleScanSuggestions(false)}
-                disabled={scanningSuggestions || applyingMerges || isScanning}
+                disabled={scanningSuggestions || applyingMerges || isScanning || exclusive.blocked}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50 whitespace-nowrap"
               >
                 {scanningSuggestions ? (
@@ -1071,7 +1079,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               {!scanningSuggestions && runStatus && runStatus.unjudged_count > 0 && (
                 <button
                   onClick={() => handleScanSuggestions(false)}
-                  disabled={applyingMerges || isScanning}
+                  disabled={applyingMerges || isScanning || exclusive.blocked}
                   className="px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition cursor-pointer disabled:opacity-50"
                 >
                   {t('tag_modal.label_btn_resume', 'Continue')}
@@ -1081,7 +1089,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               {!scanningSuggestions && method === 'hypernym' && runStatus && (
                 <button
                   onClick={() => handleScanSuggestions(true)}
-                  disabled={applyingMerges || isScanning}
+                  disabled={applyingMerges || isScanning || exclusive.blocked}
                   title={t('tag_modal.label_title_rescan', 'Discard saved judgements and re-extract hypernyms')}
                   className="text-[11px] text-slate-400 hover:text-slate-200 underline underline-offset-2 cursor-pointer disabled:opacity-50"
                 >
@@ -1169,7 +1177,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   </select>
                   <button
                     onClick={handleExecuteManualMerge}
-                    disabled={!targetTagId || applyingMerges || isScanning}
+                    disabled={!targetTagId || applyingMerges || isScanning || exclusive.blocked}
                     className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition disabled:opacity-40 cursor-pointer flex items-center gap-1"
                   >
                     {applyingMerges && <RefreshCw className="w-3 h-3 animate-spin" />}
@@ -1364,7 +1372,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
                   <button
                     onClick={handleApplySelectedSuggestions}
-                    disabled={acceptedIds.size === 0 || applyingMerges || isScanning}
+                    disabled={acceptedIds.size === 0 || applyingMerges || isScanning || exclusive.blocked}
                     className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-emerald-900/30 cursor-pointer disabled:opacity-40"
                   >
                     {applyingMerges ? (

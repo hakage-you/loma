@@ -8,8 +8,12 @@ import {
   ProgressPayload,
   TagFilterNode,
   ExcludedPathItem,
+  SettingEntry,
+  ApiKeyEntry,
+  SaveSettingsResult,
 } from '../types';
 import { STATUS_TAG_INSUFFICIENT, STATUS_EXCLUDED, isTagInsufficient } from '../constants/spectrum';
+import { runExclusive, setScanBusy } from './useBusy';
 
 export interface FilterState {
   categories?: string[];
@@ -29,7 +33,16 @@ export function useMedia() {
   const [parentFolders, setParentFolders] = useState<string[]>([]);
   const [loading, setLoading] = useState(false);
   const [progress, setProgress] = useState<ProgressPayload | null>(null);
-  const [scanning, setScanning] = useState(false);
+  const [scanning, setScanningState] = useState(false);
+  /**
+   * スキャン・全件再解析の実行中は Rust のロックが握られたままになる。
+   * 数十分かかるので画面は塞がないが、**押しても必ず失敗する**排他操作は
+   * 押させないよう、同じ瞬間にブロック状態を立てる。
+   */
+  const setScanning = useCallback((next: boolean) => {
+    setScanningState(next);
+    setScanBusy(next);
+  }, []);
   const [settings, setSettings] = useState<Record<string, string>>({});
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   /**
@@ -448,7 +461,7 @@ export function useMedia() {
   const reanalyzeSingleMedia = async (mediaId: number) => {
     setScanning(true);
     try {
-      await invoke('reanalyze_single_media', { mediaId });
+      await runExclusive('reanalyzing_media', () => invoke('reanalyze_single_media', { mediaId }));
       await fetchMedia();
       await fetchMasterData();
     } catch (e: any) {
@@ -493,7 +506,7 @@ export function useMedia() {
 
   const renameTag = async (tagId: number, newName: string, newNameJa?: string) => {
     try {
-      await invoke('rename_tag', { tagId, newName, newNameJa });
+      await runExclusive('editing_tags', () => invoke('rename_tag', { tagId, newName, newNameJa }));
       await fetchMasterData();
       await fetchMedia();
     } catch (e: any) {
@@ -504,7 +517,7 @@ export function useMedia() {
 
   const mergeTags = async (targetTagId: number, sourceTagIds: number[]) => {
     try {
-      await invoke('merge_tags', { targetTagId, sourceTagIds });
+      await runExclusive('editing_tags', () => invoke('merge_tags', { targetTagId, sourceTagIds }));
       await fetchMasterData();
       await fetchMedia();
     } catch (e: any) {
@@ -515,7 +528,9 @@ export function useMedia() {
 
   const addTagToMedia = async (mediaId: number, tagName: string, tagNameJa?: string) => {
     try {
-      await invoke<TagItem>('add_tag_to_media', { mediaId, tagName, tagNameJa: tagNameJa || null });
+      await runExclusive('editing_tags', () =>
+        invoke<TagItem>('add_tag_to_media', { mediaId, tagName, tagNameJa: tagNameJa || null })
+      );
       await fetchMasterData();
       await fetchMedia();
     } catch (e: any) {
@@ -526,13 +541,39 @@ export function useMedia() {
 
   const removeTagFromMedia = async (mediaId: number, tagId: number) => {
     try {
-      await invoke('remove_tag_from_media', { mediaId, tagId });
+      await runExclusive('editing_tags', () => invoke('remove_tag_from_media', { mediaId, tagId }));
       await fetchMasterData();
       await fetchMedia();
     } catch (e: any) {
       console.error('Failed to remove tag from media:', e);
       setErrorModal({ open: true, message: String(e) });
     }
+  };
+
+  /**
+   * 設定をまとめて1往復で保存する。
+   *
+   * `updateSetting` を項目数だけ呼ぶと、その回数だけ IPC を往復し、
+   * 毎回 `setSettings` で App 全体が再描画される。保存が終わるまで数秒かかり、
+   * その間に別の値を触られても、DB に入るのは押した時点の値だけだった。
+   * **成否が確定するまで画面を塞ぐ**ので、ここは `runExclusive` で包む。
+   *
+   * 失敗は握り潰さず投げる。呼び出し側が保存画面に出すこと。
+   */
+  const saveSettings = async (
+    entries: SettingEntry[],
+    apiKeys: ApiKeyEntry[]
+  ): Promise<SaveSettingsResult> => {
+    const result = await runExclusive('saving_settings', () =>
+      invoke<SaveSettingsResult>('save_settings', { entries, apiKeys })
+    );
+    // 保存できた値でローカルの設定を更新する。取り直しの IPC は挟まない
+    setSettings((prev) => {
+      const next = { ...prev };
+      for (const entry of entries) next[entry.key] = entry.value;
+      return next;
+    });
+    return result;
   };
 
   const updateSetting = async (key: string, value: string) => {
@@ -628,6 +669,7 @@ export function useMedia() {
     getLogs,
     clearLogs,
     updateSetting,
+    saveSettings,
     reanalyzeSingleMedia,
   };
 }

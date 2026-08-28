@@ -55,6 +55,7 @@ pub fn run() {
             commands::get_scan_status,
             commands::get_settings,
             commands::update_setting,
+            commands::save_settings,
             commands::get_available_models,
             commands::get_vision_capable_models,
             commands::get_all_tags,

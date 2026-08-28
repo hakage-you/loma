@@ -20,7 +20,10 @@ import { AboutModal } from './components/AboutModal';
 import { SearchModal } from './components/SearchModal';
 import { SpectrumModal } from './components/SpectrumModal';
 import { FailureTriageModal } from './components/FailureTriageModal';
+import { BusyOverlay } from './components/BusyOverlay';
 import { STATUS_TAG_INSUFFICIENT } from './constants/spectrum';
+import { runExclusive, useBusy } from './hooks/useBusy';
+import { useExclusiveGuard } from './hooks/useExclusiveGuard';
 
 function AppContent() {
   const { t } = useTranslation();
@@ -63,10 +66,13 @@ function AppContent() {
     unloadModel,
     getLogs,
     clearLogs,
-    updateSetting,
+    saveSettings,
     reanalyzeSingleMedia,
   } = useMedia();
 
+  const { kind: busyKind } = useBusy();
+  // 排他ロックを取る操作は、走っている間 Rust が必ず弾く。押せるままにしない
+  const exclusive = useExclusiveGuard();
   const [globalDownloadProgress, setGlobalDownloadProgress] = useState<OllamaPullProgressPayload | null>(null);
   /** 概念スペクトラム探索の起点。null で閉じる */
   const [spectrumBase, setSpectrumBase] = useState<MediaItem | null>(null);
@@ -144,7 +150,7 @@ function AppContent() {
 
   const handleSyncFolders = async () => {
     try {
-      await invoke('sync_folders');
+      await runExclusive('syncing_folders', () => invoke('sync_folders'));
       fetchMasterData();
     } catch (e: any) {
       console.error('Sync failed:', e);
@@ -298,8 +304,15 @@ function AppContent() {
     }
   };
 
+  // 排他処理の実行中は中身をまるごと不活性にする。オーバーレイだけだと
+  // ポインタは止まるがキーボード（Tab / Enter）は通ってしまい、
+  // 「押せてしまうが必ず失敗する」状態が残る。
+  // BusyOverlay 自身は document.body へポータルするので、この不活性の外側に出る。
   return (
-    <div className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden select-none">
+    <div
+      className="flex flex-col h-screen bg-slate-950 text-slate-100 overflow-hidden select-none"
+      inert={busyKind !== null}
+    >
       {/* Top Header Bar (Matching Sketch Layout) */}
       <header className="px-5 py-2.5 bg-slate-900/90 border-b border-white/10 flex items-center justify-between gap-4 shrink-0 glass-panel rounded-none border-x-0 border-t-0">
         {/* Top-Left: App Title / Logo (Width = 16rem / w-64 to match Sidebar) */}
@@ -362,7 +375,9 @@ function AppContent() {
                 {/* [Add Folder] Button */}
                 <button
                   onClick={handleSelectFolder}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-lg text-xs font-semibold transition shadow-lg shadow-indigo-900/30 cursor-pointer"
+                  disabled={exclusive.blocked}
+                  title={exclusive.reason}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-indigo-600 to-violet-600 hover:from-indigo-500 hover:to-violet-500 text-white rounded-lg text-xs font-semibold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                 >
                   <FolderPlus className="w-3.5 h-3.5" />
                   <span>{t('search.label_add_folder', 'フォルダ追加')}</span>
@@ -371,8 +386,9 @@ function AppContent() {
                 {/* [Sync] Button */}
                 <button
                   onClick={handleSyncFolders}
-                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-semibold transition cursor-pointer"
-                  title={t('app.label_title_sync', 'Sync all registered folders')}
+                  disabled={exclusive.blocked}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-indigo-300 hover:text-white border border-indigo-500/30 rounded-lg text-xs font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  title={exclusive.reason ?? t('app.label_title_sync', 'Sync all registered folders')}
                 >
                   <RefreshCw className="w-3.5 h-3.5 text-indigo-400" />
                   <span>{t('search.label_sync', '同期')}</span>
@@ -554,7 +570,6 @@ function AppContent() {
       <FailureTriageModal
         open={isFailureTriageOpen}
         failedItems={failedMediaItems}
-        scanning={scanning}
         onClose={() => setIsFailureTriageOpen(false)}
         onRetry={retryMedia}
         onExclude={excludeMedia}
@@ -615,7 +630,7 @@ function AppContent() {
         availableModels={availableModels}
         visionModels={visionModels}
         onClose={() => setIsSettingsOpen(false)}
-        onUpdateSetting={updateSetting}
+        onSaveSettings={saveSettings}
         onFetchModels={fetchModels}
         onUnloadModel={unloadModel}
       />
@@ -683,6 +698,9 @@ function AppContent() {
         ollamaHint={errorModal.ollamaHint}
         onClose={() => setErrorModal({ open: false, message: '' })}
       />
+
+      {/* 何が走っているかを出す層 */}
+      <BusyOverlay />
     </div>
   );
 }

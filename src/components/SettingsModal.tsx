@@ -20,10 +20,14 @@ import {
   EmbeddingDiagnostics,
   EmbeddingStorageInfo,
   EmbeddingCleanupResult,
+  SettingEntry,
+  ApiKeyEntry,
+  SaveSettingsResult,
 } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
 import { TooltipHelp } from './TooltipHelp';
+import { runBackground, runExclusive } from '../hooks/useBusy';
 
 interface SettingsModalProps {
   open: boolean;
@@ -32,7 +36,8 @@ interface SettingsModalProps {
   /** `availableModels` のうち vision を宣言しているモデル。null は「判定できていない」 */
   visionModels: string[] | null;
   onClose: () => void;
-  onUpdateSetting: (key: string, value: string) => Promise<void>;
+  /** 設定を1往復でまとめて保存する。項目ごとに保存すると途中で止まった状態が生まれる */
+  onSaveSettings: (entries: SettingEntry[], apiKeys: ApiKeyEntry[]) => Promise<SaveSettingsResult>;
   /** `refresh` を true にすると vision 宣言のキャッシュを捨てて取り直す */
   onFetchModels: (refresh?: boolean) => Promise<void>;
   onUnloadModel?: () => Promise<void>;
@@ -76,7 +81,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   availableModels,
   visionModels,
   onClose,
-  onUpdateSetting,
+  onSaveSettings,
   onFetchModels,
   onUnloadModel,
 }) => {
@@ -192,6 +197,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   /** VLM プルダウンで vision 未宣言のモデルも出すか。既定は絞り込んだ状態 */
   const [showNonVisionModels, setShowNonVisionModels] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  /**
+   * 保存が失敗した理由。**握り潰さない。**
+   * 以前は console.error だけで、ユーザーには「モーダルが閉じない」しか手がかりが無かった
+   */
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [savedStatus, setSavedStatus] = useState(false);
   const [unloadedStatus, setUnloadedStatus] = useState(false);
   // 基本設定（言語・モデル選択・タグ粒度）以外をまとめる詳細設定アコーディオンの開閉
@@ -356,45 +366,68 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
   const doSave = async () => {
     setConfirmModelSwitch(null);
+    setSaveError(null);
     setIsSaving(true);
     try {
-      await onUpdateSetting('llm_provider', provider);
-      await onUpdateSetting('ollama_url', ollamaUrl);
-      await onUpdateSetting('ollama_model', selectedVlmModel);
-      await onUpdateSetting('ollama_text_model', selectedTextModel);
-      // 空欄・不正値は自動(0) / 既定値(1536) にフォールバックさせる
-      await onUpdateSetting('ollama_num_ctx', String(Math.max(0, parseInt(ollamaNumCtx, 10) || 0)));
-      await onUpdateSetting(
-        'ollama_max_image_edge',
-        String(Math.max(0, Number.isFinite(parseInt(ollamaMaxImageEdge, 10)) ? parseInt(ollamaMaxImageEdge, 10) : 1536)),
+      // **1往復で全部入るか、1つも入らないか。**
+      // 以前は update_setting を23回 + save_provider_api_key を3回、逐次に await していた。
+      // 保存が終わるまでの間に別の値を触られても、DB に入るのは押した時点の値だけで、
+      // 画面には触った後の値が出たままモーダルが閉じていた
+      const result = await onSaveSettings(
+        [
+          { key: 'llm_provider', value: provider },
+          { key: 'ollama_url', value: ollamaUrl },
+          { key: 'ollama_model', value: selectedVlmModel },
+          { key: 'ollama_text_model', value: selectedTextModel },
+          // 空欄・不正値は自動(0) / 既定値(1536) にフォールバックさせる
+          { key: 'ollama_num_ctx', value: String(Math.max(0, parseInt(ollamaNumCtx, 10) || 0)) },
+          {
+            key: 'ollama_max_image_edge',
+            value: String(
+              Math.max(0, Number.isFinite(parseInt(ollamaMaxImageEdge, 10)) ? parseInt(ollamaMaxImageEdge, 10) : 1536)
+            ),
+          },
+          { key: 'llm_debug_logging', value: llmDebugLogging ? 'true' : 'false' },
+          { key: 'force_detailed_prompt', value: forceDetailedPrompt ? 'true' : 'false' },
+          { key: 'tag_granularity', value: tagGranularity },
+
+          { key: 'gemini_model', value: geminiModel },
+          { key: 'gemini_text_model', value: geminiTextModel },
+
+          { key: 'openai_base_url', value: openaiBaseUrl },
+          { key: 'openai_model', value: openaiModel },
+
+          { key: 'claude_model', value: claudeModel },
+          { key: 'claude_text_model', value: claudeTextModel },
+
+          { key: 'ext_llm_max_batch_items', value: extMaxBatchItems },
+          { key: 'ext_llm_retry_enabled', value: extRetryEnabled ? 'true' : 'false' },
+          { key: 'ext_llm_retry_max_attempts', value: extRetryAttempts },
+          { key: 'ui_language', value: uiLanguage },
+          { key: 'ffmpeg_notice_enabled', value: ffmpegNoticeEnabled ? 'true' : 'false' },
+
+          { key: 'spectrum_embedding_model', value: embeddingModel },
+          { key: 'spectrum_include_descriptive', value: spectrumIncludeDescriptive ? 'true' : 'false' },
+          { key: 'spectrum_centering', value: spectrumCentering ? 'true' : 'false' },
+        ],
+        // API キーの保存先は OS の資格情報ストア。設定本体とは別に扱われる
+        [
+          { provider: 'gemini', api_key: geminiApiKey },
+          { provider: 'openai', api_key: openaiApiKey },
+          { provider: 'claude', api_key: claudeApiKey },
+        ]
       );
-      await onUpdateSetting('llm_debug_logging', llmDebugLogging ? 'true' : 'false');
-      await onUpdateSetting('force_detailed_prompt', forceDetailedPrompt ? 'true' : 'false');
-      await onUpdateSetting('tag_granularity', tagGranularity);
 
-      await onUpdateSetting('gemini_model', geminiModel);
-      await onUpdateSetting('gemini_text_model', geminiTextModel);
-
-      await onUpdateSetting('openai_base_url', openaiBaseUrl);
-      await onUpdateSetting('openai_model', openaiModel);
-
-      await onUpdateSetting('claude_model', claudeModel);
-      await onUpdateSetting('claude_text_model', claudeTextModel);
-
-      await onUpdateSetting('ext_llm_max_batch_items', extMaxBatchItems);
-      await onUpdateSetting('ext_llm_retry_enabled', extRetryEnabled ? 'true' : 'false');
-      await onUpdateSetting('ext_llm_retry_max_attempts', extRetryAttempts);
-      await onUpdateSetting('ui_language', uiLanguage);
-      await onUpdateSetting('ffmpeg_notice_enabled', ffmpegNoticeEnabled ? 'true' : 'false');
-
-      await onUpdateSetting('spectrum_embedding_model', embeddingModel);
-      await onUpdateSetting('spectrum_include_descriptive', spectrumIncludeDescriptive ? 'true' : 'false');
-      await onUpdateSetting('spectrum_centering', spectrumCentering ? 'true' : 'false');
-
-      // Save API keys to OS Secure Store
-      await invoke('save_provider_api_key', { provider: 'gemini', apiKey: geminiApiKey });
-      await invoke('save_provider_api_key', { provider: 'openai', apiKey: openaiApiKey });
-      await invoke('save_provider_api_key', { provider: 'claude', apiKey: claudeApiKey });
+      // 設定本体は入ったが API キーだけ入らなかった、を黙って成功にしない
+      if (result.api_key_failures.length > 0) {
+        setSaveError(
+          t('settings.api_key_save_failed', '', {
+            list: result.api_key_failures.map((f) => `・${f.provider}: ${f.message}`).join('\n'),
+          })
+        );
+        setIsSaving(false);
+        return;
+      }
 
       setSavedStatus(true);
       setTimeout(() => {
@@ -404,6 +437,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }, 700);
     } catch (e) {
       console.error('Failed to save settings:', e);
+      setSaveError(String(e));
       setIsSaving(false);
     }
   };
@@ -446,7 +480,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       setEmbeddingProgress(event.payload);
     });
     try {
-      await invoke('generate_tag_embeddings');
+      await runBackground(() => invoke('generate_tag_embeddings'));
       await refreshEmbeddingStatus();
     } catch (e) {
       setEmbeddingError(String(e));
@@ -462,7 +496,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setEmbeddingError(null);
     setCleanupResult(null);
     try {
-      setCleanupResult(await invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings'));
+      setCleanupResult(
+        await runExclusive('processing_embeddings', () =>
+          invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings')
+        )
+      );
       await refreshEmbeddingStatus();
     } catch (e) {
       setEmbeddingError(String(e));
@@ -499,7 +537,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     setCleanupResult(null);
     setConfirmDiscard(false);
     try {
-      setCleanupResult(await invoke<EmbeddingCleanupResult>('discard_embeddings'));
+      setCleanupResult(
+        await runExclusive('processing_embeddings', () => invoke<EmbeddingCleanupResult>('discard_embeddings'))
+      );
       await refreshEmbeddingStatus();
       // 破棄後の分布を出したままにすると、消えたデータの結果を見せ続けることになる
       setDiagnostics(null);
@@ -1492,6 +1532,17 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           <div className="mt-4 p-3 bg-indigo-500/10 border border-indigo-500/30 rounded-xl flex items-start gap-2 text-indigo-200 text-[11px] leading-relaxed">
             <Info className="w-4 h-4 text-indigo-400 shrink-0 mt-0.5" />
             <span>{t('settings.granularity_changed_notice', 'タグ粒度を変更しました。新しい粒度はこれから解析するメディアにのみ適用されます。既存メディアのタグを揃えるには、フォルダ管理から再解析してください。')}</span>
+          </div>
+        )}
+
+        {/* 保存の失敗。閉じないので、なぜ閉じないのかをここで出す */}
+        {saveError && (
+          <div className="mt-4 p-3 rounded-xl bg-red-950/40 border border-red-500/30 text-[11px] text-red-200 flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-px text-red-400" />
+            <div className="whitespace-pre-wrap break-all">
+              <div className="font-semibold mb-0.5">{t('settings.label_save_failed', '保存できませんでした')}</div>
+              {saveError}
+            </div>
           </div>
         )}
 

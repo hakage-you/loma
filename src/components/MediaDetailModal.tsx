@@ -4,6 +4,7 @@ import { MediaItem, TagItem } from '../types';
 import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
+import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
 
 interface MediaDetailModalProps {
   item: MediaItem | null;
@@ -39,6 +40,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   onFindSimilar,
 }) => {
   const { t, language } = useTranslation();
+  // タグの追加・削除も再解析も Rust の排他ロックを取る。走っている間は押させない
+  const exclusive = useExclusiveGuard();
   const [videoError, setVideoError] = React.useState(false);
   const [manualTime, setManualTime] = React.useState('5.0');
   const videoRef = React.useRef<HTMLVideoElement>(null);
@@ -49,6 +52,13 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSavingTag, setIsSavingTag] = useState(false);
   const suggestBoxRef = useRef<HTMLDivElement>(null);
+  const tagInputRef = useRef<HTMLInputElement>(null);
+  /**
+   * タグを足した直後に入力欄へ戻すための予約。
+   * 追加中は画面全体が inert になる（排他ロックを取るため）ので、そのとき focus が外れる。
+   * 何個も続けて足すのが普通の使い方なので、解除されたら戻す。
+   */
+  const [refocusTagInput, setRefocusTagInput] = useState(false);
 
   // High performance auto-suggest calculation (max 15 items)
   const filteredSuggestions = useMemo(() => {
@@ -92,10 +102,18 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       setNewTagName('');
       setNewTagNameJa('');
       setShowSuggestions(false);
+      setRefocusTagInput(true);
     } finally {
       setIsSavingTag(false);
     }
   };
+
+  // ブロックが解けてから戻す。inert が付いたままでは focus() が効かない
+  useEffect(() => {
+    if (!refocusTagInput || exclusive.blocked) return;
+    setRefocusTagInput(false);
+    tagInputRef.current?.focus();
+  }, [refocusTagInput, exclusive.blocked]);
 
   const handleSelectSuggestion = (sug: TagItem) => {
     setNewTagName(sug.name);
@@ -273,9 +291,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                             e.stopPropagation();
                             handleRemoveTagClick(tItem.name);
                           }}
-                          disabled={isSavingTag}
-                          className="p-0.5 text-slate-400 hover:text-red-400 rounded transition cursor-pointer ml-0.5"
-                          title={t('media_modal.label_title_remove_tag', 'Remove this tag from media')}
+                          disabled={isSavingTag || exclusive.blocked}
+                          className="p-0.5 text-slate-400 hover:text-red-400 rounded transition cursor-pointer ml-0.5 disabled:opacity-40 disabled:cursor-not-allowed"
+                          title={exclusive.reason ?? t('media_modal.label_title_remove_tag', 'Remove this tag from media')}
                         >
                           <X className="w-3 h-3" />
                         </button>
@@ -296,6 +314,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       {/* English Tag Name Input ([a-zA-Z0-9_-] only) */}
                       <div className="relative flex-1 min-w-[110px]">
                         <input
+                          ref={tagInputRef}
                           type="text"
                           value={newTagName}
                           onChange={(e) => {
@@ -341,7 +360,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
 
                       <button
                         onClick={() => handleAddTagSubmit(newTagName, newTagNameJa)}
-                        disabled={!newTagName.trim() || isSavingTag}
+                        disabled={!newTagName.trim() || isSavingTag || exclusive.blocked}
+                        title={exclusive.reason}
                         className="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-bold transition disabled:opacity-40 cursor-pointer flex items-center gap-1 shrink-0 shadow"
                       >
                         <Plus className="w-3.5 h-3.5" />
@@ -416,9 +436,12 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               <div className="flex items-center gap-2">
                 <button
                   onClick={handleCustomAnalyzeCurrentTime}
-                  disabled={isScanning}
+                  disabled={isScanning || exclusive.blocked}
                   className="flex-1 flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-indigo-900/30 disabled:opacity-50"
-                  title={t('media_modal.label_title_custom_analyze', 'Change the thumbnail from the current frame (or the given timestamp) and run multi-frame analysis')}
+                  title={
+                    exclusive.reason ??
+                    t('media_modal.label_title_custom_analyze', 'Change the thumbnail from the current frame (or the given timestamp) and run multi-frame analysis')
+                  }
                 >
                   <RotateCcw className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
                   {t('media_modal.label_video_time_btn', '📍 この場面でサムネイル変更 ＆ 解析')}
@@ -444,7 +467,8 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
               </div>
               <button
                 onClick={() => onReanalyzeSingleMedia(item.id)}
-                disabled={isScanning}
+                disabled={isScanning || exclusive.blocked}
+                title={exclusive.reason}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-violet-600 hover:bg-violet-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-violet-900/30 disabled:opacity-50"
               >
                 <Sparkles className={`w-3.5 h-3.5 ${isScanning ? 'animate-spin' : ''}`} />
@@ -476,7 +500,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
             {item.analysis_status === 'failed' && !item.needs_attention && (
               <button
                 onClick={() => onRetry(item.id)}
-                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-amber-900/20"
+                disabled={exclusive.blocked}
+                title={exclusive.reason}
+                className="flex items-center gap-1.5 px-3 py-1.5 bg-amber-600 hover:bg-amber-500 text-white rounded-xl text-xs font-semibold transition cursor-pointer shadow-lg shadow-amber-900/20 disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 <RotateCcw className="w-3.5 h-3.5" />
                 {t('media_modal.label_retry_analysis', '解析を再試行')}

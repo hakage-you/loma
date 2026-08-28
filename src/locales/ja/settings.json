@@ -160,5 +160,7 @@
   "download_note_2": "※ ダウンロード中も設定画面やバックグラウンドで進捗状況を確認できます。",
   "compare_hint": "Lv1 / Lv2 / Lv3 の解析結果を比較します。",
   "label_btn_close": "閉じる",
-  "label_done": "完了"
+  "label_done": "完了",
+  "label_save_failed": "保存できませんでした",
+  "api_key_save_failed": "設定は保存しましたが、次のAPIキーは保存できませんでした。\n{list}"
 }

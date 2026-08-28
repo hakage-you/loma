@@ -493,6 +493,90 @@ pub async fn update_setting(
     Ok(())
 }
 
+#[derive(Deserialize, Debug, Clone)]
+pub struct SettingEntry {
+    pub key: String,
+    pub value: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+pub struct ApiKeyEntry {
+    pub provider: String,
+    pub api_key: String,
+}
+
+/// API キーだけが保存できなかったときの内訳。設定本体とは保存先が違うので分けて返す。
+#[derive(Serialize, Debug, Clone)]
+pub struct ApiKeyFailure {
+    pub provider: String,
+    pub message: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+pub struct SaveSettingsResult {
+    pub settings_saved: usize,
+    pub api_keys_saved: usize,
+    pub api_key_failures: Vec<ApiKeyFailure>,
+}
+
+/// 設定を1トランザクションで書く。**途中まで入った状態は作らない。**
+/// コマンドから切り出してあるのはテストのため（`State` はテストで組み立てられない）。
+async fn write_settings_atomically(
+    pool: &sqlx::Pool<sqlx::Sqlite>,
+    entries: &[SettingEntry],
+) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    for entry in entries {
+        sqlx::query(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2) ON CONFLICT(key) DO UPDATE SET value = ?2",
+        )
+        .bind(&entry.key)
+        .bind(&entry.value)
+        .execute(&mut *tx)
+        .await?;
+    }
+    tx.commit().await
+}
+
+/// 設定を1往復でまとめて保存する。
+///
+/// `update_setting` を項目数だけ呼ぶと、その回数だけ IPC を往復し、
+/// フロントは毎回 `setSettings` で再描画する。設定画面の保存が長くかかり、
+/// **その間に別の値を触られると、保存されるのは押した時点の値だけ**になっていた。
+/// ここに寄せて、DB への書き込みは1トランザクションで全部入るか全部入らないかにする。
+///
+/// API キーだけは保存先が OS の資格情報ストアなので同じトランザクションに入らない。
+/// 設定本体を確定させてから書き、失敗したプロバイダーは握り潰さず内訳で返す
+/// （呼び出し側が「設定は保存された / このキーだけ入っていない」と出せるように）。
+#[tauri::command]
+pub async fn save_settings(
+    entries: Vec<SettingEntry>,
+    api_keys: Vec<ApiKeyEntry>,
+    db_state: State<'_, DbState>,
+) -> Result<SaveSettingsResult, String> {
+    write_settings_atomically(&db_state.pool, &entries)
+        .await
+        .map_err(|e| cmd_err("save_settings", e))?;
+
+    let mut api_keys_saved = 0usize;
+    let mut api_key_failures = Vec::new();
+    for entry in &api_keys {
+        match crate::credentials::set_api_key(&entry.provider, &entry.api_key) {
+            Ok(()) => api_keys_saved += 1,
+            Err(e) => api_key_failures.push(ApiKeyFailure {
+                provider: entry.provider.clone(),
+                message: e.to_string(),
+            }),
+        }
+    }
+
+    Ok(SaveSettingsResult {
+        settings_saved: entries.len(),
+        api_keys_saved,
+        api_key_failures,
+    })
+}
+
 /// 現在のプロバイダー・モデル・強制フラグから実際に使用されるプロンプト種別 ("DETAILED" | "LIGHT") を返す。
 /// DBを読まない純粋関数のラッパーで、設定画面が未保存の選択状態を反映するために使う。
 #[tauri::command]
@@ -2853,6 +2937,97 @@ pub fn get_system_vram_gb() -> Result<f64, String> {
 
     // Return 0.0 if VRAM could not be reliably detected
     Ok(0.0)
+}
+
+#[cfg(test)]
+mod save_settings_tests {
+    use super::*;
+
+    async fn pool_with_settings(check: Option<&str>) -> sqlx::Pool<sqlx::Sqlite> {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let constraint = check.map(|c| format!(" CHECK({})", c)).unwrap_or_default();
+        sqlx::query(&format!(
+            "CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT NOT NULL{})",
+            constraint
+        ))
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    fn entry(key: &str, value: &str) -> SettingEntry {
+        SettingEntry {
+            key: key.to_string(),
+            value: value.to_string(),
+        }
+    }
+
+    async fn value_of(pool: &sqlx::Pool<sqlx::Sqlite>, key: &str) -> Option<String> {
+        sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?1")
+            .bind(key)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn every_entry_lands_including_updates_of_existing_keys() {
+        let pool = pool_with_settings(None).await;
+        write_settings_atomically(&pool, &[entry("ollama_model", "old")])
+            .await
+            .unwrap();
+
+        write_settings_atomically(
+            &pool,
+            &[
+                entry("ollama_model", "new"),
+                entry("ui_language", "en"),
+                entry("tag_granularity", "descriptive"),
+            ],
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(value_of(&pool, "ollama_model").await.as_deref(), Some("new"));
+        assert_eq!(value_of(&pool, "ui_language").await.as_deref(), Some("en"));
+        assert_eq!(
+            value_of(&pool, "tag_granularity").await.as_deref(),
+            Some("descriptive")
+        );
+    }
+
+    /// **途中まで保存された状態を作らない**ことがこのコマンドの存在理由。
+    /// 1件でも書けなければ、その前に書いたものも残らないこと。
+    #[tokio::test]
+    async fn nothing_is_written_when_one_entry_fails() {
+        let pool = pool_with_settings(Some("value <> 'rejected'")).await;
+        write_settings_atomically(&pool, &[entry("ui_language", "ja")])
+            .await
+            .unwrap();
+
+        let result = write_settings_atomically(
+            &pool,
+            &[
+                entry("ollama_model", "written-first"),
+                entry("tag_granularity", "rejected"),
+                entry("ui_language", "en"),
+            ],
+        )
+        .await;
+
+        assert!(result.is_err());
+        // 1件目も入っていない
+        assert_eq!(value_of(&pool, "ollama_model").await, None);
+        // 既にあった値も書き換わっていない
+        assert_eq!(value_of(&pool, "ui_language").await.as_deref(), Some("ja"));
+    }
+
+    #[tokio::test]
+    async fn an_empty_batch_is_not_an_error() {
+        let pool = pool_with_settings(None).await;
+        write_settings_atomically(&pool, &[]).await.unwrap();
+    }
 }
 
 #[cfg(test)]
