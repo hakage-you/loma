@@ -48,6 +48,12 @@ function matchesFilters(item: MediaItem, args: Record<string, any>): boolean {
   return true;
 }
 
+/** プロバイダーごとの API キー（モック側の資格情報ストア） */
+const apiKeyState: Record<string, string> = { gemini: 'mock-gemini-key' };
+// 資格情報ストアの中身は画面に出ないので、e2e から確かめる術がこれしかない。
+// 「保存で消えていないこと」は画面では絶対に判定できない
+(window as unknown as Record<string, unknown>).__mockApiKeys = apiKeyState;
+
 /** 解析対象から外したパス（モック側の `excluded_paths`） */
 const excludedState: { path: string; reason?: string | null; created_at: number }[] = [];
 
@@ -118,9 +124,12 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     const next = { ...settingsState };
     for (const entry of entries) next[entry.key] = entry.value;
     settingsState = next;
+    // 渡された API キーだけを書く。渡されなかったものには触らない
+    const apiKeys: { provider: string; api_key: string }[] = args.apiKeys ?? [];
+    for (const key of apiKeys) apiKeyState[key.provider] = key.api_key;
     return {
       settings_saved: entries.length,
-      api_keys_saved: (args.apiKeys ?? []).length,
+      api_keys_saved: apiKeys.length,
       api_key_failures: [],
     };
   },
@@ -180,7 +189,11 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   load_tag_suggestions_cache: () => [],
   dismiss_tag_suggestion: () => {},
   get_suggestion_run_status: () => null,
-  get_provider_api_key: () => '',
+  // API キーの保存先は OS の資格情報ストア。モックはプロセス内に持つだけ
+  get_provider_api_key: (args) => apiKeyState[args.provider] ?? '',
+  save_provider_api_key: (args) => {
+    apiKeyState[args.provider] = args.apiKey;
+  },
   check_ffmpeg_installed: () => true,
   get_effective_prompt_type: (args) => {
     if (args.forceDetailed) return 'DETAILED';
@@ -371,7 +384,17 @@ const slowCommand: { cmd: string; ms: number } | null = (() => {
   return { cmd, ms: delay };
 })();
 
+/**
+ * `?debugFailCommand=<コマンド名>` を付けると、そのコマンドだけ必ず失敗させる。
+ * 失敗したときの表示（保存できなかった／APIキーを読み出せなかった）は、
+ * 成功しか返さないモックのままでは一度も描画されない。
+ */
+const failCommand = new URLSearchParams(window.location.search).get('debugFailCommand');
+
 export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Promise<T> {
+  if (failCommand === cmd) {
+    throw new Error(`[mock] ${cmd} を失敗させています (debugFailCommand)`);
+  }
   if (slowCommand && slowCommand.cmd === cmd) {
     await new Promise((resolve) => setTimeout(resolve, slowCommand.ms));
   }
