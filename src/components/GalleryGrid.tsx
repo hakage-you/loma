@@ -1,10 +1,24 @@
-import React from 'react';
+import React, { useCallback, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem } from '../types';
 import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar, EyeOff, Loader2 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 import { categoryLabelKey } from '../constants/categories';
+import { useLoadMoreOnScroll } from '../hooks/useLoadMoreOnScroll';
+
+/**
+ * 一度に DOM へ出す枚数。
+ *
+ * **以前は上限が無く、メディア 4,949件で `dom_nodes` が 125,925 だった。**
+ * 起動直後から常時この状態で、絞り込み直しやタグ編集のたびに全件を照合し直していた。
+ * 仮想化ではなく段階描画（タグ管理の提案一覧と同じ手）——
+ * 一度出したものは消さず、番兵が見えたら足す。
+ *
+ * 8列表示でも最初の数行が埋まる枚数を初期値にする。
+ */
+const GALLERY_FIRST = 60;
+const GALLERY_PAGE = 60;
 
 interface GalleryGridProps {
   items: MediaItem[];
@@ -24,6 +38,16 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
   onFindSimilar,
 }) => {
   const { t, language } = useTranslation();
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  const [visibleCount, setVisibleCount] = useState(GALLERY_FIRST);
+  // 絞り込みが変わったときは App 側が key で作り直すので、ここでは戻さない。
+  // 件数が減ったときだけ丸める
+  const shown = Math.min(visibleCount, items.length);
+  const hasMore = shown < items.length;
+  const loadMore = useCallback(() => setVisibleCount((n) => n + GALLERY_PAGE), []);
+  useLoadMoreOnScroll(scrollRef, sentinelRef, true, hasMore, shown, loadMore);
+
   if (loading && items.length === 0) {
     return (
       <div className="flex-1 flex items-center justify-center min-h-[400px]">
@@ -65,7 +89,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
   const currentGridClass = gridClassMap[gridColumns] || 'grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5';
 
   return (
-    <div className="flex-1 overflow-y-auto pr-2 pb-4 min-h-0 relative">
+    <div ref={scrollRef} className="flex-1 overflow-y-auto pr-2 pb-4 min-h-0 relative">
       {/*
         絞り込み直しの間に出す表示。**一覧は消さない**（消すと画面が跳ねる）。
         スピナーの回転は当てにしないこと —— 取得後の再描画はメインスレッドを
@@ -85,7 +109,7 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
           loading ? 'opacity-40' : ''
         }`}
       >
-        {items.map((item) => {
+        {items.slice(0, shown).map((item) => {
           const imageSrc = item.thumbnail_path
             ? convertFileSrc(item.thumbnail_path)
             : convertFileSrc(item.file_path);
@@ -218,6 +242,9 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
           );
         })}
       </div>
+
+      {/* 番兵。ここが見えたら次のページを足す */}
+      {hasMore && <div ref={sentinelRef} className="h-1" aria-hidden="true" />}
     </div>
   );
 };

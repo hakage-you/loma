@@ -2,6 +2,7 @@ import React, { useState, useEffect, useTransition } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { runExclusive } from '../hooks/useBusy';
+import { useLoadMoreOnScroll } from '../hooks/useLoadMoreOnScroll';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
 import { listen } from '@tauri-apps/api/event';
 // **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
@@ -80,40 +81,6 @@ const ruleLabelKey = (rule: string) => `tag_modal.label_rule_${rule}`;
 const TAG_PAGE = 200;
 const SUGGESTION_FIRST = 20;
 const SUGGESTION_PAGE = 50;
-
-/**
- * リスト末尾に置いた番兵が見えたら `onMore` を呼ぶ。
- *
- * `active` はタブの出し分けで DOM ごと入れ替わるため、購読を張り直す引き金として渡す
- * （タブが非表示の間は ref が null で、購読を張れない）。
- */
-function useLoadMoreOnScroll(
-  rootRef: React.RefObject<HTMLDivElement | null>,
-  sentinelRef: React.RefObject<HTMLDivElement | null>,
-  active: boolean,
-  hasMore: boolean,
-  /** いま出ている件数。**購読を張り直すためだけに要る** ——
-   *  交差したままだと IntersectionObserver は二度目を通知しないので、
-   *  1回足すごとに張り直して、画面が埋まるまで続けさせる */
-  loadedCount: number,
-  onMore: () => void
-) {
-  useEffect(() => {
-    if (!active || !hasMore) return;
-    const root = rootRef.current;
-    const target = sentinelRef.current;
-    if (!root || !target) return;
-    const io = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((e) => e.isIntersecting)) onMore();
-      },
-      // 末尾に着く前に足す。スクロールが止まって見えないようにするため
-      { root, rootMargin: '600px' }
-    );
-    io.observe(target);
-    return () => io.disconnect();
-  }, [rootRef, sentinelRef, active, hasMore, loadedCount, onMore]);
-}
 
 /**
  * 提案カードのサンプルサムネと、ホバー時の拡大表示。
