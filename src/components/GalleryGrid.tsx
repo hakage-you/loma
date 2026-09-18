@@ -1,11 +1,12 @@
 import React, { useCallback, useRef, useState } from 'react';
 import { convertFileSrc } from '@tauri-apps/api/core';
-import { MediaItem } from '../types';
+import { MediaItem, TagItem } from '../types';
 import { Clock, AlertCircle, ExternalLink, Image as ImageIcon, Folder, Tag, Radar, EyeOff, Loader2 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 import { categoryLabelKey } from '../constants/categories';
 import { useLoadMoreOnScroll } from '../hooks/useLoadMoreOnScroll';
+import { buildTagIndex, resolveMediaTags } from '../utils/mediaTags';
 
 /**
  * 一度に DOM へ出す枚数。
@@ -27,6 +28,13 @@ interface GalleryGridProps {
   onSelectItem: (item: MediaItem) => void;
   onSelectTagFilter?: (tagName: string) => void;
   onFindSimilar?: (item: MediaItem) => void;
+  /**
+   * タグの一覧（`get_all_tags` の結果）。
+   *
+   * **メディア一覧はタグの id しか持っていない。** 名前はここから引く。
+   * まだ届いていない（空の）間は、カードのタグ欄に読み込み中の見た目を出す。
+   */
+  allTags: TagItem[];
 }
 
 export const GalleryGrid: React.FC<GalleryGridProps> = ({
@@ -36,8 +44,10 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
   onSelectItem,
   onSelectTagFilter,
   onFindSimilar,
+  allTags,
 }) => {
   const { t, language } = useTranslation();
+  const tagIndex = React.useMemo(() => buildTagIndex(allTags), [allTags]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const sentinelRef = useRef<HTMLDivElement>(null);
   const [visibleCount, setVisibleCount] = useState(GALLERY_FIRST);
@@ -115,6 +125,8 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
             : convertFileSrc(item.file_path);
 
           const fileName = item.file_path.split(/[/\\]/).pop() || '';
+          // null は「タグ一覧がまだ届いていない」。0件と区別する
+          const resolvedTags = resolveMediaTags(item, tagIndex);
 
           return (
             <div
@@ -209,9 +221,21 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                 )}
 
                 {/* Tags list */}
-                {item.tags && item.tags.length > 0 && (
+                {resolvedTags === null ? (
+                  // **タグ一覧がまだ届いていない。** 0件として空欄にすると、
+                  // タグが付いているのに「無い」と見せることになる。
+                  // 付いている本数ぶん、タグの形のまま読み込み中を出す
+                  <div className="flex flex-wrap gap-1 mt-1" aria-busy="true">
+                    {Array.from({ length: Math.min(3, item.tag_ids.length) }).map((_, i) => (
+                      <span
+                        key={i}
+                        className="inline-block h-[18px] w-14 rounded bg-slate-800 animate-pulse-subtle"
+                      />
+                    ))}
+                  </div>
+                ) : resolvedTags.length > 0 ? (
                   <div className="flex flex-wrap gap-1 mt-1">
-                    {item.tags.slice(0, 3).map((tagObj) => {
+                    {resolvedTags.slice(0, 3).map((tagObj) => {
                       const displayTag = tagObj.name_ja || tagObj.name;
                       return (
                         <span
@@ -230,13 +254,13 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
                         </span>
                       );
                     })}
-                    {item.tags.length > 3 && (
+                    {resolvedTags.length > 3 && (
                       <span className="text-[10px] text-slate-500 self-center">
-                        +{item.tags.length - 3}
+                        +{resolvedTags.length - 3}
                       </span>
                     )}
                   </div>
-                )}
+                ) : null}
               </div>
             </div>
           );

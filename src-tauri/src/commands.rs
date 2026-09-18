@@ -88,7 +88,17 @@ pub struct MediaItem {
     /// 解析対象から外されているか（`excluded_paths` に載っている）
     pub excluded: bool,
     pub categories: Vec<String>,
-    pub tags: Vec<TagPairItem>,
+    /// このメディアに付いているタグの id。**名前は送らない。**
+    ///
+    /// 名前を全件ぶん載せると、実データ（メディア 4,941件・タグ 31,849本）で
+    /// 応答の 53% がタグ名になる。名前はフロントが `get_all_tags` で
+    /// 既に持っているので、ここでは id だけ返して引いてもらう。
+    pub tag_ids: Vec<i64>,
+    /// basic 種別のタグの本数。
+    ///
+    /// 類似検索の対象かどうか（`MIN_BASIC_TAGS` 未満は対象外）の判定に使う。
+    /// **id から数えるにはタグの一覧が要る**ので、ここで数えて渡す。
+    pub basic_tag_count: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -251,7 +261,7 @@ pub async fn get_media(
 
     // メディア全件に対するタグ情報のバッチ取得
     let media_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
-    let mut tags_map: HashMap<i64, (Vec<String>, Vec<TagPairItem>)> = HashMap::new();
+    let mut tags_map: HashMap<i64, (Vec<String>, Vec<TagPairItem>, Vec<i64>)> = HashMap::new();
 
     if !media_ids.is_empty() {
         let ids_str = media_ids
@@ -262,7 +272,7 @@ pub async fn get_media(
 
         let tag_query = format!(
             r#"
-            SELECT mt.media_id, t.name, t.name_ja, t.is_category, t.tag_kind
+            SELECT mt.media_id, t.id, t.name, t.name_ja, t.is_category, t.tag_kind
             FROM media_tags mt
             JOIN tags t ON mt.tag_id = t.id
             WHERE mt.media_id IN ({})
@@ -270,13 +280,18 @@ pub async fn get_media(
             ids_str
         );
 
-        let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(&tag_query)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        let tag_rows =
+            sqlx::query_as::<_, (i64, i64, String, Option<String>, i64, String)>(&tag_query)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| cmd_err("get_media(tags)", e))?;
 
-        for (m_id, tag_name, tag_name_ja, is_cat, tag_kind) in tag_rows {
-            let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new()));
+        // **名前はここでしか使わない。** 絞り込みの判定に要るので組み立てるが、
+        // 返すのは id と basic の本数だけ
+        for (m_id, tag_id, tag_name, tag_name_ja, is_cat, tag_kind) in tag_rows {
+            let entry = tags_map
+                .entry(m_id)
+                .or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
             if is_cat == 1 {
                 entry.0.push(tag_name);
             } else {
@@ -285,6 +300,7 @@ pub async fn get_media(
                     name_ja: tag_name_ja,
                     kind: tag_kind,
                 });
+                entry.2.push(tag_id);
             }
         }
     }
@@ -303,7 +319,9 @@ pub async fn get_media(
         excluded_flag,
     ) in rows
     {
-        let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
+        let (categories, tags, tag_ids) = tags_map
+            .remove(&id)
+            .unwrap_or((Vec::new(), Vec::new(), Vec::new()));
 
         // フィルタリング適用 (ステータスフィルタのメモリ上ダブルチェック)
         if let Some(ref st) = status_filter {
@@ -384,7 +402,8 @@ pub async fn get_media(
             needs_attention,
             excluded: excluded_flag != 0,
             categories,
-            tags,
+            basic_tag_count: tags.iter().filter(|t| t.kind == "basic").count(),
+            tag_ids,
         });
     }
 

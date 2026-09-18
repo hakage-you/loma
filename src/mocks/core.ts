@@ -8,6 +8,7 @@ import {
   MOCK_VISION_MODELS,
   MOCK_VRAM_GB,
   MOCK_LOGS,
+  MockMediaItem,
 } from './data';
 import { MediaItem, TagItem, MergeSuggestion } from '../types';
 import { isMockScanRunning, setMockScanPaused } from './scanSimulator';
@@ -18,7 +19,32 @@ import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 // 開発中のスクリーンショット撮影用モック(`vite --mode mock` 時のみ有効)。
 // 実際の @tauri-apps/api/core の invoke / convertFileSrc を置き換える。
 
-let mediaState: MediaItem[] = MOCK_MEDIA.map((m) => ({ ...m, tags: [...m.tags], categories: [...m.categories] }));
+let mediaState: MockMediaItem[] = MOCK_MEDIA.map((m) => ({
+  ...m,
+  tags: [...m.tags],
+  categories: [...m.categories],
+}));
+
+/**
+ * 返す形に変換する。**タグは id だけにする。**
+ *
+ * 実バックエンドの `get_media` と同じ。名前を全件ぶん返すと、実データで
+ * 応答の半分以上がタグ名になる。名前はフロントが `get_all_tags` から引く。
+ */
+function toWire(item: MockMediaItem): MediaItem {
+  const { tags, ...rest } = item;
+  return {
+    ...rest,
+    tag_ids: tags
+      .map((t) => tagState.find((x) => x.name === t.name)?.id)
+      .filter((id): id is number => id !== undefined),
+    basic_tag_count: tags.filter((t) => t.kind === 'basic').length,
+  };
+}
+
+/** 内部の形のまま「タグ不足か」を判定する。`toWire` を通さずに済ませる */
+const mockTagInsufficient = (m: MockMediaItem): boolean =>
+  isTagInsufficient({ analysis_status: m.analysis_status, basic_tag_count: m.tags.filter((t) => t.kind === 'basic').length });
 
 /**
  * `?debugMediaCount=<件数>` を付けると、その件数になるまで水増しする。
@@ -143,7 +169,7 @@ let settingsState: Record<string, string> = { ...MOCK_SETTINGS };
 let scanFoldersState = MOCK_SCAN_FOLDERS.map((f) => ({ ...f }));
 let scanning = false;
 
-function matchesFilters(item: MediaItem, args: Record<string, any>): boolean {
+function matchesFilters(item: MockMediaItem, args: Record<string, any>): boolean {
   const categoryFilter: string[] | null = args.categoryFilter ?? null;
   const tagFilter: string[] | null = args.tagFilter ?? null;
   const parentFolderFilter: string | null = args.parentFolderFilter ?? null;
@@ -635,9 +661,9 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_media_by_tag: (args) => {
     const tag = tagState.find((t) => t.id === args.tagId);
     if (!tag) return [];
-    return mediaState.filter(
-      (m) => m.tags.some((t) => t.name === tag.name) || m.categories.includes(tag.name)
-    );
+    return mediaState
+      .filter((m) => m.tags.some((t) => t.name === tag.name) || m.categories.includes(tag.name))
+      .map(toWire);
   },
   /** タグIDごとのサンプルサムネ。キーは実バックエンドと同じく文字列 */
   get_tag_sample_thumbnails: (args) => {
@@ -694,7 +720,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     recordSideEffect('cancel_ollama_pull', {});
     cancelMockPull();
   },
-  get_media: (args) => mediaState.filter((item) => matchesFilters(item, args)),
+  get_media: (args) => mediaState.filter((item) => matchesFilters(item, args)).map(toWire),
   get_excluded_paths: () => excludedState,
   exclude_media: (args) => {
     const ids: number[] = args.mediaIds ?? [];
@@ -868,8 +894,8 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     embedded_tags: tagState.length,
     missing_tags: 0,
     // 母数は解析済みのみ。未解析・失敗は候補集合の話に入らない
-    eligible_media: mediaState.filter((m) => m.analysis_status === 'completed' && !isTagInsufficient(m)).length,
-    excluded_media: mediaState.filter(isTagInsufficient).length,
+    eligible_media: mediaState.filter((m) => m.analysis_status === 'completed' && !mockTagInsufficient(m)).length,
+    excluded_media: mediaState.filter(mockTagInsufficient).length,
     completed_media: mediaState.filter((m) => m.analysis_status === 'completed').length,
     min_basic_tags: MIN_BASIC_TAGS,
     min_candidates: 5,
@@ -945,11 +971,11 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       (base?.tags ?? []).filter((t) => t.kind === 'basic').map((t) => t.name),
     );
     const eligible = mediaState.filter(
-      (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !isTagInsufficient(m),
+      (m) => m.id !== args.baseMediaId && m.analysis_status === 'completed' && !mockTagInsufficient(m),
     );
     // 基準と basic タグを1つでも共有する候補は外す（バックエンドと同じ規則）。
     // これが無いと上位ゾーンが近似重複で埋まり、タグ検索の劣化版になる
-    const sharesTag = (m: MediaItem) =>
+    const sharesTag = (m: MockMediaItem) =>
       m.tags.some((t) => t.kind === 'basic' && baseBasic.has(t.name));
     const others = eligible.filter((m) => !sharesTag(m));
     const sharedTagExcluded = eligible.length - others.length;
@@ -957,7 +983,12 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     // 帯幅はバックエンドの zone_bands と同じ規則（比率 10% / 下限 4 / 上限 8）。
     // 上限があるのは、順位で切った帯が覆う類似度の幅が分布の裾で桁違いに広がるため
     const bandSize = Math.min(8, Math.max(4, Math.ceil(others.length * 0.1)));
-    const toItem = (m: MediaItem, similarity: number) => ({ media_id: m.id, similarity, media: m });
+    // **返すメディアも id だけの形にする**（実バックエンドと同じ）
+    const toItem = (m: MockMediaItem, similarity: number) => ({
+      media_id: m.id,
+      similarity,
+      media: toWire(m),
+    });
     const take = (from: number, sim: (i: number) => number) =>
       others.slice(from, from + 4).map((m, i) => toItem(m, sim(i)));
 
@@ -972,7 +1003,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     return {
       status: degraded ? 'degraded' : 'ok',
       base_media_id: args.baseMediaId,
-      base_media: base ?? null,
+      base_media: base ? toWire(base) : null,
       model: 'bge-m3',
       zones,
       seed: args.seed ?? 0,
@@ -980,7 +1011,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       range_mean: -0.002,
       range_max: 0.78,
       candidate_count: others.length,
-      excluded_media: mediaState.filter(isTagInsufficient).length,
+      excluded_media: mediaState.filter(mockTagInsufficient).length,
       shared_tag_excluded: sharedTagExcluded,
       centering: true,
       include_descriptive: false,

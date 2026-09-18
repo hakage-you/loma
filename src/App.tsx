@@ -537,6 +537,7 @@ function AppContent() {
           <GalleryGrid
             key={galleryKey}
             items={media}
+            allTags={tags}
             loading={loading}
             gridColumns={gridColumns}
             onSelectItem={(item) => setSelectedMedia(item)}
@@ -579,6 +580,7 @@ function AppContent() {
       {/* 概念スペクトラム探索 */}
       <SpectrumModal
         base={spectrumBase}
+        allTags={tags}
         onClose={() => setSpectrumBase(null)}
         onOpenSettings={() => {
           setSpectrumBase(null);

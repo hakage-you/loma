@@ -77,3 +77,47 @@ test.describe('起動時に同じ取得を重ねない', () => {
     expect(counts.get_parent_folders ?? 0).toBe(0);
   });
 });
+
+test.describe('タグの名前は一覧から引く', () => {
+  // **メディア一覧はタグの id しか持っていない。** 名前は get_all_tags の結果から引く。
+  // 名前を全件ぶん載せると、実データで応答の半分以上がタグ名になるため。
+  //
+  // タグ一覧の取得はメディア一覧と同時に走るので、メディアが先に届く瞬間がある。
+  // そのとき**タグ欄を空にしてはいけない**（付いているのに「無い」と見せることになる）。
+
+  const cards = 'div.grid.gap-4 > div.group';
+
+  test('タグ一覧が届けば、カードにタグ名が出る', async ({ page }) => {
+    await page.goto('/');
+    const card = page.locator(cards).filter({ hasText: 'mock_media_1.jpg' }).first();
+
+    await expect(card.getByText('UI', { exact: true })).toBeVisible();
+    await expect(card.getByText('アプリ', { exact: true })).toBeVisible();
+  });
+
+  test('タグ一覧が届くまでは、タグの形のまま読み込み中を出す', async ({ page }) => {
+    // get_all_tags だけ遅らせる。メディアは先に届く
+    await page.goto('/?debugSlowCommand=get_all_tags:1500');
+    const card = page.locator(cards).filter({ hasText: 'mock_media_1.jpg' }).first();
+    await expect(card).toBeVisible();
+
+    // 付いている本数ぶん、タグの形で読み込み中を出す
+    await expect(card.locator('div[aria-busy="true"]')).toBeVisible();
+    // **空欄にはしない。** 「タグが無い」と読めてしまう
+    await expect(card.locator('div[aria-busy="true"] > span')).toHaveCount(3);
+
+    // 届いたら本物に入れ替わる
+    await expect(card.getByText('UI', { exact: true })).toBeVisible({ timeout: 5_000 });
+    await expect(card.locator('div[aria-busy="true"]')).toHaveCount(0);
+  });
+
+  test('タグが付いていないメディアには読み込み中を出さない', async ({ page }) => {
+    // **「まだ分からない」と「0件」を区別する。** 未解析のメディアはタグが無いので、
+    // 読み込み中を出すと永久に出たままに見える
+    await page.goto('/?debugSlowCommand=get_all_tags:1500');
+    const pending = page.locator(cards).filter({ hasText: 'mock_media_24.jpg' }).first();
+    await expect(pending).toBeVisible();
+
+    await expect(pending.locator('div[aria-busy="true"]')).toHaveCount(0);
+  });
+});

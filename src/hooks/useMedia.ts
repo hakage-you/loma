@@ -126,7 +126,9 @@ export function useMedia() {
         extensionFilter: currentFilters.fileExtensions && currentFilters.fileExtensions.length > 0 ? currentFilters.fileExtensions : null,
       });
       if (currentFilters.status === 'unanalyzed') {
-        setMedia(result.filter((item) => item.tags.length === 0 && item.categories.length === 0));
+        setMedia(
+          result.filter((item) => item.tag_ids.length === 0 && item.categories.length === 0)
+        );
       } else if (currentFilters.status === STATUS_TAG_INSUFFICIENT) {
         // 類似検索の候補集合から外れているメディア。黙って除外せず、
         // ユーザーがタグを手で足せるよう一覧できるようにする

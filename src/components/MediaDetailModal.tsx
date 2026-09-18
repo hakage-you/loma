@@ -4,6 +4,7 @@ import { MediaItem, TagItem } from '../types';
 import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { buildTagIndex, resolveMediaTags } from '../utils/mediaTags';
 import { ask } from '@tauri-apps/plugin-dialog';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
@@ -52,6 +53,16 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   const [newTagName, setNewTagName] = useState('');
   const [newTagNameJa, setNewTagNameJa] = useState('');
 
+  /**
+   * このメディアのタグ。**一覧はタグの id しか持っていない**ので名前を引く。
+   * `null` はタグ一覧がまだ届いていないという意味で、0件ではない。
+   */
+  const tagIndex = useMemo(() => buildTagIndex(allTags ?? []), [allTags]);
+  const mediaTags = useMemo(
+    () => (item ? resolveMediaTags(item, tagIndex) : []),
+    [item, tagIndex]
+  );
+
   // **タグの入力欄に書きかけがあれば確認する。** 閉じると消えるため
   useEscapeToClose({
     open: item !== null,
@@ -80,7 +91,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
     const jaQuery = newTagNameJa.trim().toLowerCase();
     if ((!enQuery && !jaQuery) || !allTags || allTags.length === 0) return [];
 
-    const currentTagNames = new Set((item?.tags || []).map((t) => t.name.toLowerCase()));
+    const currentTagNames = new Set((mediaTags ?? []).map((t) => t.name.toLowerCase()));
     const list: TagItem[] = [];
 
     for (let i = 0; i < allTags.length; i++) {
@@ -94,7 +105,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
       }
     }
     return list;
-  }, [newTagName, newTagNameJa, allTags, item?.tags]);
+  }, [newTagName, newTagNameJa, allTags, mediaTags]);
 
   useEffect(() => {
     const handleClickOutside = (e: MouseEvent) => {
@@ -278,7 +289,7 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                     </button>
                   ))}
                   {/* Tags (basic tags first, descriptive tags rendered with muted styling) */}
-                  {item.tags && [...item.tags]
+                  {mediaTags && [...mediaTags]
                     .sort((a, b) => (a.kind === b.kind ? 0 : a.kind === 'descriptive' ? 1 : -1))
                     .map((tItem, idx) => (
                     <div
@@ -314,7 +325,9 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
                       )}
                     </div>
                   ))}
-                  {(!item.categories || item.categories.length === 0) && (!item.tags || item.tags.length === 0) && (
+                  {(!item.categories || item.categories.length === 0) &&
+                    mediaTags !== null &&
+                    mediaTags.length === 0 && (
                     <span className="text-xs text-slate-500 italic p-1">
                       {t('media_modal.no_tags', 'タグが設定されていません')}
                     </span>
