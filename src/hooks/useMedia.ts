@@ -236,7 +236,7 @@ export function useMedia() {
       await invoke('start_scan', { folderPath });
     } catch (e: any) {
       console.error('Failed to start scan:', e);
-      setErrorModal({ open: true, message: String(e) });
+      setErrorModal({ open: true, messageKey: 'errors.start_scan', message: String(e) });
       setScanning(false);
     }
   };
@@ -249,6 +249,7 @@ export function useMedia() {
       await invoke('cancel_scan');
     } catch (e) {
       console.error('Failed to cancel scan:', e);
+      setErrorModal({ open: true, messageKey: 'errors.cancel_scan', message: String(e) });
     } finally {
       setScanning(false);
       setProgress(null);
@@ -262,6 +263,7 @@ export function useMedia() {
       await invoke('pause_scan');
     } catch (e) {
       console.error('Failed to pause scan:', e);
+      setErrorModal({ open: true, messageKey: 'errors.pause_scan', message: String(e) });
     }
   };
 
@@ -270,6 +272,7 @@ export function useMedia() {
       await invoke('resume_scan');
     } catch (e) {
       console.error('Failed to resume scan:', e);
+      setErrorModal({ open: true, messageKey: 'errors.resume_scan', message: String(e) });
     }
   };
 
@@ -286,7 +289,7 @@ export function useMedia() {
       await invoke('rescan_all_folders');
     } catch (e: any) {
       console.error('Failed to rescan all folders:', e);
-      setErrorModal({ open: true, message: String(e) });
+      setErrorModal({ open: true, messageKey: 'errors.rescan_all_folders', message: String(e) });
       setScanning(false);
     }
   };
@@ -304,7 +307,12 @@ export function useMedia() {
       await invoke('reanalyze_all_media');
     } catch (e: any) {
       console.error('Failed to reanalyze all media:', e);
-      setErrorModal({ open: true, message: String(e) });
+      setErrorModal({
+        open: true,
+        messageKey: 'errors.reanalyze_all_media',
+        message: String(e),
+        ollamaHint: looksLikeOllamaIssue(e),
+      });
       setScanning(false);
     }
   };
@@ -375,6 +383,7 @@ export function useMedia() {
       await fetchMedia();
     } catch (e: any) {
       console.error('Failed to remove scan folder:', e);
+      setErrorModal({ open: true, messageKey: 'errors.remove_scan_folder', message: String(e) });
     }
   };
 
@@ -392,7 +401,7 @@ export function useMedia() {
     try {
       await invoke('open_file', { filePath });
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not open file: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.open_file', message: String(e) });
     }
   };
 
@@ -400,7 +409,7 @@ export function useMedia() {
     try {
       await invoke('open_folder', { filePath });
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not open folder: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.open_folder', message: String(e) });
     }
   };
 
@@ -412,7 +421,7 @@ export function useMedia() {
       await fetchMedia();
       return n;
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not exclude media: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.exclude_media', message: String(e) });
       return 0;
     }
   };
@@ -426,7 +435,7 @@ export function useMedia() {
       await fetchMasterData();
       return n;
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not delete media: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.delete_media', message: String(e) });
       return 0;
     }
   };
@@ -439,7 +448,7 @@ export function useMedia() {
       await fetchMedia();
       return n;
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not clear exclusions: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.unexclude_paths', message: String(e) });
       return 0;
     }
   };
@@ -493,6 +502,7 @@ export function useMedia() {
       await invoke('unload_model');
     } catch (e: any) {
       console.error('Failed to unload model:', e);
+      setErrorModal({ open: true, messageKey: 'errors.unload_model', message: String(e) });
     }
   };
 
@@ -516,6 +526,7 @@ export function useMedia() {
       await invoke('clear_app_logs');
     } catch (e: any) {
       console.error('Failed to clear logs:', e);
+      setErrorModal({ open: true, messageKey: 'errors.clear_logs', message: String(e) });
     }
   };
 
