@@ -30,4 +30,14 @@ export function emitMock(event: string, payload: any): void {
   handlers.get(event)?.forEach((h) => h({ payload }));
 }
 
+/**
+ * イベント名ごとの購読者数。**フックが二重に呼ばれていないかの確認に使う。**
+ * 購読が2組になっても画面は動いてしまうので、数えないと気付けない。
+ */
+(window as unknown as Record<string, unknown>).__mockListenerCounts = () => {
+  const out: Record<string, number> = {};
+  for (const [event, set] of handlers) out[event] = set.size;
+  return out;
+};
+
 startScanSimulatorIfRequested(emitMock);

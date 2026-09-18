@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { useMedia } from './hooks/useMedia';
+import { MediaProvider, useMediaContext } from './contexts/MediaContext';
 import { SearchBar } from './components/SearchBar';
 import { Sidebar } from './components/Sidebar';
 import { GalleryGrid } from './components/GalleryGrid';
@@ -68,7 +68,7 @@ function AppContent() {
     clearLogs,
     saveSettings,
     reanalyzeSingleMedia,
-  } = useMedia();
+  } = useMediaContext();
 
   const { kind: busyKind } = useBusy();
   // 排他ロックを取る操作は、走っている間 Rust が必ず弾く。押せるままにしない
@@ -260,10 +260,6 @@ function AppContent() {
     selectedMediaType,
     selectedExtensions,
   ]);
-
-  useEffect(() => {
-    fetchMasterData();
-  }, []);
 
   const handleToggleCategory = (categoryName: string) => {
     setSelectedCategories((prev) =>
@@ -739,12 +735,29 @@ function AppContent() {
   );
 }
 
-export function App() {
-  const { settings, updateSetting } = useMedia();
+/**
+ * 言語だけを読んで I18nProvider を張る層。
+ *
+ * **ここで useMedia を直接呼ばない。** 呼ぶと AppContent とは別のインスタンスになり、
+ * 起動時の取得も batch_progress の購読も2組になる。Provider の値を見る。
+ */
+function AppShell() {
+  const { settings, updateSetting } = useMediaContext();
   return (
-    <I18nProvider initialLanguage={(settings.ui_language as any) || 'ja'} onLanguageChange={(lang) => updateSetting('ui_language', lang)}>
+    <I18nProvider
+      initialLanguage={(settings.ui_language as any) || 'ja'}
+      onLanguageChange={(lang) => updateSetting('ui_language', lang)}
+    >
       <AppContent />
     </I18nProvider>
+  );
+}
+
+export function App() {
+  return (
+    <MediaProvider>
+      <AppShell />
+    </MediaProvider>
   );
 }
 

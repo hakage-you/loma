@@ -596,8 +596,11 @@ export function useMedia() {
     }
   }, []);
 
+  // **ここで fetchMedia を呼ばない。**
+  // 絞り込みの条件を持っているのは呼び出し側（App）で、そちらは条件が変わるたびに
+  // fetchMedia を呼ぶ。マウント時にもその effect が走るので、ここでも呼ぶと
+  // 起動のたびに同じ一覧を2回取ることになる（get_media の応答は実データで 5MB）。
   useEffect(() => {
-    fetchMedia();
     fetchMasterData();
     checkScanStatus();
 
@@ -626,7 +629,7 @@ export function useMedia() {
         refreshTimerRef.current = null;
       }
     };
-  }, [fetchMedia, fetchMasterData, checkScanStatus, scheduleRefresh]);
+  }, [fetchMasterData, checkScanStatus, scheduleRefresh]);
 
   return {
     media,
@@ -674,3 +677,5 @@ export function useMedia() {
   };
 }
 
+/** `useMedia` が返すもの。Context で配るために名前を付ける */
+export type UseMediaResult = ReturnType<typeof useMedia>;
