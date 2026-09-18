@@ -75,7 +75,10 @@ export function useMedia() {
 
   // batch_progress を受けての DB 再取得を間引く間隔 (ms)。
   // 進捗バーの更新は間引かず、DB を叩く fetchMedia / fetchMasterData だけを対象にする。
-  const PROGRESS_REFRESH_DEBOUNCE_MS = 1000;
+  //
+  // **1秒に最大1回。** 実データでは get_media の応答が 5MB あり、
+  // 解析は数時間続くので、ここの回数がそのまま何時間ぶんも積み上がる。
+  const PROGRESS_REFRESH_INTERVAL_MS = 1000;
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -166,20 +169,32 @@ export function useMedia() {
     }
   }, [fetchMedia, fetchMasterData]);
 
+  /**
+   * 再取得を予約する。**間引きであってデバウンスではない。**
+   *
+   * 以前はイベントが来るたびにタイマーを張り直していた。進捗が間引き間隔より
+   * 速く届くと張り直しが続いてタイマーが一度も発火せず、**解析が終わるまで
+   * ギャラリーが一切更新されない**状態になっていた。
+   * 登録フェーズ（5件ごと）や解析の速いモデルがこれに当たる。
+   *
+   * 予約済みなら何もしない。こうすると「1秒に最大1回、ただし必ず走る」になる。
+   */
   const scheduleRefresh = useCallback(
     (immediate: boolean) => {
-      if (refreshTimerRef.current !== null) {
-        clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
       if (immediate) {
+        if (refreshTimerRef.current !== null) {
+          clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
         void runRefresh();
         return;
       }
+      // 既に予約が入っているなら倒さない。倒すと永久に発火しない
+      if (refreshTimerRef.current !== null) return;
       refreshTimerRef.current = setTimeout(() => {
         refreshTimerRef.current = null;
         void runRefresh();
-      }, PROGRESS_REFRESH_DEBOUNCE_MS);
+      }, PROGRESS_REFRESH_INTERVAL_MS);
     },
     [runRefresh]
   );
