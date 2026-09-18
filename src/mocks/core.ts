@@ -9,8 +9,10 @@ import {
   MOCK_VRAM_GB,
   MOCK_LOGS,
 } from './data';
-import { MediaItem, TagItem } from '../types';
-import { isMockScanRunning } from './scanSimulator';
+import { MediaItem, TagItem, MergeSuggestion } from '../types';
+import { isMockScanRunning, setMockScanPaused } from './scanSimulator';
+// 進捗イベントの疑似発火に使う。購読者は event.ts が持っている
+import { emitMock } from './event';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 
 // 開発中のスクリーンショット撮影用モック(`vite --mode mock` 時のみ有効)。
@@ -89,7 +91,393 @@ const apiKeyState: Record<string, string> = { gemini: 'mock-gemini-key' };
 /** 解析対象から外したパス（モック側の `excluded_paths`） */
 const excludedState: { path: string; reason?: string | null; created_at: number }[] = [];
 
+
+// ---------------------------------------------------------------------------
+// ここから下は「バックエンドを呼んだ結果を画面が使う」経路を mock で走らせるための handler。
+//
+// **handler が無いコマンドは undefined を返すだけで例外にならない。**
+// 画面は成功したものとして進むので、e2e は「押せた」しか見ていない状態になる。
+// 三者の食い違いは `npm run check:mock-commands` が落とす。
+// ---------------------------------------------------------------------------
+
+/** ログ本文。`clear_app_logs` で空にできるよう状態として持つ */
+let logsState: string = MOCK_LOGS;
+
+
+/**
+ * 画面の外へ出ていく操作の記録。
+ * ファイルマネージャを開く・モデルを降ろすといった操作は**画面に何も残らない**ので、
+ * 呼ばれたことを e2e から確かめる術がこれしかない。
+ */
+const sideEffectLog: { command: string; args: Record<string, any> }[] = [];
+(window as unknown as Record<string, unknown>).__mockSideEffects = sideEffectLog;
+
+const recordSideEffect = (command: string, args: Record<string, any>) => {
+  sideEffectLog.push({ command, args });
+};
+
+/** タグ表から名前で引く。無ければ採番して足す（バックエンドの get_or_create_tag と同じ） */
+function getOrCreateTag(name: string, nameJa?: string): TagItem {
+  const existing = tagState.find((t) => t.name === name);
+  if (existing) return existing;
+  const created: TagItem = {
+    id: Math.max(0, ...tagState.map((t) => t.id)) + 1,
+    name,
+    name_ja: nameJa,
+    is_category: false,
+    count: 0,
+    kind: 'basic',
+  };
+  tagState = [...tagState, created];
+  return created;
+}
+
+/**
+ * タグ統合。統合元のタグを統合先へ寄せ、どのメディアからも外れた統合元を消す。
+ * バックエンドの `merge_tags` と同じく、**既に消えているIDを渡されてもエラーにしない**。
+ */
+function mergeTagsInto(targetId: number, sourceIds: number[]): number {
+  const target = tagState.find((t) => t.id === targetId);
+  if (!target) return 0;
+  let merged = 0;
+  for (const sourceId of sourceIds) {
+    const source = tagState.find((t) => t.id === sourceId);
+    if (!source || source.id === target.id) continue;
+    for (const item of mediaState) {
+      if (!item.tags.some((t) => t.name === source.name)) continue;
+      item.tags = item.tags.filter((t) => t.name !== source.name);
+      if (!item.tags.some((t) => t.name === target.name)) {
+        item.tags = [...item.tags, { name: target.name, name_ja: target.name_ja, kind: target.kind }];
+      }
+    }
+    tagState = tagState.filter((t) => t.id !== source.id);
+    merged++;
+  }
+  // 件数を数え直す。統合で同じメディアに2つ付いていたものが1つに畳まれる
+  recountTags();
+  return merged;
+}
+
+/** タグの count をメディア側から数え直す */
+function recountTags(): void {
+  const counts = new Map<string, number>();
+  for (const item of mediaState) {
+    for (const tag of item.tags) counts.set(tag.name, (counts.get(tag.name) ?? 0) + 1);
+    for (const cat of item.categories) counts.set(cat, (counts.get(cat) ?? 0) + 1);
+  }
+  tagState = tagState.map((t) => ({ ...t, count: counts.get(t.name) ?? 0 }));
+}
+
+/**
+ * 統合候補。**タグ表の実IDを使う**（画面は id で承認・除外を持つので、
+ * 固定値を返すと「選んだのに適用されない」状態になる）。
+ *
+ * 中身は実データではなく、3方式それぞれの表示（規則チップ / 確信度 / 類似度）を
+ * 画面に出すための最小限の組。
+ */
+function buildMockSuggestions(method: string): MergeSuggestion[] {
+  const pick = (name: string) => tagState.find((t) => t.name === name);
+  const group = (
+    id: string,
+    targetName: string,
+    sourceNames: string[],
+    reason: string,
+    confidence: string,
+    rules?: string[]
+  ): MergeSuggestion | null => {
+    const target = pick(targetName);
+    const sources = sourceNames.map(pick).filter((t): t is TagItem => !!t);
+    if (!target || sources.length === 0) return null;
+    const thumbs = mediaState
+      .filter((m) => m.tags.some((t) => t.name === targetName) && m.thumbnail_path)
+      .slice(0, 5)
+      .map((m) => m.thumbnail_path);
+    return {
+      id,
+      target_tag: target,
+      source_tags: sources,
+      reason,
+      confidence,
+      rules,
+      sample_thumbnails: thumbs,
+      total_images_count: target.count,
+    };
+  };
+
+  const table: Record<string, (MergeSuggestion | null)[]> = {
+    suggest_tag_merges: [
+      group('rules-1', 'person', ['portrait'], '日本語表記が一致', 'high', ['ja_exact']),
+      group('rules-2', 'screen', ['window'], '綴りが近い', 'medium', ['spelling', 'keyphrase']),
+    ],
+    suggest_hypernyms: [
+      group('hyp-1', 'nature', ['sky', 'mountain'], '「〜の一種」と判定', 'high', ['hypernym']),
+    ],
+    suggest_related_tags: [
+      group('rel-1', 'meal', ['dessert', 'plate'], 'ベクトルが近い', 'medium', ['embedding']),
+    ],
+  };
+  return (table[method] ?? []).filter((s): s is MergeSuggestion => s !== null);
+}
+
+/**
+ * モデルのダウンロード進捗の疑似発火。
+ *
+ * **完了するまで解決しない Promise を返す。** 実バックエンドの `pull_ollama_model` は
+ * ダウンロードが終わるまで返らず、呼び出し側（SettingsModal）は `finally` で
+ * 進捗イベントの購読を外す。即座に解決すると購読が先に外れ、
+ * 進捗バーが一度も描画されない。
+ */
+let pullTimer: ReturnType<typeof setInterval> | null = null;
+let pullReject: ((reason: unknown) => void) | null = null;
+
+const PULL_TOTAL_BYTES = 4_200_000_000;
+const PULL_STEPS = 8;
+const PULL_STEP_MS = 150;
+
+function startMockPull(model: string): Promise<void> {
+  cancelMockPull();
+  return new Promise<void>((resolve, reject) => {
+    pullReject = reject;
+    let completed = 0;
+    pullTimer = setInterval(() => {
+      completed = Math.min(PULL_TOTAL_BYTES, completed + PULL_TOTAL_BYTES / PULL_STEPS);
+      const done = completed >= PULL_TOTAL_BYTES;
+      emitMock('ollama-pull-progress', {
+        model,
+        status: done ? 'success' : 'downloading',
+        completed,
+        total: PULL_TOTAL_BYTES,
+        percent: (completed / PULL_TOTAL_BYTES) * 100,
+        done,
+      });
+      if (done) {
+        clearPullTimer();
+        pullReject = null;
+        resolve();
+      }
+    }, PULL_STEP_MS);
+  });
+}
+
+function clearPullTimer(): void {
+  if (pullTimer !== null) {
+    clearInterval(pullTimer);
+    pullTimer = null;
+  }
+}
+
+/** 中断。実バックエンドは pull 側をエラーで終わらせるので、ここも reject する */
+function cancelMockPull(): void {
+  clearPullTimer();
+  if (pullReject) {
+    const reject = pullReject;
+    pullReject = null;
+    reject(new Error('[mock] pull cancelled'));
+  }
+}
+
+/**
+ * invoke の呼び出し記録。**性能の計測に使う。**
+ * 起動時に何本 IPC が飛ぶかは画面に出ないので、ここでしか数えられない。
+ * 合否は問わない（計測とデバッグ用）。
+ */
+const invokeLog: { cmd: string; at: number }[] = [];
+(window as unknown as Record<string, unknown>).__mockInvokeLog = invokeLog;
+(window as unknown as Record<string, unknown>).__mockInvokeCounts = () => {
+  const counts: Record<string, number> = {};
+  for (const entry of invokeLog) counts[entry.cmd] = (counts[entry.cmd] ?? 0) + 1;
+  return counts;
+};
+(window as unknown as Record<string, unknown>).__mockResetInvokeLog = () => {
+  invokeLog.length = 0;
+};
+
 const handlers: Record<string, (args: Record<string, any>) => any> = {
+  // --- スキャン制御 ---
+  pause_scan: () => {
+    setMockScanPaused(true);
+  },
+  resume_scan: () => {
+    setMockScanPaused(false);
+  },
+  rescan_all_folders: () => {
+    recordSideEffect('rescan_all_folders', {});
+  },
+  reanalyze_all_media: () => {
+    recordSideEffect('reanalyze_all_media', {});
+    for (const item of mediaState) item.analysis_status = 'pending';
+  },
+  reanalyze_folder: (args) => {
+    recordSideEffect('reanalyze_folder', args);
+    for (const item of mediaState) {
+      if (item.file_path.includes(args.folderPath) || item.parent_folder === args.folderPath) {
+        item.analysis_status = 'pending';
+      }
+    }
+  },
+  /**
+   * 1件だけ再解析する。実バックエンドは解析が終わってから返るので、
+   * ここでも**返る時点で結果が反映されている**ようにする
+   * （解析中の表示を見たいときは `?debugSlowCommand=reanalyze_single_media:800`）。
+   */
+  reanalyze_single_media: (args) => {
+    const item = mediaState.find((m) => m.id === args.mediaId);
+    if (!item) return;
+    item.analysis_status = 'completed';
+    item.analysis_error = undefined;
+    item.analysis_error_kind = undefined;
+    item.consecutive_failures = 0;
+    item.needs_attention = false;
+    recordSideEffect('reanalyze_single_media', args);
+  },
+  custom_analyze_video: (args) => {
+    recordSideEffect('custom_analyze_video', args);
+    const item = mediaState.find((m) => m.id === args.mediaId);
+    if (item) item.analysis_status = 'completed';
+  },
+  /**
+   * 失敗したものを解析し直す。
+   * **`needs_attention` のものは直らない。** 実物と同じく失敗のまま残し、
+   * 「まとめて再試行したのにリストから消えない」状況を再現できるようにする。
+   */
+  retry_media: (args) => {
+    const ids: number[] = args.mediaIds ?? [];
+    for (const item of mediaState.filter((m) => ids.includes(m.id))) {
+      if (item.needs_attention) {
+        item.consecutive_failures = (item.consecutive_failures ?? 0) + 1;
+        continue;
+      }
+      item.analysis_status = 'completed';
+      item.analysis_error = undefined;
+      item.analysis_error_kind = undefined;
+      item.consecutive_failures = 0;
+    }
+  },
+  cleanup_missing_media: () => {
+    recordSideEffect('cleanup_missing_media', {});
+    return 0;
+  },
+
+  // --- タグ編集 ---
+  rename_tag: (args) => {
+    const tag = tagState.find((t) => t.id === args.tagId);
+    if (!tag) return;
+    const oldName = tag.name;
+    tag.name = args.newName;
+    tag.name_ja = args.newNameJa ?? undefined;
+    tagState = tagState.map((t) => (t.id === tag.id ? { ...tag } : t));
+    for (const item of mediaState) {
+      item.tags = item.tags.map((t) =>
+        t.name === oldName ? { ...t, name: tag.name, name_ja: tag.name_ja } : t
+      );
+      item.categories = item.categories.map((c) => (c === oldName ? tag.name : c));
+    }
+  },
+  merge_tags: (args) => mergeTagsInto(args.targetTagId, args.sourceTagIds ?? []),
+  get_or_create_tag: (args) => getOrCreateTag(args.name, args.nameJa),
+  /**
+   * 統合をまとめて適用する。
+   * **同じタグが2つ以上の統合先へ割り当てられていたら何も適用しない**（実物と同じ）。
+   * 競合を返すだけで状態は変えない。
+   */
+  apply_tag_merges: (args) => {
+    const items: { target_id: number; source_ids: number[] }[] = args.items ?? [];
+    const assignedTo = new Map<number, number[]>();
+    for (const item of items) {
+      for (const sourceId of item.source_ids) {
+        const list = assignedTo.get(sourceId) ?? [];
+        if (!list.includes(item.target_id)) list.push(item.target_id);
+        assignedTo.set(sourceId, list);
+      }
+    }
+    const conflicts = [...assignedTo.entries()]
+      .filter(([, targets]) => targets.length > 1)
+      .map(([tag_id, target_ids]) => ({ tag_id, target_ids }));
+    if (conflicts.length > 0) return { merged_tags: 0, targets: 0, conflicts };
+
+    let merged = 0;
+    for (const item of items) merged += mergeTagsInto(item.target_id, item.source_ids);
+    return { merged_tags: merged, targets: items.length, conflicts: [] };
+  },
+  /**
+   * 適用で消える提案の数。実物は規則ごとの内訳を返す。
+   * 統合元・統合先に触れる提案は、適用後に意味を失う
+   */
+  count_invalidated_suggestions: (args) => {
+    const items: { target_id: number; source_ids: number[] }[] = args.items ?? [];
+    const suggestions: MergeSuggestion[] = args.suggestions ?? [];
+    const touched = new Set<number>();
+    for (const item of items) {
+      touched.add(item.target_id);
+      for (const id of item.source_ids) touched.add(id);
+    }
+    const applying = new Set(items.map((i) => i.target_id));
+    const byRule = new Map<string, number>();
+    for (const sug of suggestions) {
+      const ids = [sug.target_tag.id, ...sug.source_tags.map((t) => t.id)];
+      // いま適用するもの自身は「消える提案」に数えない
+      if (applying.has(sug.target_tag.id) && ids.every((id) => touched.has(id))) continue;
+      if (!ids.some((id) => touched.has(id))) continue;
+      for (const rule of sug.rules ?? ['unknown']) {
+        byRule.set(rule, (byRule.get(rule) ?? 0) + 1);
+      }
+    }
+    return [...byRule.entries()];
+  },
+  get_media_by_tag: (args) => {
+    const tag = tagState.find((t) => t.id === args.tagId);
+    if (!tag) return [];
+    return mediaState.filter(
+      (m) => m.tags.some((t) => t.name === tag.name) || m.categories.includes(tag.name)
+    );
+  },
+  /** タグIDごとのサンプルサムネ。キーは実バックエンドと同じく文字列 */
+  get_tag_sample_thumbnails: (args) => {
+    const ids: number[] = args.tagIds ?? [];
+    const out: Record<string, string[]> = {};
+    for (const id of ids) {
+      const tag = tagState.find((t) => t.id === id);
+      if (!tag) continue;
+      out[String(id)] = mediaState
+        .filter(
+          (m) =>
+            (m.tags.some((t) => t.name === tag.name) || m.categories.includes(tag.name)) &&
+            m.thumbnail_path
+        )
+        .slice(0, 5)
+        .map((m) => m.thumbnail_path);
+    }
+    return out;
+  },
+  suggest_tag_merges: () => buildMockSuggestions('suggest_tag_merges'),
+  suggest_hypernyms: () => buildMockSuggestions('suggest_hypernyms'),
+  suggest_related_tags: () => buildMockSuggestions('suggest_related_tags'),
+
+  // --- ログ ---
+  clear_app_logs: () => {
+    logsState = '';
+  },
+
+  // --- 画面の外へ出る操作 ---
+  open_file: (args) => recordSideEffect('open_file', args),
+  open_folder: (args) => recordSideEffect('open_folder', args),
+  unload_model: () => recordSideEffect('unload_model', {}),
+
+  // --- モデルのダウンロード ---
+  /**
+   * 進捗イベントを疑似発火する。**即座に done を返さない** ——
+   * ダウンロード中の表示（進捗バー・設定を開くボタン）は
+   * 途中の状態でしか描画されないため。
+   */
+  pull_ollama_model: (args) => {
+    const model = String(args.modelName ?? args.model ?? 'mock-model');
+    recordSideEffect('pull_ollama_model', args);
+    return startMockPull(model);
+  },
+  cancel_ollama_pull: () => {
+    recordSideEffect('cancel_ollama_pull', {});
+    cancelMockPull();
+  },
   get_media: (args) => mediaState.filter((item) => matchesFilters(item, args)),
   get_excluded_paths: () => excludedState,
   exclude_media: (args) => {
@@ -145,7 +533,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_vision_capable_models: () => MOCK_VISION_MODELS,
   // `?debugScan=mid` では「起動時点で既にスキャン実行中」を再現する
   get_scan_status: () => scanning || isMockScanRunning(),
-  get_app_logs: () => MOCK_LOGS,
+  get_app_logs: () => logsState,
   get_system_vram_gb: () => MOCK_VRAM_GB,
   update_setting: (args) => {
     settingsState = { ...settingsState, [args.key]: args.value };
@@ -215,17 +603,11 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   cancel_scan: () => {
     scanning = false;
   },
-  suggest_tag_merges: () => [],
-  suggest_hypernyms: () => [],
-  suggest_related_tags: () => [],
   load_tag_suggestions_cache: () => [],
   dismiss_tag_suggestion: () => {},
   get_suggestion_run_status: () => null,
   // API キーの保存先は OS の資格情報ストア。モックはプロセス内に持つだけ
   get_provider_api_key: (args) => apiKeyState[args.provider] ?? '',
-  save_provider_api_key: (args) => {
-    apiKeyState[args.provider] = args.apiKey;
-  },
   check_ffmpeg_installed: () => true,
   get_effective_prompt_type: (args) => {
     if (args.forceDetailed) return 'DETAILED';
@@ -430,12 +812,15 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
   if (slowCommand && slowCommand.cmd === cmd) {
     await new Promise((resolve) => setTimeout(resolve, slowCommand.ms));
   }
+  invokeLog.push({ cmd, at: performance.now() });
   const handler = handlers[cmd];
   if (!handler) {
     console.warn(`[mock invoke] unhandled command "${cmd}"`, args);
     return undefined as unknown as T;
   }
-  const result = handler(args);
+  // handler は Promise を返してよい（実バックエンドと同じく、処理が終わるまで返らない
+  // コマンドがある）。await せずに structuredClone すると DataCloneError になる
+  const result = await handler(args);
   // 実際の Tauri IPC は戻り値を毎回シリアライズするので、呼び出し側は
   // 毎回別のオブジェクトを受け取る。モックが内部 state の参照をそのまま返すと、
   // 画面が抱えている古いオブジェクトまで一緒に書き換わり、

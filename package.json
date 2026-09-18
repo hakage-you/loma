@@ -22,7 +22,8 @@
     "text-report": "node tools/text-check/report.mjs",
     "text-baseline": "node tools/text-check/baseline.mjs",
     "check:locale": "node tools/check-locale.mjs",
-    "check:exclusive": "node tools/check-exclusive.mjs"
+    "check:exclusive": "node tools/check-exclusive.mjs",
+    "check:mock-commands": "node tools/check-mock-commands.mjs"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",

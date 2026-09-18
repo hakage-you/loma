@@ -25,7 +25,8 @@ export async function listen<T>(
   };
 }
 
-function emitMock(event: string, payload: any): void {
+/** モックの handler からも進捗イベントを起こせるよう公開する */
+export function emitMock(event: string, payload: any): void {
   handlers.get(event)?.forEach((h) => h({ payload }));
 }
 

@@ -1744,11 +1744,6 @@ pub async fn open_folder(file_path: String) -> Result<(), String> {
     Ok(())
 }
 
-#[tauri::command]
-pub async fn check_and_open_file(file_path: String) -> Result<(), String> {
-    open_file(file_path).await
-}
-
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MergeSuggestion {
     pub id: String,
@@ -2886,15 +2881,6 @@ pub async fn custom_analyze_video(
     crate::batch::custom_analyze_video_media(&pool, media_id, timestamp_seconds, cancel_flag)
         .await
         .map_err(|e| cmd_err("custom_analyze_video", e))
-}
-
-#[tauri::command]
-pub async fn save_provider_api_key(
-    provider: String,
-    api_key: String,
-) -> Result<(), String> {
-    crate::credentials::set_api_key(&provider, &api_key)
-        .map_err(|e| cmd_err("save_provider_api_key", e))
 }
 
 #[tauri::command]
