@@ -112,6 +112,28 @@ let logsState: string = MOCK_LOGS;
 const sideEffectLog: { command: string; args: Record<string, any> }[] = [];
 (window as unknown as Record<string, unknown>).__mockSideEffects = sideEffectLog;
 
+/**
+ * 一括処理の完了イベント。
+ *
+ * **これを出さないと画面は「解析中」のまま固まる。** useMedia は
+ * startScan / retryMedia / reanalyze* で scanning を立て、降ろすのは
+ * batch_progress の status が Completed になったときだけ。
+ * 実バックエンドは batch.rs が処理の最後に必ず Completed を送る。
+ *
+ * イベントは呼び出しが解決したあとに届かせる（実物も同じ順序）。
+ */
+function emitScanCompleted(total: number): void {
+  setTimeout(() => {
+    emitMock('batch_progress', {
+      total,
+      current: total,
+      current_file: '',
+      status: 'Completed',
+      error_count: 0,
+    });
+  }, 0);
+}
+
 const recordSideEffect = (command: string, args: Record<string, any>) => {
   sideEffectLog.push({ command, args });
 };
@@ -205,18 +227,60 @@ function buildMockSuggestions(method: string): MergeSuggestion[] {
   };
 
   const table: Record<string, (MergeSuggestion | null)[]> = {
-    suggest_tag_merges: [
+    rules: [
       group('rules-1', 'person', ['portrait'], '日本語表記が一致', 'high', ['ja_exact']),
       group('rules-2', 'screen', ['window'], '綴りが近い', 'medium', ['spelling', 'keyphrase']),
     ],
-    suggest_hypernyms: [
+    hypernym: [
       group('hyp-1', 'nature', ['sky', 'mountain'], '「〜の一種」と判定', 'high', ['hypernym']),
     ],
-    suggest_related_tags: [
+    related: [
       group('rel-1', 'meal', ['dessert', 'plate'], 'ベクトルが近い', 'medium', ['embedding']),
     ],
   };
   return (table[method] ?? []).filter((s): s is MergeSuggestion => s !== null);
+}
+
+/**
+ * 方式ごとの提案の保存先。
+ *
+ * **実バックエンドは `suggest_*` が `tag_suggestion_pairs` へ書き、
+ * 画面は `load_tag_suggestions_cache` で読み戻す2段構え。**
+ * モックが `suggest_*` の戻り値だけを返して保存しないと、検出を回しても
+ * 読み戻しが空になり、提案タブは永久に「提案はまだありません」のままになる。
+ */
+const suggestionStore: Record<string, MergeSuggestion[]> = {};
+
+/** その方式の実行記録。未実行なら null（画面は状態の帯を出さない） */
+const suggestionRuns: Record<
+  string,
+  { started_at: number; finished_at: number | null; pair_count: number; judged_count: number; unjudged_count: number }
+> = {};
+
+/** 却下済みのペア。再実行しても戻らないよう、方式ごとに覚える */
+const dismissedPairs: Record<string, Set<string>> = {};
+
+const pairKey = (targetId: number, memberId: number) => `${targetId}:${memberId}`;
+
+/** 検出を1回走らせる。却下済みのペアは候補から外す */
+function runSuggestScan(method: string): MergeSuggestion[] {
+  const dismissed = dismissedPairs[method] ?? new Set<string>();
+  const built = buildMockSuggestions(method)
+    .map((sug) => ({
+      ...sug,
+      source_tags: sug.source_tags.filter((t) => !dismissed.has(pairKey(sug.target_tag.id, t.id))),
+    }))
+    .filter((sug) => sug.source_tags.length > 0);
+  suggestionStore[method] = built;
+  const pairCount = built.reduce((n, s) => n + s.source_tags.length, 0);
+  suggestionRuns[method] = {
+    started_at: Math.floor(Date.now() / 1000) - 1,
+    finished_at: Math.floor(Date.now() / 1000),
+    pair_count: pairCount,
+    judged_count: tagState.length,
+    unjudged_count: 0,
+  };
+  return built;
 }
 
 /**
@@ -302,10 +366,12 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   },
   rescan_all_folders: () => {
     recordSideEffect('rescan_all_folders', {});
+    emitScanCompleted(mediaState.length);
   },
   reanalyze_all_media: () => {
     recordSideEffect('reanalyze_all_media', {});
     for (const item of mediaState) item.analysis_status = 'pending';
+    emitScanCompleted(mediaState.length);
   },
   reanalyze_folder: (args) => {
     recordSideEffect('reanalyze_folder', args);
@@ -314,6 +380,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
         item.analysis_status = 'pending';
       }
     }
+    emitScanCompleted(mediaState.length);
   },
   /**
    * 1件だけ再解析する。実バックエンドは解析が終わってから返るので、
@@ -352,6 +419,7 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
       item.analysis_error_kind = undefined;
       item.consecutive_failures = 0;
     }
+    emitScanCompleted(ids.length);
   },
   cleanup_missing_media: () => {
     recordSideEffect('cleanup_missing_media', {});
@@ -449,9 +517,9 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     }
     return out;
   },
-  suggest_tag_merges: () => buildMockSuggestions('suggest_tag_merges'),
-  suggest_hypernyms: () => buildMockSuggestions('suggest_hypernyms'),
-  suggest_related_tags: () => buildMockSuggestions('suggest_related_tags'),
+  suggest_tag_merges: () => runSuggestScan('rules'),
+  suggest_hypernyms: () => runSuggestScan('hypernym'),
+  suggest_related_tags: () => runSuggestScan('related'),
 
   // --- ログ ---
   clear_app_logs: () => {
@@ -598,14 +666,29 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   },
   start_scan: () => {
     scanning = false;
+    emitScanCompleted(mediaState.length);
   },
   sync_folders: () => {},
   cancel_scan: () => {
     scanning = false;
   },
-  load_tag_suggestions_cache: () => [],
-  dismiss_tag_suggestion: () => {},
-  get_suggestion_run_status: () => null,
+  load_tag_suggestions_cache: (args) => suggestionStore[String(args.method ?? "")] ?? [],
+  dismiss_tag_suggestion: (args) => {
+    const method = String(args.method ?? "");
+    const set = dismissedPairs[method] ?? new Set<string>();
+    for (const memberId of (args.memberIds ?? []) as number[]) {
+      set.add(pairKey(args.targetId, memberId));
+    }
+    dismissedPairs[method] = set;
+    const store = suggestionStore[method] ?? [];
+    suggestionStore[method] = store
+      .map((sug) => ({
+        ...sug,
+        source_tags: sug.source_tags.filter((t) => !set.has(pairKey(sug.target_tag.id, t.id))),
+      }))
+      .filter((sug) => sug.source_tags.length > 0);
+  },
+  get_suggestion_run_status: (args) => suggestionRuns[String(args.method ?? "")] ?? null,
   // API キーの保存先は OS の資格情報ストア。モックはプロセス内に持つだけ
   get_provider_api_key: (args) => apiKeyState[args.provider] ?? '',
   check_ffmpeg_installed: () => true,
