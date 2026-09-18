@@ -3,5 +3,17 @@
   "label_scroll_to_bottom": "Scroll to Bottom",
   "label_full_view": "Full View",
   "label_clear": "Clear",
-  "label_copy": "Copy"
+  "label_copy": "Copy",
+  "label_subtitle": "Backend and vision model execution logs",
+  "label_filter_placeholder": "Filter log entries (e.g. ERROR, 400, Parse)...",
+  "label_refresh": "Refresh",
+  "label_copied": "Copied",
+  "label_close": "Close",
+  "label_showing": "Showing {n} lines",
+  "label_showing_truncated": "Showing {n} lines (latest of {total})",
+  "empty_no_match": "No logs match the filter.",
+  "empty_file": "No log entries yet.",
+  "label_recent": "Recent",
+  "label_collapse": "Collapse console",
+  "label_expand": "Expand console"
 }

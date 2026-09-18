@@ -18,12 +18,16 @@ const countOf = async (page: Page, cmd: string): Promise<number> =>
 
 const console_ = (page: Page) => page.locator('div.z-40').filter({ hasText: '処理ログ' });
 
+/** 全画面のログ表示。下のコンソールと見出しが同じなので、こちらを起点にする */
+const logModal = (page: Page) =>
+  page.locator('div.fixed.inset-0.z-50').filter({ hasText: '処理ログ' });
+
 test.describe('ログコンソール', () => {
   test('畳んだ状態でも行数と最新行が出る', async ({ page }) => {
     await page.goto('/');
 
     await expect(console_(page).getByText('3 行')).toBeVisible();
-    await expect(console_(page).getByText('Recent:', { exact: false })).toBeVisible();
+    await expect(console_(page).getByText('最新:', { exact: false })).toBeVisible();
   });
 
   test('畳んでいる間はログを取り続けない', async ({ page }) => {
@@ -87,10 +91,8 @@ test.describe('ログコンソール', () => {
     await page.goto('/');
     await console_(page).getByRole('button', { name: '全画面表示' }).click();
 
-    // **この画面だけ日本語化されていない。** 見出しもツールバーも英語のまま
-    await expect(
-      page.getByRole('heading', { name: 'Application Diagnostics & Error Logs' })
-    ).toBeVisible();
+    // 下のコンソールと同じ見出しになるので、モーダルの中に限って引く
+    await expect(logModal(page).getByRole('heading', { name: '処理ログ' })).toBeVisible();
   });
 });
 
@@ -116,9 +118,7 @@ test.describe('ログが大きいとき', () => {
     // JS 文字列は UTF-16 なので、開くたびに 16MB がヒープに載ることになる
     await page.goto('/?debugLogLines=30000');
     await console_(page).getByRole('button', { name: '全画面表示' }).click();
-    await expect(
-      page.getByRole('heading', { name: 'Application Diagnostics & Error Logs' })
-    ).toBeVisible();
+    await expect(logModal(page).getByRole('heading', { name: '処理ログ' })).toBeVisible();
 
     const calls = (await invokeLog(page)).filter(
       (e) => e.cmd === 'get_app_logs' && e.args.maxBytes === 2 * 1024 * 1024
@@ -126,6 +126,6 @@ test.describe('ログが大きいとき', () => {
     expect(calls.length).toBeGreaterThan(0);
 
     // 切ったことを黙って隠さない
-    await expect(page.getByText('latest 2000 of', { exact: false })).toBeVisible();
+    await expect(page.getByText('2000 行を表示（', { exact: false })).toBeVisible();
   });
 });

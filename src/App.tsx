@@ -378,7 +378,7 @@ function AppContent() {
                     title={t('app.label_title_resume', 'Resume processing')}
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
-                    Resume
+                    {t('app.label_resume', 'Resume')}
                   </button>
                 ) : (
                   <button
@@ -387,7 +387,7 @@ function AppContent() {
                     title={t('app.label_title_pause', 'Pause processing')}
                   >
                     <Pause className="w-3.5 h-3.5 fill-current" />
-                    Pause
+                    {t('app.label_pause', 'Pause')}
                   </button>
                 )}
                 <button
@@ -396,7 +396,7 @@ function AppContent() {
                   title={t('app.label_title_cancel_scan', 'Cancel scan')}
                 >
                   <StopCircle className="w-3.5 h-3.5" />
-                  Cancel
+                  {t('app.label_cancel_scan', 'Cancel')}
                 </button>
               </>
             ) : (

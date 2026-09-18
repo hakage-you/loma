@@ -15,5 +15,6 @@
   "label_status_completed": "Completed",
   "label_status_failed": "Failed",
   "video_no_ffmpeg": "FFmpeg is not installed. FFmpeg is required for video frame extraction & analysis.",
-  "label_status_tag_insufficient": "Too few tags (excluded from similarity)"
+  "label_status_tag_insufficient": "Too few tags (excluded from similarity)",
+  "label_selected_count": "{n} selected"
 }

@@ -88,10 +88,10 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
             <div>
               <div className="flex items-center gap-2 text-xs font-bold text-indigo-300">
                 <Play className="w-4 h-4 text-indigo-400" />
-                1. Process Pending & New Items
+                {t('folder_modal.label_mode_pending', '1. Process pending & new items')}
               </div>
               <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                Scans folders for new/updated files and processes <strong>only un-tagged (Pending) or failed</strong> items. Skips completed items.
+                {t('folder_modal.mode_pending_body', '')}
               </p>
             </div>
             <button
@@ -103,7 +103,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-200 border border-indigo-500/40 rounded-xl text-xs font-semibold transition cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${scanning ? 'animate-spin' : ''}`} />
-              Process Pending Only
+              {t('folder_modal.label_rescan_all', 'Re-scan all folders')}
             </button>
           </div>
 
@@ -112,10 +112,10 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
             <div>
               <div className="flex items-center gap-2 text-xs font-bold text-amber-300">
                 <RotateCcw className="w-4 h-4 text-amber-400" />
-                2. Force Re-analyze ALL Media
+                {t('folder_modal.label_mode_reanalyze', '2. Force re-analyze all media')}
               </div>
               <p className="text-[11px] text-slate-400 mt-1 leading-relaxed">
-                Resets and <strong>re-evaluates ALL items (including completed)</strong> with the current Vision model & high-res prompt.
+                {t('folder_modal.mode_reanalyze_body', '')}
               </p>
             </div>
             <button
@@ -124,7 +124,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-semibold transition cursor-pointer disabled:opacity-50"
             >
               <RotateCcw className="w-3.5 h-3.5" />
-              Re-analyze ALL Media
+              {t('folder_modal.label_reanalyze_all', 'Re-analyze all media')}
             </button>
           </div>
         </div>
@@ -134,23 +134,23 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
           <div className="p-4 bg-amber-950/80 border border-amber-500/50 rounded-xl flex flex-col gap-3 animate-in fade-in duration-150">
             <div className="flex items-center gap-2 text-xs font-bold text-amber-200">
               <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-              Are you sure you want to force re-analyze all media?
+              {t('folder_modal.confirm_reanalyze_title', '')}
             </div>
             <p className="text-xs text-amber-100/80">
-              This will clear existing assigned tags for all media and re-run Ollama VLM analysis on every item.
+              {t('folder_modal.confirm_reanalyze_body', '')}
             </p>
             <div className="flex justify-end gap-2">
               <button
                 onClick={() => setShowConfirmReanalyze(false)}
                 className="px-3 py-1 bg-slate-900 text-slate-300 text-xs rounded-lg hover:bg-slate-800"
               >
-                Cancel
+                {t('folder_modal.label_cancel', 'Cancel')}
               </button>
               <button
                 onClick={handleConfirmFullReanalyze}
                 className="px-3 py-1 bg-amber-600 text-white font-bold text-xs rounded-lg hover:bg-amber-500 shadow-md"
               >
-                Yes, Re-analyze All
+                {t('folder_modal.label_confirm_reanalyze', 'Re-analyze all')}
               </button>
             </div>
           </div>
@@ -159,7 +159,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
         {/* Registered Folders Bar */}
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-slate-300">
-            Registered Folders ({folders.length}):
+            {t('folder_modal.label_registered', 'Registered folders')} ({folders.length})
           </span>
           <button
             onClick={handleAddNewFolder}
@@ -167,7 +167,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
             className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition border border-white/10 cursor-pointer disabled:opacity-50"
           >
             <FolderPlus className="w-3.5 h-3.5 text-indigo-400" />
-            Add Folder
+            {t('folder_modal.label_add_folder', 'Add folder')}
           </button>
         </div>
 
@@ -176,7 +176,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
           {folders.length === 0 ? (
             <div className="flex flex-col items-center justify-center p-8 text-center border border-dashed border-white/10 rounded-xl">
               <Folder className="w-8 h-8 text-slate-500 mb-2" />
-              <p className="text-sm font-medium text-slate-300">No folders registered yet</p>
+              <p className="text-sm font-medium text-slate-300">{t('folder_modal.empty_folders', '')}</p>
             </div>
           ) : (
             folders.map((item) => (
@@ -193,7 +193,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                       {item.path}
                     </div>
                     <div className="text-[10px] text-slate-500 font-mono mt-0.5">
-                      Added: {new Date(item.created_at * 1000).toLocaleDateString()}
+                      {t('folder_modal.label_added', 'Added')}: {new Date(item.created_at * 1000).toLocaleDateString()}
                     </div>
                   </div>
                 </div>
@@ -242,7 +242,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium transition cursor-pointer"
           >
-            Close
+            {t('folder_modal.label_close', 'Close')}
           </button>
         </div>
       </div>

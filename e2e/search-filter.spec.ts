@@ -136,7 +136,7 @@ test.describe('検索バーのタグ絞り込み', () => {
     await page.goto('/');
     await searchInput(page).fill('moun');
 
-    await expect(page.getByText('一致するタグ')).toBeVisible();
+    await expect(page.getByText('一致するタグ', { exact: true })).toBeVisible();
     await page.getByRole('button', { name: /山 \(mountain\)/ }).click();
 
     await expect(page.getByText('#山', { exact: true })).toBeVisible();
@@ -161,7 +161,9 @@ test.describe('検索バーのタグ絞り込み', () => {
     await page.goto('/');
     await searchInput(page).fill('zzzzz');
 
-    await expect(page.getByText('一致するタグ')).toBeVisible();
+    // 見出しの「一致するタグ」と、空表示の「一致するタグがありません。」を取り違えない
+    await expect(page.getByText('一致するタグ', { exact: true })).toBeVisible();
+    await expect(page.getByText('一致するタグがありません', { exact: false })).toBeVisible();
     await expect(page.getByRole('button', { name: /詳細検索/ })).toBeVisible();
   });
 });

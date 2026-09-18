@@ -617,7 +617,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     if (!editName.trim()) return;
     await onRenameTag(t.id, editName.trim(), editNameJa.trim() || undefined);
     setEditingTagId(null);
-    setSuccessToast(`Tag #${t.name} updated!`);
+    setSuccessToast(translate('tag_modal.toast_renamed', '', { name: t.name }));
     setTimeout(() => setSuccessToast(null), 2500);
   };
 
@@ -630,7 +630,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
       await onMergeTags(targetTagId, sourceIds);
       setSelectedTagIds([]);
       setTargetTagId(null);
-      setSuccessToast('Manual merge executed successfully!');
+      setSuccessToast(t('tag_modal.toast_manual_merged', ''));
       setTimeout(() => setSuccessToast(null), 2500);
     } catch (e) {
       console.error('Failed to execute manual merge:', e);
@@ -1410,7 +1410,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                               </span>
                             )}
                             <span className="text-xs text-slate-400 shrink-0">
-                              ({allMembers.length} tags)
+                              ({t('tag_modal.label_member_count', '{n} tags', { n: allMembers.length })})
                             </span>
 
                             {/* サンプルサムネイルのアバタースタック表示 & ホバーフローティング拡大 & 続きありインジケーター */}

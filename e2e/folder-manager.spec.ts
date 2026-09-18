@@ -32,14 +32,14 @@ test.describe('登録フォルダ管理', () => {
   test('登録済みのフォルダが件数つきで並ぶ', async ({ page }) => {
     await openManager(page);
 
-    await expect(page.getByText('Registered Folders (2):')).toBeVisible();
+    await expect(page.getByText('登録フォルダ (2)')).toBeVisible();
     await expect(folderRow(page, '2024_Travel')).toBeVisible();
     await expect(folderRow(page, 'Screenshots')).toBeVisible();
   });
 
   test('未処理のみの実行はバックエンドへ rescan_all_folders を送って閉じる', async ({ page }) => {
     await openManager(page);
-    await page.getByRole('button', { name: 'Process Pending Only' }).click();
+    await page.getByRole('button', { name: '全フォルダ再スキャン' }).click();
 
     await expect(page.getByRole('heading', { name: '登録フォルダ管理' })).toHaveCount(0);
     expect((await sideEffects(page)).map((e) => e.command)).toContain('rescan_all_folders');
@@ -47,16 +47,16 @@ test.describe('登録フォルダ管理', () => {
 
   test('全メディア再解析は確認を挟む。取り消せば何も実行されない', async ({ page }) => {
     await openManager(page);
-    await page.getByRole('button', { name: 'Re-analyze ALL Media' }).click();
+    await page.getByRole('button', { name: '全メディア再解析' }).click();
 
     // **確認を出すだけでモーダルは閉じない。** 閉じてしまうと押し間違いが通る
     await expect(
-      page.getByText('Are you sure you want to force re-analyze all media?')
+      page.getByText('全メディアを強制的に再解析します。')
     ).toBeVisible();
-    await page.getByRole('button', { name: 'Cancel' }).click();
+    await page.getByRole('button', { name: 'キャンセル' }).click();
 
     await expect(
-      page.getByText('Are you sure you want to force re-analyze all media?')
+      page.getByText('全メディアを強制的に再解析します。')
     ).toHaveCount(0);
     await expect(page.getByRole('heading', { name: '登録フォルダ管理' })).toBeVisible();
     expect((await sideEffects(page)).map((e) => e.command)).not.toContain('reanalyze_all_media');
@@ -64,8 +64,8 @@ test.describe('登録フォルダ管理', () => {
 
   test('全メディア再解析を承認すると reanalyze_all_media が飛ぶ', async ({ page }) => {
     await openManager(page);
-    await page.getByRole('button', { name: 'Re-analyze ALL Media' }).click();
-    await page.getByRole('button', { name: 'Yes, Re-analyze All' }).click();
+    await page.getByRole('button', { name: '全メディア再解析' }).click();
+    await page.getByRole('button', { name: '再解析を実行' }).click();
 
     await expect(page.getByRole('heading', { name: '登録フォルダ管理' })).toHaveCount(0);
     expect((await sideEffects(page)).map((e) => e.command)).toContain('reanalyze_all_media');
@@ -89,11 +89,11 @@ test.describe('登録フォルダ管理', () => {
     // 同じモーダルの「全メディア再解析」は確認を挟むのに、登録解除は挟まない。
     // 揃える判断をしたときに、この期待値を書き換えること
     await openManager(page);
-    await expect(page.getByText('Registered Folders (2):')).toBeVisible();
+    await expect(page.getByText('登録フォルダ (2)')).toBeVisible();
 
     await folderRow(page, '2024_Travel').getByTitle('フォルダを削除').click();
 
-    await expect(page.getByText('Registered Folders (1):')).toBeVisible();
+    await expect(page.getByText('登録フォルダ (1)')).toBeVisible();
     await expect(folderRow(page, '2024_Travel')).toHaveCount(0);
   });
 
@@ -102,9 +102,9 @@ test.describe('登録フォルダ管理', () => {
     await folderRow(page, '2024_Travel').getByTitle('フォルダを削除').click();
     await folderRow(page, 'Screenshots').getByTitle('フォルダを削除').click();
 
-    await expect(page.getByText('No folders registered yet')).toBeVisible();
+    await expect(page.getByText('登録されているフォルダはありません。')).toBeVisible();
     // 対象が無いのに押せると、押しても何も起きないボタンになる
-    await expect(page.getByRole('button', { name: 'Process Pending Only' })).toBeDisabled();
-    await expect(page.getByRole('button', { name: 'Re-analyze ALL Media' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '全フォルダ再スキャン' })).toBeDisabled();
+    await expect(page.getByRole('button', { name: '全メディア再解析' })).toBeDisabled();
   });
 });

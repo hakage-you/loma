@@ -203,7 +203,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
           <div className="flex items-center gap-1.5">
             {!openSections.categories && selectedCategories.length > 0 && (
               <span className="px-1.5 py-0.5 bg-indigo-600 text-white rounded text-[10px] font-bold">
-                {selectedCategories.length} selected
+                {t('sidebar.label_selected_count', '{n} selected', { n: selectedCategories.length })}
               </span>
             )}
             {openSections.categories ? (

@@ -386,7 +386,7 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                 onClick={() => setPendingDelete(null)}
                 className="px-2.5 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-white/10 transition cursor-pointer"
               >
-                {t('failure_modal.label_close', '閉じる')}
+                {t('failure_modal.label_cancel', 'Cancel')}
               </button>
               <button
                 disabled={busy}

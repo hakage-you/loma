@@ -94,7 +94,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
             onClick={onClose}
             className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-semibold text-xs transition cursor-pointer shadow-lg shadow-indigo-900/30"
           >
-            Close
+            {t('about.label_close', 'Close')}
           </button>
         </div>
       </div>

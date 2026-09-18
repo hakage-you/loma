@@ -18,6 +18,10 @@
  * 句点が無ければ検査で落ちる。逆向き（文にマーカーを付ける）にすると、
  * 付け忘れたキーはラベル扱いになって検査をすり抜ける。
  *
+ * **使われていないキーも落とす。** 文言を定義しただけで画面に繋いでいないと、
+ * その画面はハードコードされた文字列のまま残る。実際に `folder_modal` は
+ * ラベルが3つ定義されているのに1つも使われておらず、画面は全部英語だった。
+ *
  * 実行: npm run check:locale
  */
 import { readFileSync, readdirSync, statSync } from 'fs';
@@ -107,6 +111,38 @@ for (const file of walkFiles(SRC)) {
   for (const m of text.matchAll(CALL)) {
     if (!jaKeys.has(m[1])) problems.push(`[未定義] ${file}: t('${m[1]}') が ja に無い`);
   }
+}
+
+// 4. 使われていないキー。
+//    **定義しただけで繋いでいない文言を落とす。** キーがあるのに画面が
+//    ハードコードされた文字列のまま、という状態が実際に起きていた。
+//
+//    キーを組み立てて呼ぶ場所があるので、静的に辿れないぶんは接頭辞で許す。
+//    **増やすときは「どこが組み立てているか」を必ず書くこと。**
+const DYNAMIC_PREFIXES = [
+  // constants/categories.ts の categoryLabelKey(id)
+  'category.label_',
+  // TagManagementModal の ruleLabelKey(rule)
+  'tag_modal.label_rule_',
+  // FailureTriageModal の KIND_LABEL_KEYS
+  'failure_modal.label_kind_',
+  // constants/recommendedModels.ts の badgeLabelKey(badge)
+  'settings.label_badge_',
+];
+
+const allSrc = walkFiles(SRC)
+  .map((f) => readFileSync(f, 'utf8'))
+  .join('\n');
+
+for (const [key] of jaRows) {
+  if (DYNAMIC_PREFIXES.some((prefix) => key.startsWith(prefix))) continue;
+  // `t('...')` だけでなく、文字列リテラルとして渡している箇所も使用とみなす
+  // （errorModal.messageKey や METHODS の labelKey / hintKey）
+  if (allSrc.includes(`'${key}'`) || allSrc.includes(`"${key}"`)) continue;
+  problems.push(
+    `[未使用] ${key} を呼んでいる場所が無い\n` +
+      '    画面がハードコードされた文字列のままになっていないか確認する'
+  );
 }
 
 if (problems.length === 0) {

@@ -270,7 +270,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                               {st.name_ja ? `${st.name_ja} (${st.name})` : st.name}
                             </span>
                             <span className="text-[10px] text-slate-500 group-hover:text-indigo-200 font-mono">
-                              + Select
+                              + {t('search.label_select', 'Select')}
                             </span>
                           </button>
                         );
@@ -278,7 +278,7 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                     </div>
                   ) : (
                     <div className="p-3 text-center text-slate-500 text-xs italic">
-                      No direct tag matches. Press Enter or click Advanced Search.
+                      {t('search.no_tag_match', '')}
                     </div>
                   )}
                 </div>

@@ -27,5 +27,6 @@
   "transient_hint": "サーバー側の一時的な問題です。時間をおいて再試行すると通ることがあります。",
   "unknown_hint": "分類できていないエラーです。同じエラーで2回続けて失敗したものは要確認に移ります。",
   "delete_confirm": "{count}件をライブラリから削除します。ファイル本体は消えませんが、次のスキャンでも再登録されなくなります。",
-  "label_excluded_badge": "解析対象外"
+  "label_excluded_badge": "解析対象外",
+  "label_cancel": "キャンセル"
 }

@@ -93,5 +93,8 @@
   "label_loading_suggestions": "Loading suggestions...",
   "status_interrupted": "The last run was interrupted ({when}). {n} tags are still unjudged.",
   "status_stale": "{n} tags have been added since the last run ({when}) and have not been looked at.",
-  "status_fresh": "Last run: {when}. {n} judged, none pending."
+  "status_fresh": "Last run: {when}. {n} judged, none pending.",
+  "toast_renamed": "✓ Tag #{name} updated.",
+  "toast_manual_merged": "✓ Consolidated manually.",
+  "label_member_count": "{n} tags"
 }

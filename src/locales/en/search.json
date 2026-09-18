@@ -3,12 +3,13 @@
   "label_placeholder_add": "Add filter tag...",
   "label_add_folder": "Add Folder",
   "label_sync": "Sync",
-  "label_retry": "Retry",
   "label_advanced_search": "Advanced Search",
   "label_matching_tags": "Matching Tags",
   "label_tags_btn": "Tags",
   "label_folders_btn": "Folders",
   "label_advanced_active": "Advanced Search",
   "label_clear_advanced": "Clear",
-  "label_edit_advanced": "Edit"
+  "label_edit_advanced": "Edit",
+  "label_select": "Select",
+  "no_tag_match": "No tag matches. Press Enter or use advanced search."
 }

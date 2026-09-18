@@ -709,7 +709,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-bold text-white">{t('settings.label_title', '設定')}</h3>
-              <p className="text-xs text-slate-400">Configure LLM Provider & Analysis Parameters</p>
+              <p className="text-xs text-slate-400">{t('settings.label_subtitle', '')}</p>
             </div>
           </div>
           <button
@@ -740,7 +740,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                 >
                   <option value="ja">{t('settings.label_language_ja', '日本語 (Japanese)')}</option>
-                  <option value="en">English (US)</option>
+                  <option value="en">{t('settings.label_language_en', 'English (US)')}</option>
                 </select>
               </div>
             </div>
@@ -906,7 +906,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                 >
                   {vlmModelOptions.length === 0 ? (
-                    <option value={selectedVlmModel}>{selectedVlmModel} (Current)</option>
+                    <option value={selectedVlmModel}>{selectedVlmModel} ({t('settings.label_current', 'Current')})</option>
                   ) : (
                     vlmModelOptions.map((m) => (
                       <option key={m} value={m}>

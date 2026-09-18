@@ -106,12 +106,9 @@ test.describe('解析できなかったファイルの仕分け', () => {
     await expect(
       modal(page).getByText('1件をライブラリから削除します', { exact: false })
     ).toBeVisible();
-    // **確認パネルの取り消しボタンも「閉じる」。** モーダルの×ボタンも同じ文字なので、
-    // パネルの中に限って引かないと取り違える（この重複自体が不統一）
-    const confirmButtons = modal(page)
-      .getByText('件をライブラリから削除します', { exact: false })
-      .locator('xpath=following-sibling::div');
-    await confirmButtons.getByRole('button', { name: '閉じる' }).click();
+    // **確認の取り消しは「キャンセル」。** モーダルを閉じる×は「閉じる」で、
+    // 同じ文字にすると「モーダルごと閉じる」のか「削除をやめる」のか読めない
+    await modal(page).getByRole('button', { name: 'キャンセル' }).click();
 
     await expect(modal(page).getByRole('button', { name: '解析失敗 (3)' })).toBeVisible();
   });
