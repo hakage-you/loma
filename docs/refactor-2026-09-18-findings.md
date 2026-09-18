@@ -136,4 +136,5 @@ DOM に出す行数も末尾2,000行で打ち切って、切ったことを件�
 
 ## 報告
 
-（作業終了時に記入）
+[refactor-2026-09-18-report.md](refactor-2026-09-18-report.md) にまとめた。
+実装せず計画に留めたものは [refactor-2026-09-18-plan.md](refactor-2026-09-18-plan.md)。
