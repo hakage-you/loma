@@ -92,14 +92,6 @@ pub fn init_logger_at_with_limit(dir: &Path, rotate_bytes: u64) {
     });
 }
 
-/// ログの書き込み先を外す。**テスト専用**
-///
-/// `LOGGER_INSTANCE` はプロセス共有なので、テストが指したまま終わると、
-/// 他のテストの `log_error` が消えたテンポラリへ書きに行く。
-#[cfg(test)]
-pub fn reset_logger() {
-    *lock_logger() = None;
-}
 
 /// **毒された Mutex でも取り出す。** ログのために処理が止まる方が困る
 fn lock_logger() -> std::sync::MutexGuard<'static, Option<Logger>> {
@@ -137,30 +129,45 @@ fn rotate(log_file_path: &Path) {
     let _ = fs::rename(log_file_path, numbered(1));
 }
 
-fn write_log(level: &str, message: &str) {
+/// 1行を書く。**大域の状態を触らない。**
+///
+/// `LOGGER_INSTANCE` はプロセス全体で1つなので、これを経由するテストは
+/// 同時に走る他のテストの `log_error` と同じファイルを取り合う。
+/// 実際にそれで不安定になったので、判定と書き込みの本体はここに閉じてある。
+/// テストは自前の `Logger` を作ってこれを直接呼ぶ。
+fn write_line(logger: &mut Logger, level: &str, message: &str) {
     let timestamp = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let log_line = format!("[{}] [{}] {}\n", timestamp, level, message);
 
-    // デバッグ出力
-    println!("{}", log_line.trim_end());
+    // **書く前に判定する。** 上限を超えた行まで書いてから送ると、
+    // 1行だけ長いログ（LLM の生応答など）で上限を大きく超えうる
+    if logger.written_bytes >= logger.rotate_bytes {
+        rotate(&logger.log_file_path);
+        logger.written_bytes = 0;
+    }
+    if let Ok(mut file) = OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&logger.log_file_path)
+    {
+        if file.write_all(log_line.as_bytes()).is_ok() {
+            logger.written_bytes += log_line.len() as u64;
+        }
+    }
+}
+
+fn write_log(level: &str, message: &str) {
+    // デバッグ出力。書き込み先が無くても標準出力には残す
+    println!(
+        "[{}] [{}] {}",
+        Local::now().format("%Y-%m-%d %H:%M:%S"),
+        level,
+        message
+    );
 
     let mut instance = lock_logger();
     if let Some(ref mut logger) = *instance {
-        // **書く前に判定する。** 上限を超えた行まで書いてから送ると、
-        // 1行だけ長いログ（LLM の生応答など）で上限を大きく超えうる
-        if logger.written_bytes >= logger.rotate_bytes {
-            rotate(&logger.log_file_path);
-            logger.written_bytes = 0;
-        }
-        if let Ok(mut file) = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&logger.log_file_path)
-        {
-            if file.write_all(log_line.as_bytes()).is_ok() {
-                logger.written_bytes += log_line.len() as u64;
-            }
-        }
+        write_line(logger, level, message);
     }
 }
 
@@ -322,32 +329,23 @@ mod tests {
         }
     }
 
-    /// 書き込み先を張ったテストが終わるまで、他の書き込み先テストを待たせる。
-    ///
-    /// **`LOGGER_INSTANCE` はプロセス共有**なので、同時に別の場所を指せない。
-    /// 毒されていても取り出す（1つ落ちたせいで残り全部が落ちるのを避ける）。
-    static WRITE_LOCK: Mutex<()> = Mutex::new(());
+    /// 世代を送る閾値。**5MB を実際に書かない。** 閾値は `Logger` が持つので小さくてよい
+    const SMALL_LIMIT: u64 = 200;
 
-    fn write_lock() -> std::sync::MutexGuard<'static, ()> {
-        WRITE_LOCK.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    /// 書き込み先を張ってからテストを走らせ、**必ず外してから返す**。
+    /// このテスト専用の書き込み先。
     ///
-    /// 外さないと、このテストが終わったあとに他のテストが出すログが
-    /// 消えたテンポラリへ向かい続ける。
-    fn with_logger_at(dir: &Path, rotate_bytes: u64, body: impl FnOnce()) {
-        let _guard = write_lock();
-        init_logger_at_with_limit(dir, rotate_bytes);
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(body));
-        reset_logger();
-        if let Err(e) = result {
-            std::panic::resume_unwind(e);
+    /// **`LOGGER_INSTANCE` は使わない。** プロセス全体で1つしかないので、
+    /// そこを指すと同時に走る他のテストの `log_error` と同じファイルを取り合う
+    /// （実際にそれで不安定になった）。
+    fn logger_at(dir: &Path, rotate_bytes: u64) -> Logger {
+        let log_file_path = dir.join("loma.log");
+        let written_bytes = fs::metadata(&log_file_path).map(|m| m.len()).unwrap_or(0);
+        Logger {
+            log_file_path,
+            written_bytes,
+            rotate_bytes,
         }
     }
-
-    /// 世代を送る閾値。**5MB を実際に書かない。** 閾値は Logger が持つので小さくてよい
-    const SMALL_LIMIT: u64 = 200;
 
     fn numbered(dir: &Path, n: usize) -> PathBuf {
         PathBuf::from(format!("{}.{}", dir.join("loma.log").to_string_lossy(), n))
@@ -357,21 +355,33 @@ mod tests {
     #[test]
     fn the_log_rotates_once_it_passes_the_limit() {
         let temp = TempDir::new("rotate");
-        // 上限ぎりぎりまで入ったファイルを用意してから張る
+        // 上限ぎりぎりまで入ったファイルを用意してから書き込み先を作る
         fs::write(temp.0.join("loma.log"), vec![b'x'; SMALL_LIMIT as usize]).unwrap();
+        let mut logger = logger_at(&temp.0, SMALL_LIMIT);
 
-        with_logger_at(&temp.0, SMALL_LIMIT, || {
-            log_info("次の1行で世代が送られる");
+        write_line(&mut logger, "INFO", "次の1行で世代が送られる");
 
-            assert!(numbered(&temp.0, 1).exists(), "1世代目が作られていない");
-            let current = fs::read_to_string(temp.0.join("loma.log")).unwrap();
-            assert!(
-                current.len() < SMALL_LIMIT as usize,
-                "本体が作り直されていない（{}バイト）",
-                current.len()
-            );
-            assert!(current.contains("次の1行で世代が送られる"));
-        });
+        assert!(numbered(&temp.0, 1).exists(), "1世代目が作られていない");
+        let current = fs::read_to_string(temp.0.join("loma.log")).unwrap();
+        assert!(
+            current.len() < SMALL_LIMIT as usize,
+            "本体が作り直されていない（{}バイト）",
+            current.len()
+        );
+        assert!(current.contains("次の1行で世代が送られる"));
+    }
+
+    /// 上限に達していなければ世代を送らないこと。
+    /// **上のテストが「常に送る」実装でも通ってしまわないようにする**
+    #[test]
+    fn nothing_rotates_below_the_limit() {
+        let temp = TempDir::new("no-rotate");
+        let mut logger = logger_at(&temp.0, SMALL_LIMIT);
+
+        write_line(&mut logger, "INFO", "短い行");
+
+        assert!(!numbered(&temp.0, 1).exists(), "上限前なのに世代が送られた");
+        assert!(temp.0.join("loma.log").exists());
     }
 
     /// 世代の数に上限があること。**無いとローテーションしても総量は減らない**
@@ -381,7 +391,8 @@ mod tests {
 
         for _ in 0..(LOG_KEEP_FILES + 3) {
             fs::write(temp.0.join("loma.log"), vec![b'x'; SMALL_LIMIT as usize]).unwrap();
-            with_logger_at(&temp.0, SMALL_LIMIT, || log_info("送る"));
+            let mut logger = logger_at(&temp.0, SMALL_LIMIT);
+            write_line(&mut logger, "INFO", "送る");
         }
 
         assert!(numbered(&temp.0, LOG_KEEP_FILES).exists());
@@ -392,9 +403,6 @@ mod tests {
     }
 
     /// 世代を送った直後でも、1つ前の世代の末尾が続けて読めること
-    ///
-    /// **書き込み先は張らない。** 読み出しはパスを直接受け取るので、
-    /// 他のテストが出すログと取り合う必要がない
     #[test]
     fn reading_spans_the_previous_generation() {
         let temp = TempDir::new("read-span");
@@ -427,9 +435,6 @@ mod tests {
     }
 
     /// クリアは世代も消すこと。**本体だけ消すと次の読み出しで古いログが戻る**
-    ///
-    /// ここも書き込み先は張らない。張ると、クリアした直後に他のテストが出したログで
-    /// 本体が作り直され、**実装ではなく同時実行のせいで落ちる**
     #[test]
     fn clearing_removes_the_rotated_files_too() {
         let temp = TempDir::new("clear");
@@ -446,18 +451,5 @@ mod tests {
             assert!(!numbered(&temp.0, n).exists(), "{}世代目が残っている", n);
         }
         assert_eq!(read_logs_at(&temp.0, 1024 * 1024), "");
-    }
-
-    /// 上限に達していなければ世代を送らないこと。
-    /// **上のテストが「常に送る」実装でも通ってしまわないようにする**
-    #[test]
-    fn nothing_rotates_below_the_limit() {
-        let temp = TempDir::new("no-rotate");
-
-        with_logger_at(&temp.0, SMALL_LIMIT, || {
-            log_info("短い行");
-            assert!(!numbered(&temp.0, 1).exists(), "上限前なのに世代が送られた");
-            assert!(temp.0.join("loma.log").exists());
-        });
     }
 }

@@ -146,18 +146,28 @@ export function useMedia() {
     }
   }, []);
 
+  /**
+   * サイドバーと設定が使うデータをまとめて取り直す。
+   *
+   * **4本を同時に投げる。** 以前は1本ずつ待っていたので、1本あたりの往復時間が
+   * そのまま4倍になっていた。解析中は毎秒ここを通る。
+   *
+   * 同時に投げてよいのは、SQLite の同時接続の上限を 16 に上げたため
+   * （`src-tauri/src/db.rs` の `MAX_CONNECTIONS`）。上限が 5 だったころは、
+   * この4本と `get_media` で使い切って `get_media` が失敗していた。
+   */
   const fetchMasterData = useCallback(async () => {
     try {
-      const fetchedTags = await invoke<TagItem[]>('get_all_tags');
+      const [fetchedTags, fetchedFolders, fetchedScanFolders, fetchedSettings] =
+        await Promise.all([
+          invoke<TagItem[]>('get_all_tags'),
+          invoke<string[]>('get_parent_folders'),
+          invoke<ScanFolderItem[]>('get_scan_folders'),
+          invoke<Record<string, string>>('get_settings'),
+        ]);
       setTags(fetchedTags);
-
-      const fetchedFolders = await invoke<string[]>('get_parent_folders');
       setParentFolders(fetchedFolders);
-
-      const fetchedScanFolders = await invoke<ScanFolderItem[]>('get_scan_folders');
       setScanFolders(fetchedScanFolders);
-
-      const fetchedSettings = await invoke<Record<string, string>>('get_settings');
       setSettings(fetchedSettings);
     } catch (e) {
       logBackgroundFailure('get_all_tags / get_parent_folders / get_scan_folders / get_settings', e);
@@ -175,8 +185,8 @@ export function useMedia() {
     try {
       do {
         refreshPendingRef.current = false;
-        await fetchMedia();
-        await fetchMasterData();
+        // **同時に投げる。** どちらも読み取りだけで、順番に依存しない
+        await Promise.all([fetchMedia(), fetchMasterData()]);
       } while (refreshPendingRef.current);
     } finally {
       refreshInFlightRef.current = false;

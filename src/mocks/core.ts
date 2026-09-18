@@ -1027,17 +1027,23 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
 
 /**
  * `?debugSlowCommand=<コマンド名>:<ミリ秒>` を付けると、そのコマンドだけ応答を遅らせる。
+ * カンマで区切ると複数指定できる（`a:200,b:200`）。
  *
  * 実行中の表示やブロックは**応答が返るまでの間しか出ない**ので、即座に返るモックのままでは
- * 検証できない。`scanSimulator` の `?debugScan=` と同じ、モック限定の検証用フック。
+ * 検証できない。**同時に投げているかどうかも、遅らせないと差が出ない。**
+ * `scanSimulator` の `?debugScan=` と同じ、モック限定の検証用フック。
  */
-const slowCommand: { cmd: string; ms: number } | null = (() => {
+const slowCommands: Map<string, number> = (() => {
+  const out = new Map<string, number>();
   const raw = new URLSearchParams(window.location.search).get('debugSlowCommand');
-  if (!raw) return null;
-  const [cmd, ms] = raw.split(':');
-  const delay = Number(ms);
-  if (!cmd || !Number.isFinite(delay) || delay <= 0) return null;
-  return { cmd, ms: delay };
+  if (!raw) return out;
+  for (const part of raw.split(',')) {
+    const [cmd, ms] = part.split(':');
+    const delay = Number(ms);
+    if (!cmd || !Number.isFinite(delay) || delay <= 0) continue;
+    out.set(cmd, delay);
+  }
+  return out;
 })();
 
 /**
@@ -1051,8 +1057,9 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
   if (failCommand === cmd) {
     throw new Error(`[mock] ${cmd} を失敗させています (debugFailCommand)`);
   }
-  if (slowCommand && slowCommand.cmd === cmd) {
-    await new Promise((resolve) => setTimeout(resolve, slowCommand.ms));
+  const slowMs = slowCommands.get(cmd);
+  if (slowMs) {
+    await new Promise((resolve) => setTimeout(resolve, slowMs));
   }
   invokeLog.push({ cmd, args, at: performance.now() });
   const handler = handlers[cmd];

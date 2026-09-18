@@ -87,3 +87,43 @@ test('絞り込みを掛け直したときの再取得', async ({ page }) => {
     'DOM ノード': await domNodes(page),
   });
 });
+
+test('マスタデータ4本を同時に投げているか', async ({ page }) => {
+  // **同時に投げているかどうかは、遅らせないと差が出ない。**
+  // 4本をそれぞれ 200ミリ秒遅らせる。1本ずつ待つ作りなら約800ミリ秒、
+  // 同時に投げる作りなら約200ミリ秒で揃う。
+  const DELAY = 200;
+  const slow = [
+    'get_all_tags',
+    'get_parent_folders',
+    'get_scan_folders',
+    'get_settings',
+  ]
+    .map((c) => `${c}:${DELAY}`)
+    .join(',');
+
+  await page.goto(`/?debugSlowCommand=${slow}`);
+  await expect(page.locator(cards).first()).toBeVisible();
+  // **全部出揃うまで待つ。** 1本ずつ待つ作りなら最後の1本は 600ミリ秒後なので、
+  // 4本そろった時点で測ると差が出ない
+  await page.waitForTimeout(DELAY * 6);
+
+  // 最初の4本を投げ終わるまでにかかった幅
+  const elapsed = await page.evaluate(async () => {
+    const log = (window as unknown as { __mockInvokeLog: { cmd: string; at: number }[] })
+      .__mockInvokeLog;
+    const names = ['get_all_tags', 'get_parent_folders', 'get_scan_folders', 'get_settings'];
+    const times = log.filter((e) => names.includes(e.cmd)).map((e) => e.at);
+    if (times.length < 4) return -1;
+    // **最初の1本から最後の1本までの幅。** 同時に投げていれば 0 に近い。
+    // 1本ずつ待つ作りなら、遅延 × (本数 - 1) ぶん開く
+    const sorted = [...times].sort((a, b) => a - b);
+    return Math.round(sorted[sorted.length - 1] - sorted[0]);
+  });
+
+  record('起動 / マスタデータの投げ方', {
+    '1本あたりの遅延 ms': DELAY,
+    '4本を投げ終わるまでの幅 ms': elapsed,
+    '（同時なら 0 に近い。1本ずつなら 600 前後）': 0,
+  });
+});
