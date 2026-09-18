@@ -345,13 +345,23 @@ function cancelMockPull(): void {
  * 起動時に何本 IPC が飛ぶかは画面に出ないので、ここでしか数えられない。
  * 合否は問わない（計測とデバッグ用）。
  */
-const invokeLog: { cmd: string; at: number }[] = [];
+const invokeLog: { cmd: string; args: Record<string, any>; at: number }[] = [];
 (window as unknown as Record<string, unknown>).__mockInvokeLog = invokeLog;
 (window as unknown as Record<string, unknown>).__mockInvokeCounts = () => {
   const counts: Record<string, number> = {};
   for (const entry of invokeLog) counts[entry.cmd] = (counts[entry.cmd] ?? 0) + 1;
   return counts;
 };
+/**
+ * `?debugMeasurePayload=1` を付けたときだけ、応答の JSON 長を記録する。
+ *
+ * **常時やらない。** 応答のたびに JSON.stringify が走り、計りたい時間そのものを
+ * 押し上げてしまう。実 IPC は毎回シリアライズするので、この長さが転送量にあたる。
+ */
+const measurePayload = new URLSearchParams(window.location.search).has('debugMeasurePayload');
+const payloadBytes: Record<string, number> = {};
+(window as unknown as Record<string, unknown>).__mockPayloadBytes = payloadBytes;
+
 (window as unknown as Record<string, unknown>).__mockResetInvokeLog = () => {
   invokeLog.length = 0;
 };
@@ -895,7 +905,7 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
   if (slowCommand && slowCommand.cmd === cmd) {
     await new Promise((resolve) => setTimeout(resolve, slowCommand.ms));
   }
-  invokeLog.push({ cmd, at: performance.now() });
+  invokeLog.push({ cmd, args, at: performance.now() });
   const handler = handlers[cmd];
   if (!handler) {
     console.warn(`[mock invoke] unhandled command "${cmd}"`, args);
@@ -904,6 +914,9 @@ export async function invoke<T>(cmd: string, args: Record<string, any> = {}): Pr
   // handler は Promise を返してよい（実バックエンドと同じく、処理が終わるまで返らない
   // コマンドがある）。await せずに structuredClone すると DataCloneError になる
   const result = await handler(args);
+  if (measurePayload) {
+    payloadBytes[cmd] = JSON.stringify(result ?? null).length;
+  }
   // 実際の Tauri IPC は戻り値を毎回シリアライズするので、呼び出し側は
   // 毎回別のオブジェクトを受け取る。モックが内部 state の参照をそのまま返すと、
   // 画面が抱えている古いオブジェクトまで一緒に書き換わり、
