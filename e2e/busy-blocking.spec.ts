@@ -56,3 +56,32 @@ test.describe('排他処理中のブロック', () => {
     await expect(removeTagButton(page)).toBeEnabled();
   });
 });
+
+test.describe('押せない理由を出す', () => {
+  // **`disabled` にするだけで終わらせない。** 理由を出さないと、ユーザーには
+  // 「ボタンが壊れた」ようにしか見えない。`npm run check:exclusive` が
+  // disabled と理由の対応を静的にも見ている。
+
+  test('解析中のフォルダ管理は、押せないボタンに理由が出る', async ({ page }) => {
+    await page.goto('/?debugScan=mid&debugScanIntervalMs=600');
+    await expect(page.getByText('解析処理中')).toBeVisible();
+    await page.getByRole('button', { name: 'フォルダ管理' }).click();
+
+    const modal = page.locator('div.glass-panel').filter({ hasText: '登録フォルダ管理' });
+    const button = modal.getByRole('button', { name: '全メディア再解析' });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveAttribute('title', /解析の実行中/);
+  });
+
+  test('解析中のタグ管理も、押せないボタンに理由が出る', async ({ page }) => {
+    await page.goto('/?debugScan=mid&debugScanIntervalMs=600');
+    await expect(page.getByText('解析処理中')).toBeVisible();
+    await page.getByRole('button', { name: 'タグ管理' }).click();
+
+    const modal = page.locator('div.fixed.inset-0.z-50').filter({ hasText: 'タグ管理・グループ統合' });
+    await modal.getByRole('button', { name: /AI提案/ }).click();
+    const button = modal.getByRole('button', { name: '類似タグを検出' });
+    await expect(button).toBeDisabled();
+    await expect(button).toHaveAttribute('title', /解析の実行中/);
+  });
+});

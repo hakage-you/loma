@@ -109,6 +109,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                 onClose();
               }}
               disabled={exclusive.blocked || folders.length === 0}
+              title={exclusive.reason}
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-200 border border-indigo-500/40 rounded-xl text-xs font-semibold transition cursor-pointer disabled:opacity-50"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${scanning ? 'animate-spin' : ''}`} />
@@ -130,6 +131,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
             <button
               onClick={() => setShowConfirmReanalyze(true)}
               disabled={exclusive.blocked || folders.length === 0}
+              title={exclusive.reason}
               className="w-full flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-semibold transition cursor-pointer disabled:opacity-50"
             >
               <RotateCcw className="w-3.5 h-3.5" />
@@ -202,6 +204,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
           <button
             onClick={handleAddNewFolder}
             disabled={exclusive.blocked}
+            title={exclusive.reason}
             className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-lg text-xs font-medium transition border border-white/10 cursor-pointer disabled:opacity-50"
           >
             <FolderPlus className="w-3.5 h-3.5 text-indigo-400" />
@@ -244,7 +247,10 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                     }}
                     disabled={exclusive.blocked}
                     className="p-1.5 text-slate-400 hover:text-indigo-300 hover:bg-indigo-600/20 rounded-lg transition cursor-pointer"
-                    title={t('folder_modal.label_title_scan_pending', 'Process pending/new items in this folder')}
+                    title={
+                      exclusive.reason ??
+                      t('folder_modal.label_title_scan_pending', 'Process pending/new items in this folder')
+                    }
                   >
                     <RefreshCw className="w-4 h-4" />
                   </button>
@@ -256,7 +262,10 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                       }}
                       disabled={exclusive.blocked}
                       className="p-1.5 text-slate-400 hover:text-amber-300 hover:bg-amber-600/20 rounded-lg transition cursor-pointer"
-                      title={t('folder_modal.label_title_reanalyze', 'Force re-analyze ALL items in this folder')}
+                      title={
+                        exclusive.reason ??
+                        t('folder_modal.label_title_reanalyze', 'Force re-analyze ALL items in this folder')
+                      }
                     >
                       <RotateCcw className="w-4 h-4 text-amber-400/80" />
                     </button>

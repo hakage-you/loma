@@ -990,6 +990,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
               <button
                 onClick={() => handleScanSuggestions(false)}
                 disabled={scanningSuggestions || applyingMerges || isScanning || exclusive.blocked}
+                title={exclusive.reason}
                 className="flex items-center gap-1.5 px-3 py-1.5 bg-gradient-to-r from-violet-600 to-indigo-600 hover:from-violet-500 hover:to-indigo-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-indigo-900/30 cursor-pointer disabled:opacity-50 whitespace-nowrap"
               >
                 {scanningSuggestions ? (
@@ -1063,6 +1064,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                 <button
                   onClick={() => handleScanSuggestions(false)}
                   disabled={applyingMerges || isScanning || exclusive.blocked}
+                  title={exclusive.reason}
                   className="px-2.5 py-1 bg-amber-600/80 hover:bg-amber-500 text-white rounded-lg text-xs font-bold transition cursor-pointer disabled:opacity-50"
                 >
                   {t('tag_modal.label_btn_resume', 'Continue')}
@@ -1073,7 +1075,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                 <button
                   onClick={() => handleScanSuggestions(true)}
                   disabled={applyingMerges || isScanning || exclusive.blocked}
-                  title={t('tag_modal.label_title_rescan', 'Discard saved judgements and re-extract hypernyms')}
+                  title={
+                    exclusive.reason ??
+                    t('tag_modal.label_title_rescan', 'Discard saved judgements and re-extract hypernyms')
+                  }
                   className="text-[11px] text-slate-400 hover:text-slate-200 underline underline-offset-2 cursor-pointer disabled:opacity-50"
                 >
                   {t('tag_modal.label_btn_rescan', 'Rebuild from scratch')}
@@ -1161,6 +1166,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   <button
                     onClick={handleExecuteManualMerge}
                     disabled={!targetTagId || applyingMerges || isScanning || exclusive.blocked}
+                    title={exclusive.reason}
                     className="px-3 py-1 bg-indigo-600 hover:bg-indigo-500 text-white rounded-lg text-xs font-bold transition disabled:opacity-40 cursor-pointer flex items-center gap-1"
                   >
                     {applyingMerges && <RefreshCw className="w-3 h-3 animate-spin" />}
@@ -1356,6 +1362,7 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
                   <button
                     onClick={handleApplySelectedSuggestions}
                     disabled={acceptedIds.size === 0 || applyingMerges || isScanning || exclusive.blocked}
+                    title={exclusive.reason}
                     className="flex items-center gap-1.5 px-4 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl text-xs font-bold transition shadow-lg shadow-emerald-900/30 cursor-pointer disabled:opacity-40"
                   >
                     {applyingMerges ? (

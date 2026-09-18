@@ -9,6 +9,11 @@
  * 「押せるが必ず失敗するボタン」がまた生える。逆に外したのに残っていると、
  * 押せてよいボタンが押せないままになる。どちらの向きも落とす。
  *
+ * あわせて、**`disabled` にした理由を出しているか**も見る。
+ * 理由を出さないとユーザーには「ボタンが壊れた」ようにしか見えない
+ * （`useExclusiveGuard` の doc コメントにも書いてあるが、25箇所のうち16箇所で
+ * 出していなかった）。
+ *
  * 実行: npm run check:exclusive
  */
 import { readFileSync, readdirSync, statSync } from 'fs';
@@ -51,6 +56,16 @@ for (const file of walk(RUST_DIR)) {
   }
 }
 
+/** `.tsx` を集める（理由の検査用） */
+const walkTsx = (dir, acc = []) => {
+  for (const name of readdirSync(dir)) {
+    const p = join(dir, name);
+    if (statSync(p).isDirectory()) walkTsx(p, acc);
+    else if (name.endsWith('.tsx')) acc.push(p);
+  }
+  return acc;
+};
+
 const ts = readFileSync(TS_FILE, 'utf8');
 const listed = ts.match(/EXCLUSIVE_COMMANDS = \[([\s\S]*?)\] as const;/);
 if (!listed) {
@@ -67,8 +82,30 @@ for (const name of [...fromTs].sort()) {
   if (!fromRust.has(name)) problems.push(`[余分] 一覧にあるが Rust はロックを取らない: ${name}`);
 }
 
+// 押せない理由を出しているか。
+// **同じ JSX 要素の中を見る。** 属性は複数行に分かれるので、前後の行も含めて探す
+let guarded = 0;
+for (const file of walkTsx('src')) {
+  const lines = readFileSync(file, 'utf8').split(/\r?\n/);
+  lines.forEach((line, i) => {
+    if (!/disabled=\{[^}]*exclusive\.blocked/.test(line)) return;
+    const around = lines.slice(Math.max(0, i - 7), i + 9).join('\n');
+    if (/title=\{[^}]*exclusive\.reason/.test(around)) {
+      guarded += 1;
+      return;
+    }
+    problems.push(
+      `[理由なし] ${file}:${i + 1}\n` +
+        '    disabled にしているが、押せない理由（exclusive.reason）を title に出していない'
+    );
+  });
+}
+
 if (problems.length === 0) {
-  console.log(`ok — 排他コマンド ${fromRust.size}件が一覧と一致`);
+  console.log(
+    `ok — 排他コマンド ${fromRust.size}件が一覧と一致 / ` +
+      `押せない理由を出しているボタン ${guarded}件`
+  );
   process.exit(0);
 }
 console.error(problems.join('\n'));
