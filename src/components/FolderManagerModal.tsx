@@ -4,6 +4,7 @@ import { ScanFolderItem } from '../types';
 import { Folder, RefreshCw, Trash2, FolderPlus, X, HardDrive, Play, RotateCcw, AlertTriangle } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 interface FolderManagerModalProps {
   open: boolean;
@@ -41,6 +42,24 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
    * 確認が無かった。
    */
   const [pendingRemove, setPendingRemove] = useState<ScanFolderItem | null>(null);
+
+  // **確認パネルが開いていたら、そちらだけ閉じる。** モーダルごと閉じると、
+  // 「取り消したいだけ」の Esc で画面まで消えることになる
+  useEscapeToClose({
+    open,
+    onClose,
+    onEscapeFirst: () => {
+      if (pendingRemove) {
+        setPendingRemove(null);
+        return true;
+      }
+      if (showConfirmReanalyze) {
+        setShowConfirmReanalyze(false);
+        return true;
+      }
+      return false;
+    },
+  });
 
   if (!open) return null;
 

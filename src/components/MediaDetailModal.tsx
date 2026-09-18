@@ -3,6 +3,8 @@ import { convertFileSrc } from '@tauri-apps/api/core';
 import { MediaItem, TagItem } from '../types';
 import { X, ExternalLink, RotateCcw, AlertTriangle, CheckCircle, Clock, Tag, FolderOpen, Sparkles, Plus, Loader2, Radar } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { MIN_BASIC_TAGS, isTagInsufficient } from '../constants/spectrum';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
 
@@ -49,6 +51,18 @@ export const MediaDetailModal: React.FC<MediaDetailModalProps> = ({
   // Tag editing state & auto-suggest (English & Japanese)
   const [newTagName, setNewTagName] = useState('');
   const [newTagNameJa, setNewTagNameJa] = useState('');
+
+  // **タグの入力欄に書きかけがあれば確認する。** 閉じると消えるため
+  useEscapeToClose({
+    open: item !== null,
+    onClose,
+    isDirty: () => newTagName.trim().length > 0 || newTagNameJa.trim().length > 0,
+    confirm: () =>
+      ask(t('app.discard_confirm', ''), {
+        title: t('app.label_discard_title', 'Discard changes'),
+        kind: 'warning',
+      }),
+  });
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [isSavingTag, setIsSavingTag] = useState(false);
   const suggestBoxRef = useRef<HTMLDivElement>(null);

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import { Terminal, X, Copy, Trash2, RefreshCw, Check, Search } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 /**
  * 一度に受け取るログの上限。
@@ -35,6 +36,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
   onClearLogs,
 }) => {
   const { t } = useTranslation();
+  useEscapeToClose({ open, onClose });
   const [logs, setLogs] = useState<string>('');
   const [filter, setFilter] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);

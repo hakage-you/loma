@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { runExclusive } from '../hooks/useBusy';
 import { useLoadMoreOnScroll } from '../hooks/useLoadMoreOnScroll';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 import { listen } from '@tauri-apps/api/event';
 // **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
 // confirm は false 相当になるため、確認を出したつもりで何も起きない状態になる。
@@ -303,6 +304,36 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   const [acceptedIds, setAcceptedIds] = useState<Set<string>>(new Set());
   const [rejectedIds, setRejectedIds] = useState<Set<string>>(new Set());
   const [previewMediaItem, setPreviewMediaItem] = useState<MediaItem | null>(null);
+
+  /**
+   * Esc で閉じる。**重なっている層は手前から1つずつ**。
+   *   画像の拡大 → タグのプレビュー → タグ管理そのもの
+   *
+   * 「変更途中」とみなすのは、閉じると消えるもの:
+   *   タグ名の編集中 / 承認した提案 / 手動統合で選んだタグ
+   */
+  useEscapeToClose({
+    open,
+    onClose,
+    onEscapeFirst: () => {
+      if (previewMediaItem) {
+        setPreviewMediaItem(null);
+        return true;
+      }
+      if (previewTag) {
+        setPreviewTag(null);
+        return true;
+      }
+      return false;
+    },
+    isDirty: () =>
+      editingTagId !== null || acceptedIds.size > 0 || selectedTagIds.length > 0,
+    confirm: () =>
+      ask(t('app.discard_confirm', ''), {
+        title: t('app.label_discard_title', 'Discard changes'),
+        kind: 'warning',
+      }),
+  });
 
   /**
    * いま DOM に出している件数。**全件に到達できる**（末尾で足していく）。

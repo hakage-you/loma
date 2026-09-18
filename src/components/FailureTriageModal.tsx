@@ -3,6 +3,7 @@ import { AlertTriangle, Clock, FolderOpen, RotateCcw, Trash2, X, EyeOff, Undo2 }
 import { MediaItem, ExcludedPathItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 /**
  * 種別コードから表示ラベルのキーを引く。
@@ -111,6 +112,19 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
   const [excluded, setExcluded] = useState<ExcludedPathItem[]>([]);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
+
+  // **削除の確認が開いていたら、そちらだけ閉じる**（取り消しと同じ扱い）
+  useEscapeToClose({
+    open,
+    onClose,
+    onEscapeFirst: () => {
+      if (pendingDelete) {
+        setPendingDelete(null);
+        return true;
+      }
+      return false;
+    },
+  });
   // 再試行・除外は排他ロックを取る。スキャン中に限らず、走っている間は押させない
   const exclusive = useExclusiveGuard();
   const [busy, setBusy] = useState(false);

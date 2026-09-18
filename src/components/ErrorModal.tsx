@@ -1,6 +1,7 @@
 import React from 'react';
 import { AlertTriangle, X } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 interface ErrorModalProps {
   open: boolean;
@@ -21,6 +22,7 @@ export const ErrorModal: React.FC<ErrorModalProps> = ({
   onClose,
 }) => {
   const { t } = useTranslation();
+  useEscapeToClose({ open, onClose });
   if (!open) return null;
 
   const body = [

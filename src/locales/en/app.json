@@ -12,5 +12,7 @@
   "label_open_settings": "Open settings",
   "label_resume": "Resume",
   "label_pause": "Pause",
-  "label_cancel_scan": "Cancel"
+  "label_cancel_scan": "Cancel",
+  "label_discard_title": "Discard changes",
+  "discard_confirm": "There are unsaved changes. Discard them and close?"
 }

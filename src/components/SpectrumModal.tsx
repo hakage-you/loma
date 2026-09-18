@@ -3,6 +3,7 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { MediaItem, SimilarItem, SpectrumResult, TagPairItem, Zone, ZoneKey } from '../types';
 import { X, Loader2, Info, ChevronRight, Dices, Radar, Tag } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 import { TooltipHelp } from './TooltipHelp';
 
 interface SpectrumModalProps {
@@ -288,6 +289,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
   onOpenDetail,
 }) => {
   const { t } = useTranslation();
+  useEscapeToClose({ open: base !== null, onClose });
   const [result, setResult] = useState<SpectrumResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);

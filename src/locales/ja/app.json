@@ -12,5 +12,7 @@
   "label_open_settings": "設定を開く",
   "label_resume": "再開",
   "label_pause": "一時停止",
-  "label_cancel_scan": "中止"
+  "label_cancel_scan": "中止",
+  "label_discard_title": "入力を破棄",
+  "discard_confirm": "入力した内容が保存されていません。破棄して閉じますか。"
 }

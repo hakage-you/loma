@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
 import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar, Eye, EyeOff } from 'lucide-react';
 import { invoke, convertFileSrc } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -25,6 +25,8 @@ import {
   SaveSettingsResult,
 } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
 import { TooltipHelp } from './TooltipHelp';
 import { runBackground, runExclusive } from '../hooks/useBusy';
@@ -320,6 +322,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     [availableModels, visionModelSet]
   );
 
+  /**
+   * 保存する値の一覧。**保存と「変更途中か」の判定で同じものを見る。**
+   * 別々に書くと、片方に項目を足したときにもう片方がずれる。
+   */
+  const settingEntries: SettingEntry[] = [
+    { key: 'llm_provider', value: provider },
+    { key: 'ollama_url', value: ollamaUrl },
+    { key: 'ollama_model', value: selectedVlmModel },
+    { key: 'ollama_text_model', value: selectedTextModel },
+    // 空欄・不正値は自動(0) / 既定値(1536) にフォールバックさせる
+    { key: 'ollama_num_ctx', value: String(Math.max(0, parseInt(ollamaNumCtx, 10) || 0)) },
+    {
+      key: 'ollama_max_image_edge',
+      value: String(
+        Math.max(
+          0,
+          Number.isFinite(parseInt(ollamaMaxImageEdge, 10)) ? parseInt(ollamaMaxImageEdge, 10) : 1536
+        )
+      ),
+    },
+    { key: 'llm_debug_logging', value: llmDebugLogging ? 'true' : 'false' },
+    { key: 'force_detailed_prompt', value: forceDetailedPrompt ? 'true' : 'false' },
+    { key: 'tag_granularity', value: tagGranularity },
+
+    { key: 'gemini_model', value: geminiModel },
+    // *_text_model はクラウド側では **Rust のどこからも読まれていない**
+    // （読まれるのは ollama_text_model だけ / tag_organize.rs）。
+    // 動かない入力欄を作らないため UI は用意していない。既定値を書き戻すだけ
+    { key: 'gemini_text_model', value: geminiTextModel },
+
+    { key: 'openai_base_url', value: openaiBaseUrl },
+    { key: 'openai_model', value: openaiModel },
+
+    { key: 'claude_model', value: claudeModel },
+    { key: 'claude_text_model', value: claudeTextModel },
+
+    { key: 'ext_llm_max_batch_items', value: extMaxBatchItems },
+    { key: 'ext_llm_retry_enabled', value: extRetryEnabled ? 'true' : 'false' },
+    { key: 'ext_llm_retry_max_attempts', value: extRetryAttempts },
+    { key: 'ui_language', value: uiLanguage },
+    { key: 'ffmpeg_notice_enabled', value: ffmpegNoticeEnabled ? 'true' : 'false' },
+
+    { key: 'spectrum_embedding_model', value: embeddingModel },
+    { key: 'spectrum_include_descriptive', value: spectrumIncludeDescriptive ? 'true' : 'false' },
+    { key: 'spectrum_centering', value: spectrumCentering ? 'true' : 'false' },
+  ];
+
+  /**
+   * 開いた時点の値。**保存済みの設定との差ではなく、開いてから触ったかで見る。**
+   * 保存されたことのない項目は設定に無く、差で見ると常に「変更あり」になる。
+   */
+  const openedWith = useRef<string>('');
+  useEffect(() => {
+    if (open) openedWith.current = JSON.stringify(settingEntries);
+    // 開いた瞬間の値だけを控える。開いている間の変化は追わない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Esc で閉じる。**確認のパネルが開いていたら、そちらだけ閉じる**
+  useEscapeToClose({
+    open,
+    onClose,
+    onEscapeFirst: () => {
+      if (confirmModelSwitch) {
+        setConfirmModelSwitch(null);
+        return true;
+      }
+      if (confirmDownloadModal) {
+        setConfirmDownloadModal(null);
+        return true;
+      }
+      return false;
+    },
+    isDirty: () =>
+      JSON.stringify(settingEntries) !== openedWith.current ||
+      Object.values(apiKeyDirty).some(Boolean),
+    confirm: () =>
+      ask(t('app.discard_confirm', ''), {
+        title: t('app.label_discard_title', 'Discard changes'),
+        kind: 'warning',
+      }),
+  });
+
   // フックは早期 return より前にすべて並べる（`if (!open) return null` の後ろに置くと
   // 閉じている間だけ呼ばれず、React が「フックの順序が変わった」で描画ごと落とす）
   if (!open) return null;
@@ -437,45 +522,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       // 保存が終わるまでの間に別の値を触られても、DB に入るのは押した時点の値だけで、
       // 画面には触った後の値が出たままモーダルが閉じていた
       const result = await onSaveSettings(
-        [
-          { key: 'llm_provider', value: provider },
-          { key: 'ollama_url', value: ollamaUrl },
-          { key: 'ollama_model', value: selectedVlmModel },
-          { key: 'ollama_text_model', value: selectedTextModel },
-          // 空欄・不正値は自動(0) / 既定値(1536) にフォールバックさせる
-          { key: 'ollama_num_ctx', value: String(Math.max(0, parseInt(ollamaNumCtx, 10) || 0)) },
-          {
-            key: 'ollama_max_image_edge',
-            value: String(
-              Math.max(0, Number.isFinite(parseInt(ollamaMaxImageEdge, 10)) ? parseInt(ollamaMaxImageEdge, 10) : 1536)
-            ),
-          },
-          { key: 'llm_debug_logging', value: llmDebugLogging ? 'true' : 'false' },
-          { key: 'force_detailed_prompt', value: forceDetailedPrompt ? 'true' : 'false' },
-          { key: 'tag_granularity', value: tagGranularity },
-
-          { key: 'gemini_model', value: geminiModel },
-          // *_text_model はクラウド側では **Rust のどこからも読まれていない**
-          // （読まれるのは ollama_text_model だけ / tag_organize.rs）。
-          // 動かない入力欄を作らないため UI は用意していない。既定値を書き戻すだけ
-          { key: 'gemini_text_model', value: geminiTextModel },
-
-          { key: 'openai_base_url', value: openaiBaseUrl },
-          { key: 'openai_model', value: openaiModel },
-
-          { key: 'claude_model', value: claudeModel },
-          { key: 'claude_text_model', value: claudeTextModel },
-
-          { key: 'ext_llm_max_batch_items', value: extMaxBatchItems },
-          { key: 'ext_llm_retry_enabled', value: extRetryEnabled ? 'true' : 'false' },
-          { key: 'ext_llm_retry_max_attempts', value: extRetryAttempts },
-          { key: 'ui_language', value: uiLanguage },
-          { key: 'ffmpeg_notice_enabled', value: ffmpegNoticeEnabled ? 'true' : 'false' },
-
-          { key: 'spectrum_embedding_model', value: embeddingModel },
-          { key: 'spectrum_include_descriptive', value: spectrumIncludeDescriptive ? 'true' : 'false' },
-          { key: 'spectrum_centering', value: spectrumCentering ? 'true' : 'false' },
-        ],
+        // **組み立ては settingEntries に1本化してある。**
+        // ここに直接書くと、Esc の「変更途中か」の判定とずれる
+        settingEntries,
         // API キーの保存先は OS の資格情報ストア。設定本体とは別に扱われる。
         // **触っていないキーは送らない。** 読み出しに失敗していると state は空のままで、
         // 送ると保存済みのキーを空文字で消してしまう
