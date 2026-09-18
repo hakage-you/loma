@@ -18,5 +18,8 @@
   "label_registered": "Registered folders",
   "label_added": "Added",
   "empty_folders": "No folders are registered yet.",
-  "label_close": "Close"
+  "label_close": "Close",
+  "confirm_remove_title": "Unregister this folder.",
+  "confirm_remove_body": "The media records, tags and thumbnails under this folder are removed. The files themselves are kept. Adding the folder again requires a full re-analysis.",
+  "label_confirm_remove": "Unregister"
 }

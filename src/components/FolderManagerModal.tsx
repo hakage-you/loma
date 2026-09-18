@@ -32,6 +32,15 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
   // スキャン中だけでなく、Rust の排他ロックを取る処理が走っている間はどれも失敗する
   const exclusive = useExclusiveGuard();
   const [showConfirmReanalyze, setShowConfirmReanalyze] = useState(false);
+  /**
+   * 登録解除の確認待ち。
+   *
+   * **これは取り消せない。** バックエンドはフォルダ配下のメディアの行と
+   * media_tags を消し、サムネイルのファイルも削除する。同じモーダルの
+   * 「全メディア再解析」が確認を挟むのに、より戻せないこちらには
+   * 確認が無かった。
+   */
+  const [pendingRemove, setPendingRemove] = useState<ScanFolderItem | null>(null);
 
   if (!open) return null;
 
@@ -156,6 +165,35 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
           </div>
         )}
 
+        {/* 登録解除の確認。**押し間違いをそのまま通さない** */}
+        {pendingRemove && (
+          <div className="p-4 bg-red-950/40 border border-red-500/50 rounded-xl flex flex-col gap-3 animate-in fade-in duration-150">
+            <div className="flex items-center gap-2 text-xs font-bold text-red-200">
+              <AlertTriangle className="w-4 h-4 text-red-400 shrink-0" />
+              {t('folder_modal.confirm_remove_title', '')}
+            </div>
+            <p className="text-[11px] text-red-100/80 font-mono break-all">{pendingRemove.path}</p>
+            <p className="text-xs text-red-100/80">{t('folder_modal.confirm_remove_body', '')}</p>
+            <div className="flex justify-end gap-2">
+              <button
+                onClick={() => setPendingRemove(null)}
+                className="px-3 py-1 bg-slate-900 text-slate-300 text-xs rounded-lg hover:bg-slate-800 cursor-pointer"
+              >
+                {t('folder_modal.label_cancel', 'Cancel')}
+              </button>
+              <button
+                onClick={() => {
+                  onRemoveFolder(pendingRemove.id);
+                  setPendingRemove(null);
+                }}
+                className="px-3 py-1 bg-red-600 text-white font-bold text-xs rounded-lg hover:bg-red-500 shadow-md cursor-pointer"
+              >
+                {t('folder_modal.label_confirm_remove', 'Unregister')}
+              </button>
+            </div>
+          </div>
+        )}
+
         {/* Registered Folders Bar */}
         <div className="flex items-center justify-between">
           <span className="text-xs font-semibold text-slate-300">
@@ -224,7 +262,7 @@ export const FolderManagerModal: React.FC<FolderManagerModalProps> = ({
                     </button>
                   )}
                   <button
-                    onClick={() => onRemoveFolder(item.id)}
+                    onClick={() => setPendingRemove(item)}
                     className="p-1.5 text-slate-400 hover:text-red-400 hover:bg-red-500/20 rounded-lg transition cursor-pointer"
                     title={t('folder_modal.label_title_remove', 'Remove folder')}
                   >

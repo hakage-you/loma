@@ -18,5 +18,8 @@
   "label_registered": "登録フォルダ",
   "label_added": "追加日",
   "empty_folders": "登録されているフォルダはありません。",
-  "label_close": "閉じる"
+  "label_close": "閉じる",
+  "confirm_remove_title": "登録を解除します。",
+  "confirm_remove_body": "このフォルダ配下のメディアの登録・タグ・サムネイルが消えます。ファイル本体は消えません。取り込み直すには、もう一度解析が必要です。",
+  "label_confirm_remove": "登録を解除"
 }

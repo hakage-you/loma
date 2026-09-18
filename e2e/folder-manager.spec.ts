@@ -84,14 +84,28 @@ test.describe('登録フォルダ管理', () => {
     expect(String(call!.args.folderPath)).toContain('2024_Travel');
   });
 
-  test('フォルダの登録解除は確認なしで即座に一覧から消える', async ({ page }) => {
-    // **これは現状の記録であって「望ましい」ではない。**
-    // 同じモーダルの「全メディア再解析」は確認を挟むのに、登録解除は挟まない。
-    // 揃える判断をしたときに、この期待値を書き換えること
+  test('フォルダの登録解除は確認を挟む。取り消せば残る', async ({ page }) => {
+    // **登録解除はフォルダ配下のメディアの行・タグ・サムネイルを消す。**
+    // ファイル本体は残るが、取り込み直すには解析をやり直すことになる。
+    // 同じモーダルの「全メディア再解析」より戻せないので、確認を挟む
     await openManager(page);
     await expect(page.getByText('登録フォルダ (2)')).toBeVisible();
 
     await folderRow(page, '2024_Travel').getByTitle('フォルダを削除').click();
+
+    await expect(modal(page).getByText('登録を解除します。')).toBeVisible();
+    // どのフォルダを消すのかをパスで出す
+    await expect(modal(page).getByText('2024_Travel', { exact: false }).first()).toBeVisible();
+    await modal(page).getByRole('button', { name: 'キャンセル' }).click();
+
+    await expect(page.getByText('登録フォルダ (2)')).toBeVisible();
+    await expect(folderRow(page, '2024_Travel')).toBeVisible();
+  });
+
+  test('登録解除を承認すると一覧から消える', async ({ page }) => {
+    await openManager(page);
+    await folderRow(page, '2024_Travel').getByTitle('フォルダを削除').click();
+    await modal(page).getByRole('button', { name: '登録を解除' }).click();
 
     await expect(page.getByText('登録フォルダ (1)')).toBeVisible();
     await expect(folderRow(page, '2024_Travel')).toHaveCount(0);
@@ -99,8 +113,10 @@ test.describe('登録フォルダ管理', () => {
 
   test('登録が0件になると、空の案内と無効なボタンになる', async ({ page }) => {
     await openManager(page);
-    await folderRow(page, '2024_Travel').getByTitle('フォルダを削除').click();
-    await folderRow(page, 'Screenshots').getByTitle('フォルダを削除').click();
+    for (const path of ['2024_Travel', 'Screenshots']) {
+      await folderRow(page, path).getByTitle('フォルダを削除').click();
+      await modal(page).getByRole('button', { name: '登録を解除' }).click();
+    }
 
     await expect(page.getByText('登録されているフォルダはありません。')).toBeVisible();
     // 対象が無いのに押せると、押しても何も起きないボタンになる
