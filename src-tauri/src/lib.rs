@@ -8,6 +8,9 @@ mod image_io;
 mod llm;
 mod logger;
 mod proc;
+/// 実データに対する検証。**テストのときだけ組み込む**
+#[cfg(test)]
+mod real_db;
 /// タグ整理の提案を判定の記録として保存する（中断再開・却下・未判定）
 mod suggestion_store;
 /// タグ整理の提案生成（ルール検出以外の、明示実行の方式群）

@@ -2412,7 +2412,15 @@ pub fn connected_components(
     let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut groups = Vec::new();
 
-    for &node in adj.keys() {
+    // **HashMap / HashSet の走査順に依存しない。**
+    // Rust の既定ハッシャはプロセスごとに種が変わるので、そのまま走査すると
+    // BFS の開始点と訪問順が実行ごとに変わり、同じ DB・同じバイナリでも
+    // グループの並びとメンバーの並びが入れ替わる。
+    // 並びが変わると、使用数が同点のタグで代表が入れ替わる（実測 742件中14件）。
+    let mut nodes: Vec<i64> = adj.keys().copied().collect();
+    nodes.sort_unstable();
+
+    for node in nodes {
         if !visited.insert(node) {
             continue;
         }
@@ -2423,7 +2431,9 @@ pub fn connected_components(
         while let Some(curr) = queue.pop_front() {
             members.push(curr);
             if let Some(neighbors) = adj.get(&curr) {
-                for &n in neighbors {
+                let mut sorted: Vec<i64> = neighbors.iter().copied().collect();
+                sorted.sort_unstable();
+                for n in sorted {
                     if visited.insert(n) {
                         queue.push_back(n);
                     }
@@ -2434,7 +2444,89 @@ pub fn connected_components(
             groups.push(members);
         }
     }
+    // 大きいグループから。同数なら最小のIDが先
+    groups.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a.iter().min().cmp(&b.iter().min()))
+    });
     groups
+}
+
+
+/// 連結成分の決定性。
+///
+/// **`HashMap` の走査順に依存していると、ここで落ちる。**
+/// Rust の `RandomState` は `HashMap` を作るたびに鍵が変わるので、
+/// 同じ中身でも作り直した `HashMap` は走査順が違う。
+/// 実データ（提案 742件）では、この順の違いが「代表とメンバーの並びが
+/// 実行ごとに入れ替わる」として表に出ていた。
+#[cfg(test)]
+mod connected_components_tests {
+    use super::connected_components;
+    use std::collections::{HashMap, HashSet};
+
+    /// 同じ辺集合を、挿入順だけ変えて隣接リストにする
+    fn adj_from(edges: &[(i64, i64)]) -> HashMap<i64, HashSet<i64>> {
+        let mut adj: HashMap<i64, HashSet<i64>> = HashMap::new();
+        for (a, b) in edges {
+            adj.entry(*a).or_default().insert(*b);
+            adj.entry(*b).or_default().insert(*a);
+        }
+        adj
+    }
+
+    #[test]
+    fn the_same_edges_give_the_same_groups_whatever_the_insertion_order() {
+        let edges: Vec<(i64, i64)> = vec![
+            (10, 20),
+            (20, 30),
+            (30, 40),
+            (100, 200),
+            (200, 300),
+            (7, 8),
+            (50, 60),
+            (60, 70),
+            (70, 80),
+            (80, 90),
+        ];
+        let forward = connected_components(&adj_from(&edges));
+
+        let mut reversed = edges.clone();
+        reversed.reverse();
+        let backward = connected_components(&adj_from(&reversed));
+
+        assert_eq!(forward, backward, "挿入順で結果が変わる");
+    }
+
+    /// 同じ入力で何度作り直しても同じ並びになること。
+    /// `HashMap` を作り直すたびにハッシュの鍵が変わるので、
+    /// **1回の比較では通ってしまうことがある**
+    #[test]
+    fn rebuilding_the_map_does_not_change_the_order() {
+        let edges: Vec<(i64, i64)> = (1..40).map(|i| (i, i + 1)).chain([(500, 600)]).collect();
+        let first = connected_components(&adj_from(&edges));
+        for _ in 0..20 {
+            assert_eq!(first, connected_components(&adj_from(&edges)));
+        }
+    }
+
+    #[test]
+    fn groups_come_out_largest_first() {
+        // 2件の組と4件の組。大きい方が先
+        let groups = connected_components(&adj_from(&[(1, 2), (10, 11), (11, 12), (12, 13)]));
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 4);
+        assert_eq!(groups[1].len(), 2);
+    }
+
+    #[test]
+    fn a_node_without_a_partner_is_not_a_group() {
+        // 2件未満の成分は提案にならないので落とす
+        let mut adj: HashMap<i64, HashSet<i64>> = HashMap::new();
+        adj.insert(1, HashSet::new());
+        assert!(connected_components(&adj).is_empty());
+    }
 }
 
 /// 代表タグ（target）の決め方。**方式によって正解が違う。**
@@ -2551,6 +2643,10 @@ where
             t_b.count
                 .cmp(&t_a.count)
                 .then_with(|| t_a.name.len().cmp(&t_b.name.len()))
+                // **同点のときに入力順へ落とさない。** sort_by は安定なので、
+                // ここで決めないと「先に並んでいた方」が代表になる。
+                // タグ名は UNIQUE なので、これで並びが一意に決まる
+                .then_with(|| t_a.name.cmp(&t_b.name))
         });
         if let Some(p) = pinned {
             member_ids.insert(0, p);
