@@ -46,6 +46,35 @@ let mediaState: MediaItem[] = MOCK_MEDIA.map((m) => ({ ...m, tags: [...m.tags], 
   mediaState = padded;
 })();
 let tagState: TagItem[] = MOCK_TAGS.map((t) => ({ ...t }));
+
+/**
+ * `?debugTagCount=<件数>` を付けると、その件数になるまでタグを水増しする。
+ *
+ * 既定は26件で、**タグ管理の段階描画や、件数が多いときだけ効く上限を**
+ * **一度も通らない。** 実ライブラリは 10,123件。
+ * 水増しぶんはどのメディアにも付かない（count は持つが media_tags は増えない）。
+ * 一覧の描画と並べ替えを見るのが目的で、統合の結果を見るものではない。
+ */
+(() => {
+  const raw = new URLSearchParams(window.location.search).get('debugTagCount');
+  const want = raw ? Number(raw) : 0;
+  if (!Number.isFinite(want) || want <= tagState.length) return;
+  const padded = [...tagState];
+  let nextId = Math.max(0, ...tagState.map((t) => t.id)) + 1;
+  for (let i = tagState.length; i < want; i++) {
+    padded.push({
+      id: nextId++,
+      name: `padded_tag_${i}`,
+      // 半分は日本語名なしにして、「日本語名なし」バッジの描画も含める
+      name_ja: i % 2 === 0 ? `水増しタグ${i}` : undefined,
+      is_category: false,
+      // 同点が大量にある実データの形に寄せる
+      count: (i % 40) + 1,
+      kind: i % 7 === 0 ? 'descriptive' : 'basic',
+    });
+  }
+  tagState = padded;
+})();
 let settingsState: Record<string, string> = { ...MOCK_SETTINGS };
 let scanFoldersState = MOCK_SCAN_FOLDERS.map((f) => ({ ...f }));
 let scanning = false;
@@ -240,6 +269,29 @@ function buildMockSuggestions(method: string): MergeSuggestion[] {
     };
   };
 
+  // `?debugSuggestionCount=<件数>` で提案を水増しする。
+  // **提案カードは一覧の行の約4倍重い**（規則チップ・メンバー全員ぶんの option・
+  // メンバーチップ2ボタン・サムネ最大5枚）。実データは表記ゆれだけで 4,215件。
+  const padCount = Number(new URLSearchParams(window.location.search).get('debugSuggestionCount')) || 0;
+  const padded: MergeSuggestion[] = [];
+  if (padCount > 0) {
+    const pool = tagState.filter((t) => !t.is_category);
+    for (let i = 0; i < padCount && pool.length >= 3; i++) {
+      const target = pool[i % pool.length];
+      const members = [pool[(i + 1) % pool.length], pool[(i + 2) % pool.length]];
+      padded.push({
+        id: `padded-${method}-${i}`,
+        target_tag: target,
+        source_tags: members,
+        reason: '水増し',
+        confidence: 'medium',
+        rules: i % 3 === 0 ? ['spelling', 'singular'] : ['spelling'],
+        sample_thumbnails: [],
+        total_images_count: target.count ?? 0,
+      });
+    }
+  }
+
   const table: Record<string, (MergeSuggestion | null)[]> = {
     rules: [
       group('rules-1', 'person', ['portrait'], '日本語表記が一致', 'high', ['ja_exact']),
@@ -252,7 +304,7 @@ function buildMockSuggestions(method: string): MergeSuggestion[] {
       group('rel-1', 'meal', ['dessert', 'plate'], 'ベクトルが近い', 'medium', ['embedding']),
     ],
   };
-  return (table[method] ?? []).filter((s): s is MergeSuggestion => s !== null);
+  return [...(table[method] ?? []).filter((s): s is MergeSuggestion => s !== null), ...padded];
 }
 
 /**

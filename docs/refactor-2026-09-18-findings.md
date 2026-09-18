@@ -1,6 +1,6 @@
 # 2026-09-18 リファクタリング／UX改善 作業記録
 
-このファイルは作業中の発見と判断を残すための作業メモ。**最終報告は末尾の「報告」節**。
+作業中の発見と判断の記録。**最終報告は末尾の「報告」節**。
 
 ---
 
@@ -12,80 +12,125 @@
 | 実DB | 匿名化フィクスチャを生成、**コミットしない**（生成スクリプトのみ）。「一ユーザーの分布であって標準ではない」 |
 | 優先度3 | 操作の統一まで実装してよい |
 | 既存課題 | useMedia 2回 / ログローテーション / 関連タグ非決定性 に着手。直し方が割れて保留が安全なものは実装せず報告 |
+| 追加指示 | Ollama 実行は許可（最小限の時間で）。途中で質問して止まらず、報告書にまとめる |
 
 ブランチ: `claude/refactor-ux-improvements-5a4524`
 
 ### 着手時のベースライン
 
 - Playwright e2e: **40件 通過 / 1.2分**
-- Rust ユニットテスト: 86件（`#[test]` の数）
+- Rust テスト: **107件**
 - フロント: 11,432行（`SettingsModal.tsx` 2,022 / `TagManagementModal.tsx` 1,700 が突出）
-- 実DB: media 4,941 / tags 10,123 / media_tags 36,529 / tag_suggestion_pairs 30,146
+- 実DB: media 4,941 / tags 10,123 / media_tags 36,529 / tag_suggestion_pairs 30,146 / tag_embeddings 10,102
 
 ---
 
-## 発見
+## 直したこと
 
-### F-1. フロントが呼ぶ22コマンドに、モックの handler が無かった【対処済み】
+### 1. モックの handler 漏れ22件（テストの土台）
 
-`src/mocks/core.ts` の `handlers` に無いコマンドは `undefined` を返して `console.warn` するだけで、
-**例外にならない**。画面は成功したものとして進むので、mock モードの e2e は
-「押せた／落ちなかった」しか見ていない状態だった。
+`src/mocks/core.ts` の `handlers` に無いコマンドは `undefined` を返して
+`console.warn` するだけで**例外にならない**。画面は成功したものとして進むので、
+mock モードの e2e は「押せた／落ちなかった」しか見ていない状態だった。
 
-handler が無かったもの（22件）:
-`apply_tag_merges` `cancel_ollama_pull` `cleanup_missing_media` `clear_app_logs`
-`count_invalidated_suggestions` `custom_analyze_video` `get_media_by_tag` `get_or_create_tag`
-`get_tag_sample_thumbnails` `merge_tags` `open_file` `open_folder` `pause_scan`
-`pull_ollama_model` `reanalyze_all_media` `reanalyze_folder` `reanalyze_single_media`
-`rename_tag` `rescan_all_folders` `resume_scan` `retry_media` `unload_model`
+22コマンドの handler を実装。提案3方式も `() => []` を返すだけで
+**AI提案タブが一度も描画されない**状態だったので、実タグIDを使う候補を返すようにした。
 
-加えて `suggest_tag_merges` / `suggest_hypernyms` / `suggest_related_tags` は
-`() => []` を返すだけで、**AI提案タブは一度も中身が描画されない**状態だった。
+三者（Rust の登録 / フロントの参照 / モックの handler）を突き合わせる
+`npm run check:mock-commands` を追加。呼ぶ経路が無かった Rust コマンド2件
+（`check_and_open_file` / `save_provider_api_key`）も削除した。
 
-→ 22件を実装。提案3方式も実タグIDを使った候補を返すようにした。
-→ ズレを検出する `npm run check:mock-commands` を追加（`check:exclusive` と同じ形）。
+### 2. 起動時の IPC を 38本 → 16本
 
-### F-2. Rust に登録されているが呼ぶ経路が無いコマンドが2つ【対処済み】
+`App` が言語設定のためだけに `useMedia` を呼び、`AppContent` が本体として
+もう一度呼んでいた。`useMedia` は state・`batch_progress` の購読・起動時の取得を
+抱えているので、2回呼べば全部が2組になる。
 
-- `check_and_open_file` — `open_file` への素通し。フロントは `open_file` を直接呼ぶ
-- `save_provider_api_key` — `save_settings` の `apiKeys` に置き換わり済み
-  （`SettingsModal.tsx:436` のコメントが経緯を書いている）
+`src/contexts/MediaContext.tsx` を追加して1インスタンスにし、重複していた
+`fetchMasterData` の effect と `fetchMedia` の二重起動も外した。
 
-→ 両方削除。`invoke_handler` の登録も外した。
+| | 変更前 | 変更後 |
+| --- | ---: | ---: |
+| invoke 合計 | 38 | 16 |
+| `get_media` | 6 | 2 |
+| `get_all_tags` | 6 | 2 |
+| `get_parent_folders` | 6 | 2 |
+| `get_scan_folders` | 6 | 2 |
+| `get_settings` | 6 | 2 |
+| `get_scan_status` | 4 | 2 |
 
-### F-3. モックの `invoke` が Promise を返す handler を扱えなかった【対処済み】
+mock は開発ビルドで React が StrictMode で動くため effect が2回走る。
+実ビルドでは **19本 → 8本** にあたる。
 
-`structuredClone(handler(args))` だったため、handler が Promise を返すと `DataCloneError`。
-実バックエンドの `pull_ollama_model` は**ダウンロードが終わるまで返らない**コマンドで、
-呼び出し側（`SettingsModal`）は `finally` で進捗イベントの購読を外す。
-即座に解決するモックでは購読が先に外れ、進捗バーが一度も描画されなかった。
+### 3. 解析中の再取得が一度も走らないことがあった
 
-→ `await handler(args)` に変更。疑似 pull は完了まで解決しない Promise を返す。
+`useMedia` は `batch_progress` を受けて1秒に間引いて再取得する……はずが、
+**イベントが来るたびにタイマーを張り直していた**。進捗が間引き間隔より速く届くと
+張り直しが続いて一度も発火せず、解析が終わるまでギャラリーが更新されない。
+登録フェーズ（5件ごと）や解析の速いモデルがこれに当たる。
 
-### F-4. `FolderManagerModal` がほぼ全部ハードコードされた英語
+計測（メディア5,000件・進捗200〜300ms間隔・10秒間）:
 
-`src/locales/ja/folder_modal.json` に `label_add_folder` / `label_rescan_all` /
-`label_reanalyze_all` が**定義されているのに一度も使われていない**。
-画面に出ているのは以下の英語リテラル:
+| | 変更前 | 変更後 |
+| --- | ---: | ---: |
+| `get_media` の回数 | 0 | 9 |
+| `get_media` の転送 | 0 | 1.84 MB/秒 |
 
-- `1. Process Pending & New Items` / `Process Pending Only`
-- `2. Force Re-analyze ALL Media` / `Re-analyze ALL Media`
-- `Are you sure you want to force re-analyze all media?` / `Cancel` / `Yes, Re-analyze All`
-- `Registered Folders (N):` / `Add Folder` / `No folders registered yet` / `Added:` / `Close`
+### 4. 関連タグの提案が実行ごとに入れ替わる
 
-アプリの他の画面は日本語なので、**この画面だけ英語**になっている。
+`connected_components` が `HashMap` をそのまま走査していた。Rust の `RandomState` は
+`HashMap` を作るたびに鍵が変わるので、BFS の開始点と訪問順が実行ごとに変わり、
+グループとメンバーの並びが入れ替わる。実データ（提案742件）で再現。
 
-### F-5. `App.tsx` のスキャン制御ボタンだけ英語リテラル
+キーと隣接を並べてから走査し、成分も「大きい順 → 最小ID順」で返すようにした。
+`build_suggestions` のメンバー並べ替えにも最終的なタイブレーク（タグ名）を足した。
+使用数と名前の長さが同点だと `sort_by` が安定なぶん入力順に落ちていた。
 
-`Resume` / `Pause` / `Cancel` が `t()` を通っていない（`src/App.tsx`）。
-同じ列の「フォルダ追加」「同期」は `t()` を通っている。
+### 5. ログのローテーションが無かった
 
-### F-6. 破壊的操作の確認の有無が画面ごとに違う
+1本 5MB を超えたら世代を送る（`loma.log.1` … `loma.log.3`）。本体+3世代で
+最大 20MB で頭打ち。1行書くたびに `metadata` を引かず、起動時に読んで加算する。
+世代を送った直後に「ログが消えた」ように見えないよう、読み出しは枠が余っていれば
+1つ前の世代の末尾も足す。クリアは世代も消す。
 
-- 全メディア再解析 → モーダル内に確認パネルを出す（`FolderManagerModal`）
-- **フォルダの登録解除 → 確認なしで即実行**（`FolderManagerModal` のゴミ箱ボタン）
-- ライブラリから削除 → `ask()` で確認（`FailureTriageModal`）
-- タグ統合 → 消える提案の数を見せてから `ask()`（`TagManagementModal`）
+全画面のログ表示は `onGetLogs()` を引数なしで呼んでおり、バックエンドの既定
+**8MB** が返っていた（JS 文字列は UTF-16 なので約16MBがヒープに載る）。2MB に制限し、
+DOM に出す行数も末尾2,000行で打ち切って、切ったことを件数つきで画面に出すようにした。
+
+### 6. 画面ごとに英語のままだった表示
+
+- `FolderManagerModal` — 画面のほぼ全部が英語。ロケールに
+  `label_add_folder` / `label_rescan_all` / `label_reanalyze_all` が
+  **定義済みでどれも使われていなかった**
+- `LogViewerModal` — `t()` が1箇所も無かった
+- `LogBottomConsole` / `App.tsx`（再開・一時停止・中止）/ `SearchBar` /
+  `Sidebar` / `TagManagementModal` のトースト / `SettingsModal` / `AboutModal`
+
+`npm run check:locale` に**未使用キーの検出**を足した。これで見つかった
+旧UIの残骸12件を削除。製品名 `Loma` とタグラインはキーを持たず直接埋め込む形に戻した
+（訳すものではない）。
+
+### 7. 操作の不統一
+
+- **フォルダの登録解除に確認が無かった。** `remove_scan_folder` はフォルダ配下の
+  メディアの行と `media_tags` を消し、サムネイルのファイルも削除する。
+  同じモーダルの「全メディア再解析」は確認を挟むのに、より戻せないこちらには
+  無かった。確認パネルを追加した
+- 削除の確認を取り消すボタンが「閉じる」で、モーダルを閉じる×と同じ文字だった。
+  **「キャンセル」に変えた**（モーダルを閉じる＝閉じる／操作をやめる＝キャンセル）
+- モーダルの登録一覧の見出しがサイドバーの「登録済みフォルダ」と同じ文字だったので、
+  モーダルのタイトルに合わせて「登録フォルダ」にした
+
+### 8. 失敗の伝え方が3通りに割れていた
+
+- `messageKey` で見出しを付けて出すもの（5件）
+- 英語のリテラルで出すもの（5件）
+- **`console.error` だけで握り潰すもの（6件）** — 一時停止・再開・中止・
+  フォルダの登録解除・ログのクリア・VRAM の解放。押しても何も起きないように見えた
+
+「ユーザーが押した操作が失敗したら必ず出す」に揃えた。
+**背景の取得（タグ一覧・モデル一覧・ログの読み出し）は出さないまま残す。**
+解析中は1秒ごとに走るので、出すとモーダルが並ぶ。この非対称は意図的で e2e にも書いた。
 
 ---
 
