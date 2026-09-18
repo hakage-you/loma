@@ -662,6 +662,14 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   suggest_related_tags: () => runSuggestScan('related'),
 
   // --- ログ ---
+  /**
+   * フロントの失敗をログへ残す入口。
+   * **モックでも実際に本文へ足す。** 足さないと「ログに出る」ことを検証できない。
+   */
+  log_frontend_error: (args) => {
+    const line = `[2026-09-18 10:00:00] [ERROR] [Frontend] ${args.context} — ${args.message}`;
+    logsState = logsState ? `${logsState}\n${line}` : line;
+  },
   clear_app_logs: () => {
     logsState = '';
   },

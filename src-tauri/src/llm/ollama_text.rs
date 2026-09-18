@@ -77,7 +77,11 @@ impl TextGenResponse {
             && self.response.trim().is_empty()
     }
 
-    /// 答えの途中で切れた（発散ではない）
+    /// 答えの途中で切れた（発散ではない）。**テストだけが呼ぶ。**
+    ///
+    /// 本番は `diverged` だけを見て「発散したか」を判定する。こちらは
+    /// 「切れた」と「発散した」の切り分けが効いていることを確かめるテスト用。
+    #[cfg(test)]
     pub fn truncated(&self, num_ctx: usize) -> bool {
         self.done_reason.as_deref() == Some("length") && !self.diverged(num_ctx)
     }

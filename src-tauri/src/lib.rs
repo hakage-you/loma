@@ -75,6 +75,7 @@ pub fn run() {
             commands::get_excluded_paths,
             commands::unload_model,
             commands::get_app_logs,
+            commands::log_frontend_error,
             commands::clear_app_logs,
             commands::rename_tag,
             commands::merge_tags,

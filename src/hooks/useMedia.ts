@@ -26,6 +26,20 @@ export interface FilterState {
   fileExtensions?: string[];
 }
 
+/**
+ * 画面には出さないが、ログファイル（loma.log）には残す。
+ *
+ * **裏で自動的に走る取得の失敗に使う。** タグ一覧・モデル一覧・ログの読み出しは
+ * 解析中に毎秒走るので、失敗のたびにエラー画面を開くと画面が埋まる。
+ * かといって黙って捨てると、サイドバーが空になった理由がどこにも残らない。
+ *
+ * **ログへの書き込み自体が失敗しても何もしない。** 失敗の連鎖を作らない。
+ */
+function logBackgroundFailure(context: string, e: unknown): void {
+  console.error(`[background] ${context}:`, e);
+  void invoke('log_frontend_error', { context, message: String(e) }).catch(() => {});
+}
+
 export function useMedia() {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [tags, setTags] = useState<TagItem[]>([]);
@@ -146,7 +160,7 @@ export function useMedia() {
       const fetchedSettings = await invoke<Record<string, string>>('get_settings');
       setSettings(fetchedSettings);
     } catch (e) {
-      console.error('Failed to fetch master data:', e);
+      logBackgroundFailure('get_all_tags / get_parent_folders / get_scan_folders / get_settings', e);
     }
   }, []);
 
@@ -212,13 +226,13 @@ export function useMedia() {
       const models = await invoke<string[]>('get_available_models');
       setAvailableModels(models);
     } catch (e) {
-      console.error('Failed to fetch available models:', e);
+      logBackgroundFailure('get_available_models', e);
     }
     try {
       const vision = await invoke<string[]>('get_vision_capable_models', { refresh });
       setVisionModels(vision);
     } catch (e) {
-      console.error('Failed to fetch vision capabilities:', e);
+      logBackgroundFailure('get_vision_capable_models', e);
       setVisionModels(null);
     }
   }, []);
@@ -457,7 +471,7 @@ export function useMedia() {
     try {
       return await invoke<ExcludedPathItem[]>('get_excluded_paths');
     } catch (e: any) {
-      console.error('Failed to get excluded paths:', e);
+      logBackgroundFailure('get_excluded_paths', e);
       return [];
     }
   };
@@ -516,7 +530,7 @@ export function useMedia() {
     try {
       return await invoke<string>('get_app_logs', { maxBytes });
     } catch (e: any) {
-      console.error('Failed to get logs:', e);
+      logBackgroundFailure('get_app_logs', e);
       return '';
     }
   };
@@ -607,7 +621,7 @@ export function useMedia() {
       await invoke('update_setting', { key, value });
       setSettings((prev) => ({ ...prev, [key]: value }));
     } catch (e) {
-      console.error('Failed to update setting:', e);
+      logBackgroundFailure(`update_setting(${key})`, e);
     }
   };
 
@@ -618,7 +632,7 @@ export function useMedia() {
         setScanning(true);
       }
     } catch (e) {
-      console.error('Failed to check scan status:', e);
+      logBackgroundFailure('get_scan_status', e);
     }
   }, []);
 

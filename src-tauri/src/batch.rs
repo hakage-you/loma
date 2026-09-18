@@ -209,8 +209,16 @@ pub fn thumbnail_name_hash(file_path_str: &str) -> String {
 
 /// 既存のサムネイルを捨てて作り直す。
 ///
+/// **通常ビルドからは呼ばれない。** 呼び出し元は `image_io.rs` の `#[cfg(test)]`
+/// の中にある透過画像の調査用テストだけなので、そちらが消える通常ビルドでは
+/// 「使われていない」警告が出る。消すとそのテストが壊れるので残す。
+#[allow(dead_code)]
+///
 /// `generate_thumbnail` は `thumb_path.exists()` で早期 return するので、
 /// 合成の仕様を変えても既存分は古いまま残る。作り直しにはファイルの削除が要る。
+/// **テストだけが呼ぶ。** 呼び出し元は `image_io.rs` の `#[cfg(test)]` の中にある
+/// 透過画像の調査用テストだけ。
+#[cfg(test)]
 pub fn regenerate_thumbnail(file_path: &Path, thumb_dir: &Path) -> Result<PathBuf> {
     let name_hash = thumbnail_name_hash(&file_path.to_string_lossy());
     let existing = thumb_dir.join(format!("{}.jpg", name_hash));

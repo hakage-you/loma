@@ -770,7 +770,7 @@ pub async fn get_all_tags(db_state: State<'_, DbState>) -> Result<Vec<TagItem>, 
     )
     .fetch_all(&db_state.pool)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| cmd_err("get_all_tags", e))?;
 
     Ok(rows
         .into_iter()
@@ -1660,6 +1660,21 @@ pub async fn unload_model(db_state: State<'_, DbState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+/// フロントで起きた失敗を `loma.log` に残す。
+///
+/// **画面に出さない取得（タグ一覧・モデル一覧・ログの読み出し）専用。**
+/// これらは解析中に毎秒走るので、失敗のたびにエラー画面を開くと画面が埋まる。
+/// かといって黙って捨てると、サイドバーが空になった理由がどこにも残らない。
+/// ログにだけ残す。
+///
+/// `context` は何をしようとしたか（`get_all_tags` など）、
+/// `message` はフロントが受け取ったエラーの文字列。
+pub async fn log_frontend_error(context: String, message: String) -> Result<(), String> {
+    crate::logger::log_error(&format!("[Frontend] {context} — {message}"));
+    Ok(())
+}
+
+#[tauri::command]
 /// ログの末尾を返す。`max_bytes` を省略すると `DEFAULT_LOG_READ_BYTES`。
 ///
 /// **定期的に呼ぶ側は必ず小さい `max_bytes` を渡すこと。** 返した文字列は
@@ -2129,6 +2144,12 @@ pub fn rule_matches(p1: &TagMeta, p2: &TagMeta) -> Vec<RuleHit> {
 ///
 /// 計測ツール（`classify_rule_pairs`）が「ルールで拾えるか否か」の判定に使う。
 /// **提案の生成には使わない** —— そちらは複数一致を優先度に使うため `rule_matches` を直接呼ぶ。
+/// 当たった規則のうち先頭1件のラベル。**テストだけが呼ぶ。**
+///
+/// 本番の検出は `rule_matches` を直接使い、当たった規則を全部受け取る
+/// （`build_suggestions_from_store` が規則の識別子を一覧で必要とするため）。
+/// こちらは規則の当たり外れを1組ずつ確かめるテスト用。
+#[cfg(test)]
 pub fn rule_based_match_reason(p1: &TagMeta, p2: &TagMeta) -> Option<String> {
     rule_matches(p1, p2).into_iter().next().map(|h| h.label)
 }

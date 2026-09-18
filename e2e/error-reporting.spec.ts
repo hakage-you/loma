@@ -59,11 +59,35 @@ test.describe('失敗を画面に出す', () => {
 
   test('背景の取得が失敗しても、モーダルは出さない', async ({ page }) => {
     // **ここを出すようにすると、解析中に1秒ごとにモーダルが並ぶ。**
-    // 取れなかったことは、サイドバーが空になることで分かる
     await page.goto('/?debugFailCommand=get_all_tags');
     await expect(page.locator('div.grid.gap-4 > div.group').first()).toBeVisible();
     await page.waitForTimeout(1000);
 
     await expect(errorModal(page)).toHaveCount(0);
+  });
+
+  test('背景の取得の失敗は、代わりにログファイルへ残る', async ({ page }) => {
+    // **黙って捨てない。** サイドバーが空になった理由がどこにも残らないと、
+    // あとから原因を追えない
+    await page.goto('/?debugFailCommand=get_all_tags');
+    // **ログに書き終わるのを待ってから開く。** 下のコンソールは開いている間しか
+    // 取り直さないので、書かれる前に開くと古い内容を見ることになる
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as unknown as { __mockInvokeLog: { cmd: string }[] }).__mockInvokeLog.filter(
+            (e) => e.cmd === 'log_frontend_error'
+          ).length
+        )
+      )
+      .toBeGreaterThan(0);
+
+    const console_ = page.locator('div.z-40').filter({ hasText: '処理ログ' });
+    await console_.getByText('処理ログ').click();
+
+    // 開発ビルドは effect を2回実行するので同じ行が2つ出る（実ビルドでは1つ）
+    await expect(
+      console_.getByText('[Frontend] get_all_tags', { exact: false }).first()
+    ).toBeVisible();
   });
 });
