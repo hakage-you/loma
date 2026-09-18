@@ -23,7 +23,19 @@ pub struct DbCopy {
 
 impl Drop for DbCopy {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir_all(&self.dir);
+        // **Windows は開いているファイルを消せない。**
+        // `SqlitePool` が閉じ切るまで少し待つ。1回で諦めると 52MB のコピーが
+        // テンポラリに残り続ける（実際に 74個・3.7GB 溜めた）
+        for attempt in 0..10 {
+            if std::fs::remove_dir_all(&self.dir).is_ok() || !self.dir.exists() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20 * (attempt + 1)));
+        }
+        eprintln!(
+            "[real-db] コピーを消せなかった: {} （次の実行で掃除する）",
+            self.dir.display()
+        );
     }
 }
 
@@ -45,11 +57,40 @@ pub fn source_db_path() -> Option<PathBuf> {
     path.exists().then_some(path)
 }
 
+/// テンポラリに取り残されたコピーを掃除する。
+///
+/// **panic したテストでは `Drop` が最後まで走らないことがある。**
+/// 1個 52MB あるので、溜まると効く。30分以上前のものだけを消す
+/// （同時に走っている別のテストのものを消さないため）。
+fn sweep_stale_copies() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let now = std::time::SystemTime::now();
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else { continue };
+        if !name.starts_with("loma-real-db-") {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age.as_secs() > 30 * 60);
+        if old {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 /// 実DBをテンポラリへ写す。
 ///
 /// **WAL と SHM も一緒に写す。** アプリが動いている最中はコミット済みの内容が
 /// WAL 側にしか無いことがあり、本体だけ写すと古い状態を読むことになる。
 pub fn copy_real_db(label: &str) -> Option<DbCopy> {
+    sweep_stale_copies();
     let source = source_db_path()?;
     let dir = std::env::temp_dir().join(format!(
         "loma-real-db-{}-{}-{}",
@@ -93,6 +134,12 @@ mod tests {
         SqlitePool::connect(&copy.url())
             .await
             .expect("コピーしたDBを開けない")
+    }
+
+    /// **必ず閉じてから返る。** 開いたままだと Windows はコピーを消せず、
+    /// 52MB がテンポラリに残る
+    async fn close(pool: SqlitePool) {
+        pool.close().await;
     }
 
     async fn tag_map(pool: &SqlitePool) -> HashMap<i64, TagItem> {
@@ -146,6 +193,7 @@ mod tests {
                 .unwrap_or(-1);
             eprintln!("[real-db] {table}: {n}");
         }
+        close(pool).await;
     }
 
     /// **関連タグの提案が、同じDB・同じバイナリで毎回同じ結果になること。**
@@ -168,6 +216,7 @@ mod tests {
             .expect("ペアを読めない");
         if pairs.is_empty() {
             eprintln!("[skip] 関連タグのペアが保存されていないので比較できない");
+            close(pool).await;
             return;
         }
 
@@ -179,6 +228,8 @@ mod tests {
             .expect("2回目");
 
         eprintln!("[real-db] 関連タグの提案: {}件", first.len());
+        // **判定の前に閉じる。** 落ちたときもコピーを消せるようにする
+        close(pool).await;
         assert_eq!(first.len(), second.len(), "提案の件数が実行ごとに変わる");
 
         let targets = |v: &[crate::commands::MergeSuggestion]| -> Vec<(String, Vec<String>)> {
@@ -223,6 +274,7 @@ mod tests {
             .expect("ペアを読めない");
         if pairs.is_empty() {
             eprintln!("[skip] 表記ゆれのペアが保存されていない");
+            close(pool).await;
             return;
         }
 
@@ -234,6 +286,7 @@ mod tests {
             .expect("2回目");
 
         eprintln!("[real-db] 表記ゆれの提案: {}件", first.len());
+        close(pool).await;
         let names = |v: &[crate::commands::MergeSuggestion]| -> Vec<String> {
             v.iter().map(|s| s.target_tag.name.clone()).collect()
         };
