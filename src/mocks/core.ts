@@ -100,8 +100,22 @@ const excludedState: { path: string; reason?: string | null; created_at: number 
 // 三者の食い違いは `npm run check:mock-commands` が落とす。
 // ---------------------------------------------------------------------------
 
-/** ログ本文。`clear_app_logs` で空にできるよう状態として持つ */
-let logsState: string = MOCK_LOGS;
+/**
+ * ログ本文。`clear_app_logs` で空にできるよう状態として持つ。
+ *
+ * `?debugLogLines=<行数>` で水増しできる。**既定の3行では「多いときだけ効く」
+ * 上限（受け取るバイト数・DOM に出す行数）を一度も通らない。**
+ */
+let logsState: string = (() => {
+  const raw = new URLSearchParams(window.location.search).get('debugLogLines');
+  const want = raw ? Number(raw) : 0;
+  if (!Number.isFinite(want) || want <= 0) return MOCK_LOGS;
+  const lines: string[] = [];
+  for (let i = 0; i < want; i++) {
+    lines.push(`[2026-09-18 10:00:00] [INFO] mock log line ${i}`);
+  }
+  return lines.join(String.fromCharCode(10));
+})();
 
 
 /**
@@ -611,7 +625,18 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_vision_capable_models: () => MOCK_VISION_MODELS,
   // `?debugScan=mid` では「起動時点で既にスキャン実行中」を再現する
   get_scan_status: () => scanning || isMockScanRunning(),
-  get_app_logs: () => logsState,
+  /**
+   * **末尾しか返さない。** 実バックエンドの `read_logs` と同じで、
+   * 全文を返すモックのままだと「上限を渡しているのに効いていない」不具合を
+   * 一度も再現できない。
+   */
+  get_app_logs: (args) => {
+    const maxBytes: number | undefined = args.maxBytes;
+    if (!maxBytes || logsState.length <= maxBytes) return logsState;
+    const tail = logsState.slice(logsState.length - maxBytes);
+    const nl = tail.indexOf(String.fromCharCode(10));
+    return nl >= 0 ? tail.slice(nl + 1) : tail;
+  },
   get_system_vram_gb: () => MOCK_VRAM_GB,
   update_setting: (args) => {
     settingsState = { ...settingsState, [args.key]: args.value };

@@ -1,10 +1,29 @@
 import React, { useState, useEffect } from 'react';
 import { Terminal, X, Copy, Trash2, RefreshCw, Check, Search } from 'lucide-react';
 
+/**
+ * 一度に受け取るログの上限。
+ *
+ * **上限なしで呼ぶとバックエンドの既定 8MB が返る。** 返った文字列は
+ * そのまま JS ヒープに載り、JS 文字列は UTF-16 なのでバイト数の2倍を占める。
+ * 開くたびに 16MB が積まれることになるので、この画面でも上限を渡す。
+ * 下のコンソール（256KB）より多いのは、検索と全文コピーができるため。
+ */
+const LOG_READ_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 一度に DOM へ出す行数の上限。
+ *
+ * **上限が無いと、絞り込みに当たった行を全部出す。** 2MB のログは約 15,000行で、
+ * 1行が1要素なのでそのまま DOM 要素数になる。下のコンソールは 1,000行で
+ * 抑えているが、この画面には上限が無かった。
+ */
+const MAX_RENDER_LINES = 2000;
+
 interface LogViewerModalProps {
   open: boolean;
   onClose: () => void;
-  onGetLogs: () => Promise<string>;
+  onGetLogs: (maxBytes?: number) => Promise<string>;
   onClearLogs: () => Promise<void>;
 }
 
@@ -21,7 +40,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
   const fetchLogs = async () => {
     setLoading(true);
-    const text = await onGetLogs();
+    const text = await onGetLogs(LOG_READ_BYTES);
     setLogs(text);
     setLoading(false);
   };
@@ -34,10 +53,16 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
   if (!open) return null;
 
-  const logLines = logs
+  const matchedLines = logs
     .split('\n')
     .filter((line) => line.trim().length > 0)
     .filter((line) => line.toLowerCase().includes(filter.toLowerCase()));
+
+  // **出すのは末尾。** 新しいログほど見たいものなので、切るなら先頭側を捨てる
+  const overflowed = matchedLines.length > MAX_RENDER_LINES;
+  const logLines = overflowed
+    ? matchedLines.slice(matchedLines.length - MAX_RENDER_LINES)
+    : matchedLines;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(logs);
@@ -143,7 +168,10 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
         {/* Footer */}
         <div className="p-3 bg-slate-900/90 border-t border-white/10 flex justify-between items-center text-xs text-slate-400">
-          <span>Showing {logLines.length} log lines</span>
+          <span>
+            Showing {logLines.length} log lines
+            {overflowed && ` (latest ${MAX_RENDER_LINES} of ${matchedLines.length})`}
+          </span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-medium transition cursor-pointer"

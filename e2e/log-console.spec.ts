@@ -93,3 +93,39 @@ test.describe('ログコンソール', () => {
     ).toBeVisible();
   });
 });
+
+test.describe('ログが大きいとき', () => {
+  // **「多いときだけ効く」上限は、既定の3行では一度も通らない。**
+  // `?debugLogLines=<行数>` はモック限定の検証用フック。
+
+  test('下のコンソールは末尾しか受け取らず、1,000行で打ち切る', async ({ page }) => {
+    await page.goto('/?debugLogLines=30000');
+    await console_(page).getByText('処理ログ').click();
+
+    // 受け取りは 256KB まで。1行 約40バイトなので 30,000行 = 約1.2MB は収まらない
+    const calls = (await invokeLog(page)).filter((e) => e.cmd === 'get_app_logs');
+    expect(calls.every((c) => c.args.maxBytes === 256 * 1024)).toBe(true);
+
+    const lines = await console_(page).locator('div.leading-tight').count();
+    expect(lines).toBeLessThanOrEqual(1000);
+    expect(lines).toBeGreaterThan(0);
+  });
+
+  test('全画面表示も上限を渡し、出す行数を打ち切って件数を明かす', async ({ page }) => {
+    // **上限なしで呼ぶとバックエンドの既定 8MB が返る。**
+    // JS 文字列は UTF-16 なので、開くたびに 16MB がヒープに載ることになる
+    await page.goto('/?debugLogLines=30000');
+    await console_(page).getByRole('button', { name: '全画面表示' }).click();
+    await expect(
+      page.getByRole('heading', { name: 'Application Diagnostics & Error Logs' })
+    ).toBeVisible();
+
+    const calls = (await invokeLog(page)).filter(
+      (e) => e.cmd === 'get_app_logs' && e.args.maxBytes === 2 * 1024 * 1024
+    );
+    expect(calls.length).toBeGreaterThan(0);
+
+    // 切ったことを黙って隠さない
+    await expect(page.getByText('latest 2000 of', { exact: false })).toBeVisible();
+  });
+});
