@@ -58,3 +58,48 @@ test.describe('メディア詳細のタグ編集', () => {
     await expect(chip(page, '回帰 (regression)')).toBeVisible();
   });
 });
+
+test.describe('メディア詳細のその他の操作', () => {
+  type SideEffect = { command: string; args: Record<string, unknown> };
+  const sideEffects = (page: Page): Promise<SideEffect[]> =>
+    page.evaluate(
+      () => (window as unknown as { __mockSideEffects: SideEffect[] }).__mockSideEffects
+    );
+
+  test('画像の単体再解析がバックエンドまで届く', async ({ page }) => {
+    // **一度この経路が必ず失敗していた**（2026-09 に修正）。
+    // 押せるかではなく、どのメディアIDで呼ばれたかまで見る
+    await openDetail(page);
+    await page.getByRole('button', { name: 'この画像を再解析' }).click();
+
+    const call = (await sideEffects(page)).find((e) => e.command === 'reanalyze_single_media');
+    expect(call).toBeDefined();
+    expect(call!.args.mediaId).toBe(1);
+  });
+
+  test('ファイルとフォルダを開く操作は、そのメディアのパスを送る', async ({ page }) => {
+    await openDetail(page);
+    await page.getByRole('button', { name: 'ファイルを開く' }).click();
+    await page.getByRole('button', { name: 'フォルダを開く' }).click();
+
+    const calls = await sideEffects(page);
+    const file = calls.find((e) => e.command === 'open_file');
+    const folder = calls.find((e) => e.command === 'open_folder');
+    expect(String(file?.args.filePath)).toContain('mock_media_1.jpg');
+    expect(String(folder?.args.filePath)).toContain('mock_media_1.jpg');
+  });
+
+  test('解析に失敗したメディアでは再試行が出る', async ({ page }) => {
+    await page.goto('/');
+    // モックの失敗メディアは mock_media_26.jpg（server_unavailable / 一時的な失敗）
+    await page.locator('div.group').filter({ hasText: 'mock_media_26.jpg' }).first().click();
+    await expect(page.getByRole('heading', { name: 'mock_media_26.jpg' })).toBeVisible();
+
+    await expect(page.getByRole('button', { name: '解析を再試行' })).toBeVisible();
+  });
+
+  test('解析済みのメディアには再試行を出さない', async ({ page }) => {
+    await openDetail(page);
+    await expect(page.getByRole('button', { name: '解析を再試行' })).toHaveCount(0);
+  });
+});
