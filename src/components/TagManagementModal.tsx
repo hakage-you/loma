@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useTransition } from 'react';
+import React, { useState, useEffect, useTransition, useDeferredValue } from 'react';
 import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { runExclusive } from '../hooks/useBusy';
@@ -506,32 +506,52 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   // 以前はここが素の式で、提案タブを見ている間も 5,840 件の filter と
   // localeCompare が毎レンダー走っていた
   const freeTags = React.useMemo(() => tags.filter((t) => !t.is_category), [tags]);
+
+  /**
+   * 一覧の作り直しに使う絞り込み文字列。**入力欄の値そのものではない。**
+   *
+   * 実データ（タグ 10,123件）では、1文字打つたびに一覧を作り直すと
+   * **1打鍵あたり 179ms（最大 308ms）ブロックしていた**（npm run perf の
+   * 「実データの形 / タグ絞り込みの入力」）。入力欄の表示は即座に、
+   * 一覧の作り直しは後回しにする。
+   *
+   * 並べ替えと種別も同じ理由で後回しにする（並べ替えは実測 402ms）。
+   */
+  const deferredSearch = useDeferredValue(search);
+  const deferredSortBy = useDeferredValue(sortBy);
+  const deferredKindFilter = useDeferredValue(kindFilter);
+  /** 入力に一覧が追いついていない間。読み込み中の帯を出すのに使う */
+  const isListStale =
+    deferredSearch !== search ||
+    deferredSortBy !== sortBy ||
+    deferredKindFilter !== kindFilter;
+
   const filteredTags = React.useMemo(() => {
-    const q = search.toLowerCase();
+    const q = deferredSearch.toLowerCase();
     return freeTags.filter(
       (t) =>
-        (kindFilter === 'all' || t.kind === kindFilter) &&
+        (deferredKindFilter === 'all' || t.kind === deferredKindFilter) &&
         (t.name.toLowerCase().includes(q) || (t.name_ja && t.name_ja.toLowerCase().includes(q)))
     );
-  }, [freeTags, kindFilter, search]);
+  }, [freeTags, deferredKindFilter, deferredSearch]);
   const sortedTags = React.useMemo(() => {
     const list = [...filteredTags];
-    if (sortBy === 'count_desc') return list.sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
-    if (sortBy === 'count_asc') return list.sort((a, b) => (a.count ?? 0) - (b.count ?? 0));
-    if (sortBy === 'alpha_asc') return list.sort((a, b) => a.name.localeCompare(b.name));
-    if (sortBy === 'ja_asc') {
+    if (deferredSortBy === 'count_desc') return list.sort((a, b) => (b.count ?? 0) - (a.count ?? 0));
+    if (deferredSortBy === 'count_asc') return list.sort((a, b) => (a.count ?? 0) - (b.count ?? 0));
+    if (deferredSortBy === 'alpha_asc') return list.sort((a, b) => a.name.localeCompare(b.name));
+    if (deferredSortBy === 'ja_asc') {
       return list.sort((a, b) =>
         (a.name_ja || a.name).localeCompare(b.name_ja || b.name, 'ja')
       );
     }
     return list;
-  }, [filteredTags, sortBy]);
+  }, [filteredTags, deferredSortBy]);
 
   // 表示件数を先頭に戻す条件。母集団や並びが変わったのに途中から出ていると、
   // 上に何が来たのかが分からなくなる
   useEffect(() => {
     setVisibleTagCount(TAG_PAGE);
-  }, [search, sortBy, kindFilter, activeTab]);
+  }, [deferredSearch, deferredSortBy, deferredKindFilter, activeTab]);
   useEffect(() => {
     setVisibleSuggestionCount(SUGGESTION_FIRST);
   }, [sortedSuggestions, activeTab]);
@@ -987,8 +1007,11 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
             どちらも「押したのに何も起きない」時間があり、遅いPCほど長くなる。
             高さを持つ要素にすると出入りのたびに下の内容がずれるので、
             1px の線をタブ行の直下に重ねる */}
-        <div className="relative h-px shrink-0" aria-hidden={!isTabPending && !loadingSuggestions}>
-          {(isTabPending || loadingSuggestions) && (
+        <div
+          className="relative h-px shrink-0"
+          aria-hidden={!isTabPending && !loadingSuggestions && !isListStale}
+        >
+          {(isTabPending || loadingSuggestions || isListStale) && (
             <div className="absolute inset-x-0 top-0 h-px overflow-hidden bg-indigo-500/20">
               <div className="h-full w-1/4 bg-indigo-400 animate-loading-slide" />
             </div>

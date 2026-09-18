@@ -75,6 +75,70 @@ let tagState: TagItem[] = MOCK_TAGS.map((t) => ({ ...t }));
   }
   tagState = padded;
 })();
+/**
+ * 実データ由来のフィクスチャがあれば、そちらに差し替える。
+ *
+ * 計測のときだけ `page.addInitScript` で `window.__mockFixture` を置く
+ * （`tools/make-mock-fixture.mjs` が作る。**コミットしない**）。
+ *
+ * **中身は「あるユーザーのライブラリ」の形であって、標準でも理想でもない。**
+ * 合成データでは作れない偏り（タグの長い裾・使用数の同点が大量にあること・
+ * 1メディアあたりのタグ本数のばらつき）を持つので、計測の材料として使う。
+ * 判定や期待値の根拠には使わないこと。
+ */
+(() => {
+  type FixtureTag = {
+    id: number;
+    name: string;
+    name_ja: string;
+    is_category: boolean;
+    count: number;
+    kind: 'basic' | 'descriptive';
+  };
+  type FixtureMedia = {
+    id: number;
+    file_index: number;
+    extension: string;
+    folder_index: number;
+    analysis_status: string;
+    category_ids: number[];
+    tag_ids: number[];
+  };
+  const fixture = (window as unknown as {
+    __mockFixture?: { tags: FixtureTag[]; media: FixtureMedia[] };
+  }).__mockFixture;
+  if (!fixture) return;
+
+  const tagById = new Map(fixture.tags.map((t) => [t.id, t]));
+  tagState = fixture.tags.map((t) => ({
+    id: t.id,
+    name: t.name,
+    name_ja: t.name_ja,
+    is_category: t.is_category,
+    count: t.count,
+    kind: t.kind,
+  }));
+  mediaState = fixture.media.map((m) => {
+    const fileName = `fixture_${m.file_index}.${m.extension}`;
+    return {
+      id: m.id,
+      file_path: `mock-asset://${fileName}`,
+      parent_folder: `folder_${m.folder_index}`,
+      thumbnail_path: `mock-asset://${fileName}`,
+      file_size: 200_000,
+      analysis_status: m.analysis_status as MediaItem["analysis_status"],
+      consecutive_failures: 0,
+      needs_attention: false,
+      excluded: false,
+      categories: m.category_ids.map((id) => tagById.get(id)?.name ?? `tag_${id}`),
+      tags: m.tag_ids.map((id) => {
+        const t = tagById.get(id);
+        return { name: t?.name ?? `tag_${id}`, name_ja: t?.name_ja, kind: t?.kind ?? 'basic' };
+      }),
+    };
+  });
+})();
+
 let settingsState: Record<string, string> = { ...MOCK_SETTINGS };
 let scanFoldersState = MOCK_SCAN_FOLDERS.map((f) => ({ ...f }));
 let scanning = false;
