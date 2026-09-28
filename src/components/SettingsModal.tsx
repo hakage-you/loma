@@ -1,12 +1,11 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar, Eye, EyeOff } from 'lucide-react';
+import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Eye, EyeOff } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   RECOMMENDED_VLM_MODELS,
   RECOMMENDED_TEXT_MODELS,
-  RECOMMENDED_EMBEDDING_MODELS,
   RecommendedModel,
 } from '../constants/recommendedModels';
 import { resolveInstalledModel } from '../utils/modelMatch';
@@ -14,11 +13,6 @@ import {
   OllamaPullProgressPayload,
   TagGranularity,
   GranularityComparisonItem,
-  EmbeddingStatus,
-  EmbeddingProgressPayload,
-  EmbeddingDiagnostics,
-  EmbeddingStorageInfo,
-  EmbeddingCleanupResult,
   SettingEntry,
   ApiKeyEntry,
   SaveSettingsResult,
@@ -26,9 +20,7 @@ import {
 import { useTranslation } from '../contexts/I18nContext';
 import { useEscapeToClose } from '../hooks/useEscapeToClose';
 import { ask } from '@tauri-apps/plugin-dialog';
-import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
 import { TooltipHelp } from './TooltipHelp';
-import { runBackground, runExclusive } from '../hooks/useBusy';
 import { GRANULARITY_LEVELS } from '../constants/granularityLevels';
 import { GranularityCompareModal } from './settings/GranularityCompareModal';
 import {
@@ -36,7 +28,9 @@ import {
   DiscardEmbeddingsDialog,
   SwitchEmbeddingModelDialog,
 } from './settings/SettingsConfirmDialogs';
-import { ModelPresetCards, EmbeddingPresetCards } from './settings/ModelPresetCards';
+import { ModelPresetCards } from './settings/ModelPresetCards';
+import { useEmbeddingSettings } from '../hooks/useEmbeddingSettings';
+import { SpectrumSettingsSection } from './settings/SpectrumSettingsSection';
 
 interface SettingsModalProps {
   open: boolean;
@@ -93,39 +87,25 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareImagePath, setCompareImagePath] = useState<string | null>(null);
 
-  // 概念スペクトラム検索（タグ埋め込み）
-  const [embeddingModel, setEmbeddingModel] = useState(settings.spectrum_embedding_model || 'bge-m3');
-  const [spectrumIncludeDescriptive, setSpectrumIncludeDescriptive] = useState<boolean>(
-    settings.spectrum_include_descriptive === 'true',
-  );
-  const [spectrumCentering, setSpectrumCentering] = useState<boolean>(settings.spectrum_centering !== 'false');
-  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
-  const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgressPayload | null>(null);
-  const [isGeneratingEmbeddings, setIsGeneratingEmbeddings] = useState(false);
-  const [embeddingError, setEmbeddingError] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<EmbeddingDiagnostics | null>(null);
-  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
-  const [storageInfo, setStorageInfo] = useState<EmbeddingStorageInfo | null>(null);
-  const [isCleaningUp, setIsCleaningUp] = useState(false);
-  /** 削除・破棄の実行結果。件数と解放量を出さないと、押しても何が起きたか分からない */
-  const [cleanupResult, setCleanupResult] = useState<EmbeddingCleanupResult | null>(null);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // 概念スペクトラム検索（タグ埋め込み）。
+  // 生成・計測・削除・破棄という実行を伴い、それぞれ進捗と結果を持つので別のフックにしてある。
+  // **画面側の名前は変えていない**（useEmbeddingSettings 側の名前に読み替えるだけ）
+  const emb = useEmbeddingSettings(settings);
+  // 区画の外（保存する値の組み立て・確認ダイアログ・開いたときの取得）で使うものだけ取り出す。
+  // 区画の中で使うものは `emb` ごと SpectrumSettingsSection に渡す
+  const {
+    embeddingModel,
+    setEmbeddingModel,
+    includeDescriptive: spectrumIncludeDescriptive,
+    centering: spectrumCentering,
+    storageInfo,
+    confirmDiscard,
+    refreshStatus: refreshEmbeddingStatus,
+    syncFromSettings: syncEmbeddingFromSettings,
+    discard: handleDiscardEmbeddings,
+  } = emb;
   /** 埋め込みモデルを切り替えて保存しようとしたときの確認 */
   const [confirmModelSwitch, setConfirmModelSwitch] = useState<{ from: string; to: string } | null>(null);
-
-  const refreshEmbeddingStatus = async () => {
-    try {
-      setEmbeddingStatus(await invoke<EmbeddingStatus>('get_embedding_status'));
-    } catch (e) {
-      setEmbeddingError(String(e));
-    }
-    try {
-      setStorageInfo(await invoke<EmbeddingStorageInfo>('get_embedding_storage_info'));
-    } catch {
-      // 保存領域の情報は補助的なので、取れなくても他の表示は続ける
-      setStorageInfo(null);
-    }
-  };
 
   // System VRAM
   const [vramGb, setVramGb] = useState<number | null>(null);
@@ -210,10 +190,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (settings.force_detailed_prompt !== undefined) setForceDetailedPrompt(settings.force_detailed_prompt === 'true');
     if (settings.tag_granularity) setTagGranularity(settings.tag_granularity as TagGranularity);
 
-    if (settings.spectrum_embedding_model) setEmbeddingModel(settings.spectrum_embedding_model);
-    if (settings.spectrum_include_descriptive !== undefined)
-      setSpectrumIncludeDescriptive(settings.spectrum_include_descriptive === 'true');
-    if (settings.spectrum_centering !== undefined) setSpectrumCentering(settings.spectrum_centering !== 'false');
+    syncEmbeddingFromSettings(settings);
 
     if (settings.gemini_model) setGeminiModel(settings.gemini_model);
     if (settings.gemini_text_model) setGeminiTextModel(settings.gemini_text_model);
@@ -554,89 +531,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
     } else {
       setConfirmDownloadModal({ model: item, targetType });
-    }
-  };
-
-  /**
-   * 未ベクトル化タグを一括生成する。
-   * スキャン・タグマージと同じグローバルロックを共有するため、実行中は他の処理が弾かれる。
-   */
-  const handleGenerateEmbeddings = async () => {
-    setEmbeddingError(null);
-    setCleanupResult(null);
-    setIsGeneratingEmbeddings(true);
-    setEmbeddingProgress({ total: 0, current: 0, status: 'running' });
-    const unlistenPromise = listen<EmbeddingProgressPayload>('embedding_progress', (event) => {
-      setEmbeddingProgress(event.payload);
-    });
-    try {
-      await runBackground(() => invoke('generate_tag_embeddings'));
-      await refreshEmbeddingStatus();
-    } catch (e) {
-      setEmbeddingError(String(e));
-    } finally {
-      setIsGeneratingEmbeddings(false);
-      unlistenPromise.then((unlisten) => unlisten());
-    }
-  };
-
-  /** 使用中でないモデルのベクトルを削除する。自動では走らない（明示操作のみ） */
-  const handleCleanupEmbeddings = async () => {
-    setIsCleaningUp(true);
-    setEmbeddingError(null);
-    setCleanupResult(null);
-    try {
-      setCleanupResult(
-        await runExclusive('processing_embeddings', () =>
-          invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings')
-        )
-      );
-      await refreshEmbeddingStatus();
-    } catch (e) {
-      setEmbeddingError(String(e));
-    } finally {
-      setIsCleaningUp(false);
-    }
-  };
-
-  const handleRunDiagnostics = async () => {
-    setDiagnosticsLoading(true);
-    setEmbeddingError(null);
-    try {
-      // 画面上のトグルをそのまま渡す。保存済みの値で測ると、切り替えても
-      // 結果が変わらず「効いていない」ように見える。
-      // この2つはタグのベクトルに影響しないので、その場で測り直せる。
-      setDiagnostics(
-        await invoke<EmbeddingDiagnostics>('get_embedding_diagnostics', {
-          centering: spectrumCentering,
-          includeDescriptive: spectrumIncludeDescriptive,
-        }),
-      );
-    } catch (e) {
-      setEmbeddingError(String(e));
-      setDiagnostics(null);
-    } finally {
-      setDiagnosticsLoading(false);
-    }
-  };
-
-  /** 使用中のモデルのベクトルを破棄する（作り直したいとき用）。取り返しがつかないので確認を取る */
-  const handleDiscardEmbeddings = async () => {
-    setIsCleaningUp(true);
-    setEmbeddingError(null);
-    setCleanupResult(null);
-    setConfirmDiscard(false);
-    try {
-      setCleanupResult(
-        await runExclusive('processing_embeddings', () => invoke<EmbeddingCleanupResult>('discard_embeddings'))
-      );
-      await refreshEmbeddingStatus();
-      // 破棄後の分布を出したままにすると、消えたデータの結果を見せ続けることになる
-      setDiagnostics(null);
-    } catch (e) {
-      setEmbeddingError(String(e));
-    } finally {
-      setIsCleaningUp(false);
     }
   };
 
@@ -1303,251 +1197,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     </button>
                   </div>
                 )}
-                {/* 概念スペクトラム検索（タグ埋め込み） */}
-                <div className="pt-3 border-t border-white/5">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Radar className="w-3.5 h-3.5 text-indigo-400" />
-                    <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.label_spectrum_section', '似ているメディアの検索（タグのベクトル化）')}
-                    </label>
-                    <TooltipHelp
-                      text={t(
-                        'settings.spectrum_help',
-                        'タグの意味をベクトル化し、タグが完全一致しなくても意味的に近いメディアを探せるようにします。ベクトル化は手動で実行する必要があり、スキャン処理には影響しません。',
-                      )}
-                    />
-                  </div>
-
-                  <select
-                    value={embeddingModel}
-                    onChange={(e) => setEmbeddingModel(e.target.value)}
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
-                  >
-                    {availableModels.length === 0 ? (
-                      <option value={embeddingModel}>{embeddingModel} (Current)</option>
-                    ) : (
-                      [...new Set([embeddingModel, ...availableModels])].map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))
-                    )}
-                  </select>
-
-                  {/* 推奨埋め込みモデル */}
-                  <EmbeddingPresetCards
-                    models={RECOMMENDED_EMBEDDING_MODELS}
-                    availableModels={availableModels}
-                    selectedModel={embeddingModel}
-                    onSelect={(item) => handleSelectPreset(item, 'embedding')}
-                  />
-
-                  {/* 現在の状態 */}
-                  {embeddingStatus && (
-                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1">
-                      <div className="flex flex-wrap gap-x-4 gap-y-1">
-                        <span>
-                          {t('settings.label_spectrum_embedded', 'ベクトル化済みタグ')}: {embeddingStatus.embedded_tags} /{' '}
-                          {embeddingStatus.total_tags}
-                        </span>
-                        <span className={embeddingStatus.missing_tags > 0 ? 'text-amber-300' : ''}>
-                          {t('settings.label_spectrum_missing', '未生成')}: {embeddingStatus.missing_tags}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-400">
-                        <span>
-                          {t('settings.label_spectrum_eligible', '検索対象メディア')}: {embeddingStatus.eligible_media}
-                        </span>
-                        {/* タグ不足で対象外になるメディアを黙って隠さない */}
-                        <span>
-                          {t('settings.label_spectrum_excluded', 'タグ')}
-                          {embeddingStatus.min_basic_tags}
-                          {t('settings.label_spectrum_excluded_suffix', '個未満で対象外')}: {embeddingStatus.excluded_media}
-                        </span>
-                      </div>
-                      {!embeddingStatus.model_available && (
-                        <div className="text-amber-300 flex items-start gap-1.5 pt-1">
-                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
-                          <span>
-                            {t(
-                              'settings.spectrum_model_missing',
-                              'このモデルは Ollama に導入されていません。上のカードから取得してください。',
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* 生成 */}
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleGenerateEmbeddings}
-                      disabled={isGeneratingEmbeddings || !embeddingStatus || embeddingStatus.missing_tags === 0}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-[11px] font-semibold transition cursor-pointer"
-                    >
-                      {isGeneratingEmbeddings ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                      {t('settings.label_spectrum_generate', '未生成のタグをベクトル化')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRunDiagnostics}
-                      disabled={diagnosticsLoading || isGeneratingEmbeddings}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                    >
-                      {diagnosticsLoading ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <FlaskConical className="w-3.5 h-3.5 text-indigo-400" />
-                      )}
-                      {t('settings.label_spectrum_diagnostics', '類似度分布を計測')}
-                    </button>
-                    {isGeneratingEmbeddings && embeddingProgress && embeddingProgress.total > 0 && (
-                      <span className="text-[11px] text-slate-400 tabular-nums">
-                        {embeddingProgress.current} / {embeddingProgress.total}
-                      </span>
-                    )}
-                  </div>
-
-                  {embeddingError && (
-                    <div className="mt-2 p-2 rounded-lg bg-red-950/40 border border-red-500/30 text-[11px] text-red-200">
-                      {embeddingError}
-                    </div>
-                  )}
-
-                  {/* 削除・破棄の結果。件数と解放量を出さないと、消えたのかどうかが分からない */}
-                  {cleanupResult && (
-                    <div className="mt-2 p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-200 flex items-start gap-1.5">
-                      <Check className="w-3.5 h-3.5 shrink-0 mt-px text-emerald-400" />
-                      <span>
-                        {cleanupResult.deleted_rows > 0 ? (
-                          <>
-                            {t('settings.spectrum_cleanup_done', '{rows}件のベクトルを削除しました（{size} MB）。', {
-                              rows: cleanupResult.deleted_rows,
-                              size: (cleanupResult.freed_bytes / 1e6).toFixed(1),
-                            })}{' '}
-                            {/* VACUUM が走らないとファイルは縮まない。DB のサイズを見て「削除が失敗した」と
-                                読まれるのを防ぐため、縮んだかどうかを必ず添える */}
-                            {cleanupResult.vacuumed
-                              ? t('settings.spectrum_cleanup_vacuumed', 'DBファイルも縮んでいます。')
-                              : t(
-                                  'settings.spectrum_cleanup_not_vacuumed',
-                                  'DBファイルはまだ縮んでいません。空いた領域は次にベクトルを作り直すときに再利用されます。',
-                                )}
-                          </>
-                        ) : (
-                          t('settings.spectrum_cleanup_none', '削除するベクトルはありませんでした。')
-                        )}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* 実験用トグル。ベクトルには影響しないので、切り替えたら
-                      そのまま「類似度分布を計測」で比較できる（保存も再生成も不要） */}
-                  <div className="mt-3 space-y-2">
-                    <p className="text-[10px] text-slate-500 leading-relaxed">
-                      {t(
-                        'settings.spectrum_toggle_note',
-                        '下の2つはタグのベクトルに影響しません。切り替えてから「類似度分布を計測」を押すと、保存せずにその場で比較できます。',
-                      )}
-                    </p>
-                    <label className="flex items-start gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={spectrumCentering}
-                        onChange={(e) => setSpectrumCentering(e.target.checked)}
-                        className="mt-0.5 accent-indigo-500"
-                      />
-                      <span className="text-[11px] text-slate-300">
-                        {t('settings.label_spectrum_centering', 'ハブ化対策 (centering) を有効にする')}
-                        <span className="block text-[10px] text-slate-500">
-                          {t(
-                            'settings.spectrum_centering_help',
-                            'OFFにすると、タグ本数の多いメディアが何とでも似ていると判定されやすくなります。',
-                          )}
-                        </span>
-                      </span>
-                    </label>
-                    <label className="flex items-start gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={spectrumIncludeDescriptive}
-                        onChange={(e) => setSpectrumIncludeDescriptive(e.target.checked)}
-                        className="mt-0.5 accent-indigo-500"
-                      />
-                      <span className="text-[11px] text-slate-300">
-                        {t('settings.label_spectrum_descriptive', '記述的タグも類似度計算に含める')}
-                        <span className="block text-[10px] text-slate-500">
-                          {t(
-                            'settings.spectrum_descriptive_help',
-                            'ONにすると、高精度モデルで解析したメディア同士が優先的に似ていると判定される場合があります。',
-                          )}
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-
-                  {/* 保存領域とGC */}
-                  {storageInfo && storageInfo.models.length > 0 && (
-                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] space-y-1.5">
-                      <div className="text-slate-400">{t('settings.label_spectrum_storage', 'ベクトルの保存量')}</div>
-                      {storageInfo.models.map((m) => (
-                        <div key={m.model} className="flex items-center gap-2 text-slate-300">
-                          <span className="font-mono truncate flex-1">{m.model}</span>
-                          {m.in_use && (
-                            <span className="px-1.5 py-0.5 rounded bg-indigo-600/40 text-indigo-200 text-[9px] font-bold shrink-0">
-                              {t('settings.label_spectrum_in_use', '使用中')}
-                            </span>
-                          )}
-                          <span className="tabular-nums text-slate-400 shrink-0">
-                            {m.tag_count} / {storageInfo.total_tags}
-                          </span>
-                          <span className="tabular-nums text-slate-400 shrink-0 w-16 text-right">
-                            {(m.bytes / 1e6).toFixed(1)} MB
-                          </span>
-                        </div>
-                      ))}
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {storageInfo.reclaimable_bytes > 0 && (
-                          <button
-                            type="button"
-                            onClick={handleCleanupEmbeddings}
-                            disabled={isCleaningUp || isGeneratingEmbeddings}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                          >
-                            {isCleaningUp ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-3.5 h-3.5 text-slate-400" />
-                            )}
-                            {t('settings.label_spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
-                            {(storageInfo.reclaimable_bytes / 1e6).toFixed(1)} MB)
-                          </button>
-                        )}
-                        {/* 使用中のモデルを作り直したいとき用。GC では消えない */}
-                        {storageInfo.models.some((m) => m.in_use) && (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDiscard(true)}
-                            disabled={isCleaningUp || isGeneratingEmbeddings}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-                            {t('settings.label_spectrum_discard', '使用中のモデルのベクトルを破棄して作り直す')}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 計測結果。生の数値だけでは評価できないため、判定と次の一手を添える */}
-                  {diagnostics && <EmbeddingDiagnosticsPanel d={diagnostics} />}
-                </div>
+                <SpectrumSettingsSection
+                  emb={emb}
+                  availableModels={availableModels}
+                  onSelectPreset={handleSelectPreset}
+                />
               </div>
             )}
           </div>
@@ -1602,7 +1256,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
 
       <DiscardEmbeddingsDialog
         open={confirmDiscard}
-        onCancel={() => setConfirmDiscard(false)}
+        onCancel={() => emb.setConfirmDiscard(false)}
         onConfirm={handleDiscardEmbeddings}
         currentModel={storageInfo?.current_model}
       />
