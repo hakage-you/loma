@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar, Eye, EyeOff } from 'lucide-react';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar, Eye, EyeOff } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
@@ -8,9 +8,8 @@ import {
   RECOMMENDED_TEXT_MODELS,
   RECOMMENDED_EMBEDDING_MODELS,
   RecommendedModel,
-  badgeLabelKey,
 } from '../constants/recommendedModels';
-import { resolveInstalledModel, isModelInstalled } from '../utils/modelMatch';
+import { resolveInstalledModel } from '../utils/modelMatch';
 import {
   OllamaPullProgressPayload,
   TagGranularity,
@@ -30,6 +29,14 @@ import { ask } from '@tauri-apps/plugin-dialog';
 import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
 import { TooltipHelp } from './TooltipHelp';
 import { runBackground, runExclusive } from '../hooks/useBusy';
+import { GRANULARITY_LEVELS } from '../constants/granularityLevels';
+import { GranularityCompareModal } from './settings/GranularityCompareModal';
+import {
+  ConfirmDownloadDialog,
+  DiscardEmbeddingsDialog,
+  SwitchEmbeddingModelDialog,
+} from './settings/SettingsConfirmDialogs';
+import { ModelPresetCards, EmbeddingPresetCards } from './settings/ModelPresetCards';
 
 interface SettingsModalProps {
   open: boolean;
@@ -46,36 +53,7 @@ interface SettingsModalProps {
 }
 
 
-// Precise selected model matching helper (strictly checks size tag e.g. 30b vs 8b vs 4b)
-const isModelSelected = (recommendedName: string, selectedModel: string): boolean => {
-  if (!selectedModel) return false;
-  const rec = recommendedName.toLowerCase().trim();
-  const sel = selectedModel.toLowerCase().trim();
-  if (rec === sel) return true;
 
-  const recParts = rec.split(':');
-  const selParts = sel.split(':');
-
-  const recBase = recParts[0];
-  const selBase = selParts[0];
-  const recTag = recParts[1] || '';
-  const selTag = selParts[1] || '';
-
-  if (recBase === selBase) {
-    if (recTag && selTag) {
-      return recTag === selTag || selTag.startsWith(recTag) || recTag.startsWith(selTag);
-    }
-    return !recTag && !selTag;
-  }
-  return false;
-};
-
-// タグ付与粒度レベルの定義（基本語タグは常に5〜10個で固定、記述的タグのみレベルで変動する）
-const GRANULARITY_LEVELS: { value: TagGranularity; labelKey: string; labelDefault: string; descriptiveRange: string }[] = [
-  { value: 'atomic', labelKey: 'settings.label_granularity_atomic', labelDefault: 'Lv1: 分解重視（現行）', descriptiveRange: '基本語タグ 5〜10個 / 記述的タグなし' },
-  { value: 'balanced', labelKey: 'settings.label_granularity_balanced', labelDefault: 'Lv2: バランス', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 1〜3個' },
-  { value: 'descriptive', labelKey: 'settings.label_granularity_descriptive', labelDefault: 'Lv3: 記述重視', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 3〜6個' },
-];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
@@ -114,7 +92,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   });
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareImagePath, setCompareImagePath] = useState<string | null>(null);
-  const [compareImageEnlarged, setCompareImageEnlarged] = useState(false);
 
   // 概念スペクトラム検索（タグ埋め込み）
   const [embeddingModel, setEmbeddingModel] = useState(settings.spectrum_embedding_model || 'bge-m3');
@@ -1009,79 +986,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </span>
                     )}
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {RECOMMENDED_VLM_MODELS.map((item) => {
-                      const isInstalled = isModelInstalled(item.name, availableModels);
-                      const isSelected = isModelSelected(item.name, selectedVlmModel);
-                      const isBestMatch = bestVlmName !== null && item.name === bestVlmName;
-
-                      const badgeColor =
-                        item.badge === 'Lightweight'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                          : item.badge === 'Standard'
-                            ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
-                            : 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-
-                      return (
-                        <div
-                          key={item.name}
-                          onClick={() => handleSelectPreset(item, 'vlm')}
-                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition flex flex-col justify-between relative overflow-hidden ${
-                            isBestMatch
-                              ? 'bg-indigo-950/80 border-indigo-500 shadow-xl shadow-indigo-500/20 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : isSelected
-                              ? 'bg-indigo-950/60 border-indigo-500/60 shadow-lg shadow-indigo-500/10 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center justify-between gap-1 mb-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badgeColor}`}>
-                                  {t(badgeLabelKey(item.badge), item.badge)}
-                                </span>
-                                {isBestMatch && (
-                                  <span className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                    {t('settings.label_recommended_vram_best', '★ VRAM適合のおすすめ')}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono shrink-0">{item.size}</span>
-                            </div>
-                            <div className="text-xs font-bold text-white font-mono mt-0.5">{item.name}</div>
-                            <p className="text-[10px] text-slate-400 mt-1 line-clamp-2 leading-tight">
-                              {t(item.descriptionKey, item.descriptionDefault)}
-                            </p>
-                          </div>
-
-                          <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between">
-                            {loadingModels ? (
-                              <span className="text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> {t('settings.label_loading', 'Loading...')}
-                              </span>
-                            ) : isDownloading && downloadProgress?.model === item.name ? (
-                              <span className="text-[10px] font-medium text-amber-400 flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> {t('settings.label_installing', 'Installing...')}
-                              </span>
-                            ) : isInstalled ? (
-                              <span className="text-[10px] font-medium text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> {t('settings.label_installed', 'Installed')}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
-                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
-                              </span>
-                            )}
-                            {isSelected && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-indigo-600 text-white rounded font-bold">
-                                {t('settings.label_selected', 'Selected')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ModelPresetCards
+                    models={RECOMMENDED_VLM_MODELS}
+                    availableModels={availableModels}
+                    selectedModel={selectedVlmModel}
+                    bestMatchName={bestVlmName}
+                    loadingModels={loadingModels}
+                    downloadingModel={isDownloading ? (downloadProgress?.model ?? null) : null}
+                    onSelect={(item) => handleSelectPreset(item, 'vlm')}
+                  />
                 </div>
               </div>
 
@@ -1118,79 +1031,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {t('settings.label_preset_text', 'Recommended text LLM presets (click to select / auto-download)')}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {RECOMMENDED_TEXT_MODELS.map((item) => {
-                      const isInstalled = isModelInstalled(item.name, availableModels);
-                      const isSelected = isModelSelected(item.name, selectedTextModel);
-                      const isBestMatch = bestTextName !== null && item.name === bestTextName;
-
-                      const badgeColor =
-                        item.badge === 'Lightweight'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                          : item.badge === 'Standard'
-                            ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
-                            : 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-
-                      return (
-                        <div
-                          key={item.name}
-                          onClick={() => handleSelectPreset(item, 'text')}
-                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition flex flex-col justify-between relative overflow-hidden ${
-                            isBestMatch
-                              ? 'bg-indigo-950/80 border-indigo-500 shadow-xl shadow-indigo-500/20 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : isSelected
-                              ? 'bg-indigo-950/60 border-indigo-500/60 shadow-lg shadow-indigo-500/10 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center justify-between gap-1 mb-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badgeColor}`}>
-                                  {t(badgeLabelKey(item.badge), item.badge)}
-                                </span>
-                                {isBestMatch && (
-                                  <span className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                    {t('settings.label_recommended_vram_best', '★ VRAM適合のおすすめ')}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono shrink-0">{item.size}</span>
-                            </div>
-                            <div className="text-xs font-bold text-white font-mono mt-0.5">{item.name}</div>
-                            <p className="text-[10px] text-slate-400 mt-1 line-clamp-2 leading-tight">
-                              {t(item.descriptionKey, item.descriptionDefault)}
-                            </p>
-                          </div>
-
-                          <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between">
-                            {loadingModels ? (
-                              <span className="text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> {t('settings.label_loading', 'Loading...')}
-                              </span>
-                            ) : isDownloading && downloadProgress?.model === item.name ? (
-                              <span className="text-[10px] font-medium text-amber-400 flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> {t('settings.label_installing', 'Installing...')}
-                              </span>
-                            ) : isInstalled ? (
-                              <span className="text-[10px] font-medium text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> {t('settings.label_installed', 'Installed')}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
-                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
-                              </span>
-                            )}
-                            {isSelected && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-indigo-600 text-white rounded font-bold">
-                                {t('settings.label_selected', 'Selected')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ModelPresetCards
+                    models={RECOMMENDED_TEXT_MODELS}
+                    availableModels={availableModels}
+                    selectedModel={selectedTextModel}
+                    bestMatchName={bestTextName}
+                    loadingModels={loadingModels}
+                    downloadingModel={isDownloading ? (downloadProgress?.model ?? null) : null}
+                    onSelect={(item) => handleSelectPreset(item, 'text')}
+                  />
                 </div>
               </div>
             </div>
@@ -1486,40 +1335,12 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   </select>
 
                   {/* 推奨埋め込みモデル */}
-                  <div className="grid grid-cols-3 gap-2 mt-2">
-                    {RECOMMENDED_EMBEDDING_MODELS.map((item) => {
-                      const isInstalled = isModelInstalled(item.name, availableModels);
-                      const isSelected = isModelSelected(item.name, embeddingModel);
-                      return (
-                        <div
-                          key={item.name}
-                          onClick={() => handleSelectPreset(item, 'embedding')}
-                          className={`p-2 rounded-xl border cursor-pointer transition ${
-                            isSelected
-                              ? 'bg-indigo-950/60 border-indigo-500/60'
-                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[9px] font-bold text-slate-400">{t(badgeLabelKey(item.badge), item.badge)}</span>
-                            <span className="text-[10px] text-slate-500 font-mono">{item.size}</span>
-                          </div>
-                          <div className="text-[11px] font-bold text-white font-mono truncate mt-0.5">{item.name}</div>
-                          <div className="mt-1 text-[10px]">
-                            {isInstalled ? (
-                              <span className="text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> {t('settings.label_present', 'Present')}
-                              </span>
-                            ) : (
-                              <span className="text-indigo-400 flex items-center gap-1">
-                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <EmbeddingPresetCards
+                    models={RECOMMENDED_EMBEDDING_MODELS}
+                    availableModels={availableModels}
+                    selectedModel={embeddingModel}
+                    onSelect={(item) => handleSelectPreset(item, 'embedding')}
+                  />
 
                   {/* 現在の状態 */}
                   {embeddingStatus && (
@@ -1779,293 +1600,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
       </div>
 
-      {/* ベクトル破棄の確認。取り返しがつかない操作なので必ず通す */}
-      {confirmDiscard && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-amber-500/20 text-amber-300 rounded-xl border border-amber-500/30">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h4 className="text-base font-bold text-white">
-                  {t('settings.label_spectrum_discard_title', 'ベクトルを破棄しますか')}
-                </h4>
-                <p className="text-xs text-slate-300 font-mono truncate">{storageInfo?.current_model}</p>
-              </div>
-            </div>
-            <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
-              <li>
-                {t('settings.item_spectrum_discard_regen', '破棄後は「未生成のタグをベクトル化」で作り直す必要があります')}
-              </li>
-              <li>
-                {t('settings.item_spectrum_discard_note', 'centering と記述的タグの設定を変えるだけなら破棄は不要です。設定を変えて「類似度分布を計測」を押せばその場で反映されます')}
-              </li>
-            </ul>
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                onClick={() => setConfirmDiscard(false)}
-                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_switch_cancel', 'やめる')}
-              </button>
-              <button
-                onClick={handleDiscardEmbeddings}
-                className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_discard_ok', '破棄する')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DiscardEmbeddingsDialog
+        open={confirmDiscard}
+        onCancel={() => setConfirmDiscard(false)}
+        onConfirm={handleDiscardEmbeddings}
+        currentModel={storageInfo?.current_model}
+      />
 
-      {/* 埋め込みモデル切り替えの確認 */}
-      {confirmModelSwitch && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-500/20 text-indigo-300 rounded-xl border border-indigo-500/30">
-                <Radar className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h4 className="text-base font-bold text-white">
-                  {t('settings.label_spectrum_switch_title', '埋め込みモデルの切り替え')}
-                </h4>
-                <p className="text-xs text-slate-300 font-mono truncate">
-                  {confirmModelSwitch.from} → {confirmModelSwitch.to}
-                </p>
-              </div>
-            </div>
+      <SwitchEmbeddingModelDialog
+        target={confirmModelSwitch}
+        onCancel={() => setConfirmModelSwitch(null)}
+        onConfirm={doSave}
+        storageInfo={storageInfo}
+      />
 
-            <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
-              <li>
-                {t('settings.item_spectrum_switch_regen', '再ベクトル化が必要です')}:{' '}
-                {Math.max(
-                  0,
-                  (storageInfo?.total_tags ?? 0) -
-                    (storageInfo?.models.find((m) => m.model === confirmModelSwitch.to)?.tag_count ?? 0),
-                )}{' '}
-                {t('settings.label_spectrum_switch_tags', '件')}
-              </li>
-              <li>{t('settings.item_spectrum_switch_scores', '表示される類似度の数値が変わります')}</li>
-              {/* 「戻せば復元される」と伝えるので、GC は自動で走らせない */}
-              <li>
-                {t(
-                  'settings.item_spectrum_switch_kept',
-                  '以前のモデルのベクトルは保持され、モデルを戻せば即座に復元されます',
-                )}
-              </li>
-            </ul>
+      <ConfirmDownloadDialog
+        model={confirmDownloadModal?.model ?? null}
+        onCancel={() => setConfirmDownloadModal(null)}
+        onConfirm={handleStartDownload}
+      />
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                onClick={() => setConfirmModelSwitch(null)}
-                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_switch_cancel', 'やめる')}
-              </button>
-              <button
-                onClick={doSave}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_switch_ok', '切り替えて保存')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Modal for Downloading Ollama Model */}
-      {confirmDownloadModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-500/20 text-indigo-400 rounded-xl border border-indigo-500/30">
-                <Download className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-base font-bold text-white">{t('settings.label_confirm_download', 'Confirm model download')}</h4>
-                <p className="text-xs text-slate-400">{t('settings.confirm_download_body', '')}</p>
-              </div>
-            </div>
-
-            <div className="p-3 bg-slate-950/60 rounded-xl border border-white/5 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-bold text-indigo-300 font-mono">{confirmDownloadModal.model.name}</span>
-                <span className="text-xs font-mono px-2 py-0.5 bg-indigo-500/20 text-indigo-300 rounded-md">
-                  {confirmDownloadModal.model.size}
-                </span>
-              </div>
-              <p className="text-xs text-slate-300">{t(confirmDownloadModal.model.descriptionKey, confirmDownloadModal.model.descriptionDefault)}</p>
-            </div>
-
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              {t('settings.download_note_1', '')}<br />
-              {t('settings.download_note_2', '')}
-            </p>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                onClick={() => setConfirmDownloadModal(null)}
-                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-300 transition cursor-pointer"
-              >
-                {t('settings.label_btn_cancel', 'Cancel')}
-              </button>
-              <button
-                onClick={handleStartDownload}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                {t('settings.label_btn_start_download', 'Start download')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Granularity Comparison Modal (verification tool) */}
-      {compareModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-3xl w-full p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3 min-w-0">
-                {compareImagePath ? (
-                  <button
-                    onClick={() => setCompareImageEnlarged(true)}
-                    className="shrink-0 w-14 h-14 rounded-xl overflow-hidden border border-indigo-500/30 hover:border-indigo-400 transition cursor-pointer group relative"
-                    title={t('settings.label_title_zoom', 'Click to enlarge')}
-                  >
-                    <img
-                      src={convertFileSrc(compareImagePath)}
-                      alt={t('settings.label_alt_preview', 'Preview of the target')}
-                      className="w-full h-full object-cover group-hover:scale-105 transition"
-                    />
-                  </button>
-                ) : (
-                  <div className="p-2.5 bg-indigo-500/20 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
-                    <FlaskConical className="w-5 h-5" />
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <h4 className="text-base font-bold text-white">{t('settings.label_granularity_try', '粒度を試す（画像を選択）')}</h4>
-                  <p className="text-xs text-slate-400 truncate" title={compareImagePath || undefined}>
-                    {compareImagePath ? compareImagePath.split(/[/\\]/).pop() : t('settings.compare_hint', '')}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setCompareModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer shrink-0"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {compareError && (
-              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">
-                ⚠️ {compareError}
-              </div>
-            )}
-
-            {!compareError && (
-              <>
-                <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                  <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${Object.values(compareProgress).some((s) => s === 'running') ? 'animate-spin' : ''}`} />
-                  <span>
-                    {Object.values(compareProgress).filter((s) => s === 'done').length} /{' '}
-                    {GRANULARITY_LEVELS.length} {t('settings.label_done', 'done')}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {GRANULARITY_LEVELS.map((level) => {
-                    const status = compareProgress[level.value];
-                    const item = compareResults.find((r) => r.granularity === level.value);
-                    return (
-                      <div key={level.value} className="p-3 bg-slate-950/60 rounded-xl border border-white/5 space-y-2 min-h-[110px]">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-indigo-300">
-                            {t(level.labelKey, level.labelDefault)}
-                          </span>
-                          {status === 'running' && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
-                          {status === 'done' && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                          {status === 'pending' && <span className="text-[10px] text-slate-500">{t('settings.label_waiting', 'Waiting')}</span>}
-                        </div>
-
-                        {status !== 'done' && (
-                          <div className="flex items-center justify-center py-6 text-[11px] text-slate-500">
-                            {status === 'running' ? t('settings.label_analyzing', 'Analyzing...') : t('settings.label_waiting_dots', 'Waiting...')}
-                          </div>
-                        )}
-
-                        {status === 'done' && item?.error && (
-                          <p className="text-[11px] text-rose-300">⚠️ {item.error}</p>
-                        )}
-
-                        {status === 'done' && item && !item.error && (
-                          <>
-                            <div className="flex flex-wrap gap-1">
-                              {item.categories.map((c) => (
-                                <span key={c} className="text-[10px] px-1.5 py-0.5 bg-slate-800 text-slate-300 rounded">
-                                  {c}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                              {item.tags.map((tag) => (
-                                <span key={tag.en} className="text-[10px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-300 rounded-full">
-                                  #{tag.ja || tag.en}
-                                </span>
-                              ))}
-                            </div>
-                            {item.descriptive_tags.length > 0 && (
-                              <div className="flex flex-wrap gap-1 pt-1 border-t border-white/5">
-                                {item.descriptive_tags.map((tag) => (
-                                  <span key={tag.en} className="text-[10px] px-1.5 py-0.5 bg-slate-800/80 text-slate-400 rounded-full border border-white/5">
-                                    {tag.ja || tag.en}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Enlarged preview of the image being compared */}
-      {compareImageEnlarged && compareImagePath && (
-        <div
-          onClick={() => setCompareImageEnlarged(false)}
-          className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer animate-in fade-in duration-150 select-none"
-        >
-          <div onClick={(e) => e.stopPropagation()} className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center">
-            <img
-              src={convertFileSrc(compareImagePath)}
-              alt={t('settings.label_alt_preview_zoom', 'Enlarged preview of the target')}
-              className="max-w-full max-h-[80vh] object-contain rounded-2xl shadow-2xl border border-white/10"
-            />
-            <div className="mt-3 flex items-center gap-3">
-              <span className="text-xs text-slate-300 font-mono bg-slate-900/80 px-3 py-1 rounded-lg border border-white/10 truncate max-w-md">
-                {compareImagePath.split(/[/\\]/).pop()}
-              </span>
-              <button
-                onClick={() => setCompareImageEnlarged(false)}
-                className="text-xs text-slate-300 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-white/10 transition cursor-pointer"
-              >
-                {t('settings.label_btn_close', 'Close')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <GranularityCompareModal
+        open={compareModalOpen}
+        onClose={() => setCompareModalOpen(false)}
+        imagePath={compareImagePath}
+        results={compareResults}
+        progress={compareProgress}
+        error={compareError}
+      />
     </div>
   );
 };
