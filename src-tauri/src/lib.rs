@@ -16,9 +16,43 @@ mod suggestion_store;
 /// タグ整理の提案生成（ルール検出以外の、明示実行の方式群）
 mod tag_organize;
 
+use std::backtrace::Backtrace;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::Manager;
+
+/// エラーの原因の連鎖を ` <- 原因` の形で並べる。
+///
+/// **`Box<dyn Error>` は表示しても一番外側しか出ない。** sqlx の
+/// 「ファイルを開けない」のような本当の原因は `source()` の先にある。
+fn error_chain(err: &dyn std::error::Error) -> String {
+    let mut out = String::new();
+    let mut cur = err.source();
+    while let Some(e) = cur {
+        out.push_str(&format!("\n  <- 原因: {e}"));
+        cur = e.source();
+    }
+    out
+}
+
+/// パニックの内容と呼び出し履歴をログファイルにも残す。
+///
+/// **既定のパニック表示は標準エラー出力にしか出ない。** 配布ビルドでは
+/// コンソールが無いので、何も分からないまま終了したように見える。
+fn install_panic_logger() {
+    let previous = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let where_ = info
+            .location()
+            .map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column()))
+            .unwrap_or_else(|| "場所不明".to_string());
+        logger::log_error(&format!(
+            "パニックで終了した ({where_}): {info}\n呼び出し履歴:\n{}",
+            Backtrace::force_capture()
+        ));
+        previous(info);
+    }));
+}
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -28,6 +62,7 @@ pub fn run() {
         .setup(|app| {
             let handle = app.handle().clone();
             logger::init_logger(&handle);
+            install_panic_logger();
             logger::log_info(&format!(
                 "===== Loma v{} started (os: {}, arch: {}) =====",
                 app.package_info().version,
@@ -35,10 +70,21 @@ pub fn run() {
                 std::env::consts::ARCH
             ));
             tauri::async_runtime::block_on(async move {
-                let pool = db::init_db(&handle)
-                    .await
-                    .expect("Failed to initialize database");
-                handle.manage(db::DbState { pool });
+                match db::init_db(&handle).await {
+                    Ok(pool) => handle.manage(db::DbState { pool }),
+                    Err(e) => {
+                        // **ここで落ちるとウィンドウが出る前に終わる。**
+                        // 標準エラー出力は配布ビルドでは誰も見られないので、
+                        // 原因の連鎖と呼び出し履歴をログファイルに残してから落とす。
+                        logger::log_error(&format!(
+                            "データベースの初期化に失敗した: {}{}\n呼び出し履歴:\n{}",
+                            e,
+                            error_chain(e.as_ref()),
+                            Backtrace::force_capture()
+                        ));
+                        panic!("Failed to initialize database: {e}");
+                    }
+                }
             });
 
             app.manage(commands::ScanState {
@@ -139,3 +185,54 @@ pub fn run() {
         });
 }
 
+
+#[cfg(test)]
+mod tests {
+    use super::error_chain;
+    use std::error::Error;
+    use std::fmt;
+
+    #[derive(Debug)]
+    struct CannotOpenFile;
+    impl fmt::Display for CannotOpenFile {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "ファイルを開けない")
+        }
+    }
+    impl Error for CannotOpenFile {}
+
+    #[derive(Debug)]
+    struct ConnectFailed(CannotOpenFile);
+    impl fmt::Display for ConnectFailed {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "接続に失敗した")
+        }
+    }
+    impl Error for ConnectFailed {
+        fn source(&self) -> Option<&(dyn Error + 'static)> {
+            Some(&self.0)
+        }
+    }
+
+    /// **一番外側だけでは何が起きたか分からない。** 内側の原因まで並ぶこと
+    #[test]
+    fn error_chain_lists_the_inner_cause() {
+        let err = ConnectFailed(CannotOpenFile);
+        let chain = error_chain(&err);
+        assert!(
+            chain.contains("ファイルを開けない"),
+            "内側の原因が出ていない: {chain}"
+        );
+        // 一番外側は呼び出し側が別に出すので、ここには含めない
+        assert!(
+            !chain.contains("接続に失敗した"),
+            "一番外側まで重ねて出している: {chain}"
+        );
+    }
+
+    /// 原因が無いエラーで空文字になること（`None` を踏んでも壊れない）
+    #[test]
+    fn error_chain_is_empty_when_there_is_no_cause() {
+        assert_eq!(error_chain(&CannotOpenFile), "");
+    }
+}

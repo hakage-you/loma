@@ -359,37 +359,6 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     []
   );
 
-  // 【一時】計測ログの解釈に要る値。**どのタブを描画したかが要る** ——
-  // タブが 'all' のときの render は一覧の行数、'suggestions' のときは提案カードの枚数を指す。
-  // reloadSuggestions の依存に足すと読み直しが走るので参照で持つ
-  const perfRef = React.useRef({ tags: 0, tab: '' as string, suggestions: 0 });
-  perfRef.current = { tags: tags.length, tab: activeTab, suggestions: suggestions.length };
-
-  /**
-   * 【一時】描画だけの計測。タブや方式のボタンで印を付け、ペイント後に経過を出す。
-   * バックエンドを挟まない切り替え（タブ）はこれでしか測れない。
-   */
-  const perfMarkRef = React.useRef<{ label: string; t0: number } | null>(null);
-  const markPerf = (label: string) => {
-    perfMarkRef.current = { label, t0: performance.now() };
-  };
-
-  useEffect(() => {
-    const mark = perfMarkRef.current;
-    if (!mark) return;
-    perfMarkRef.current = null;
-    requestAnimationFrame(() =>
-      requestAnimationFrame(() => {
-        const { tags: tagCount, tab, suggestions: sugCount } = perfRef.current;
-        console.log(
-          `[tag-perf] ${mark.label} render=${Math.round(performance.now() - mark.t0)}ms ` +
-            `tab=${tab} tags=${tagCount} suggestions=${sugCount} ` +
-            `dom=${document.querySelectorAll('.fixed.inset-0.z-50 *').length}`
-        );
-      })
-    );
-  });
-
   // **開くたびに `cleanup_missing_media` を呼んでいたのをやめた。**
   // 全メディアの `Path::exists()` を回るので冷えた状態で約3秒かかり、
   // その間ずっと提案の読み込みと DB を取り合っていた。実データでの回収は0件。
@@ -397,15 +366,10 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
 
   /** 保存済みの判定と実行状態を読み直す */
   const reloadSuggestions = React.useCallback(async () => {
-    // 【一時】暫定対処の計測用（計画 §4）。バックエンドの応答と描画を分けて出す。
-    // backend が支配的なら、残りの重さは Rust 側（build_suggestions がグループごとに
-    // 2クエリを逐次で投げている）にある
-    const t0 = performance.now();
     const [cached, status] = await Promise.all([
       invoke<MergeSuggestion[]>('load_tag_suggestions_cache', { method }),
       invoke<typeof runStatus>('get_suggestion_run_status', { method }),
     ]);
-    const backendMs = performance.now() - t0;
     setSuggestions(cached ?? []);
     const initMasterMap: Record<string, number> = {};
     (cached ?? []).forEach((s) => {
@@ -417,18 +381,11 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
     setAcceptedIds(new Set());
     setRejectedIds(new Set());
 
-    // 【一時】rAF を2段にしてペイント後まで待つ。1段目はコミット後・描画前に走るため。
-    // 読み込み中の表示も、描画が終わったここで初めて下ろす
+    // **rAF を2段にしてペイント後まで待つ。** 1段目はコミット後・描画前に走るため、
+    // ここで下ろさないと「読み込み中」が消えた後に固まって見える
     requestAnimationFrame(() =>
       requestAnimationFrame(() => {
         setLoadingSuggestions(false);
-        console.log(
-          `[tag-perf] reload:${method} backend=${Math.round(backendMs)}ms ` +
-            `render=${Math.round(performance.now() - t0 - backendMs)}ms ` +
-            `tab=${perfRef.current.tab} tags=${perfRef.current.tags} ` +
-            `suggestions=${(cached ?? []).length} ` +
-            `dom=${document.querySelectorAll('.fixed.inset-0.z-50 *').length}`
-        );
       })
     );
   }, [method]);
@@ -967,7 +924,6 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
           <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-white/5">
             <button
               onClick={() => {
-                markPerf('tab:all');
                 startTabTransition(() => setActiveTab('all'));
               }}
               className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer whitespace-nowrap ${
@@ -980,7 +936,6 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
             </button>
             <button
               onClick={() => {
-                markPerf('tab:suggestions');
                 startTabTransition(() => setActiveTab('suggestions'));
               }}
               className={`px-3 py-1 text-xs font-semibold rounded-lg transition cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
