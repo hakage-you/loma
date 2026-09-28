@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Eye, EyeOff } from 'lucide-react';
+import { Settings, RefreshCw, Check, X, Cpu, FileText, AlertTriangle, ShieldAlert, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
@@ -30,7 +30,8 @@ import {
 } from './settings/SettingsConfirmDialogs';
 import { ModelPresetCards } from './settings/ModelPresetCards';
 import { useEmbeddingSettings } from '../hooks/useEmbeddingSettings';
-import { SpectrumSettingsSection } from './settings/SpectrumSettingsSection';
+import { AdvancedSettingsSection } from './settings/AdvancedSettingsSection';
+import { CloudProviderSection } from './settings/CloudProviderSection';
 
 interface SettingsModalProps {
   open: boolean;
@@ -939,272 +940,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
           )}
 
-          {/* Provider Specific Settings (外部LLM)
-              Ollama のモデル選択と同じ位置に置く。プロバイダーを切り替えたときに
-              「モデルを選ぶ欄が消えた」ようには見せない */}
           {provider !== 'ollama' && (
-            <div className="space-y-4 p-4 bg-slate-900/50 rounded-xl border border-white/5">
-              <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Cpu className="w-3.5 h-3.5" />
-                {t('settings.label_cloud_section', 'モデルとAPIキー')}
-              </h4>
-
-              {/* OpenAI 互換エンドポイント。互換サーバーを指すために要る */}
-              {provider === 'openai' && (
-                <div>
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Server className="w-3.5 h-3.5 text-indigo-400" />
-                    <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.label_openai_base_url', 'OpenAI 互換エンドポイント URL')}
-                    </label>
-                    <TooltipHelp text={t('settings.openai_base_url_help', 'OpenAI 互換のAPIを提供するサーバーのURLです。')} />
-                  </div>
-                  <input
-                    type="text"
-                    value={openaiBaseUrl}
-                    onChange={(e) => setOpenaiBaseUrl(e.target.value)}
-                    placeholder="https://api.openai.com/v1"
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                  />
-                </div>
-              )}
-
-              {/* モデル名。一覧の取得には対応していないので直接入力させる */}
-              <div>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-                  <label className="text-xs font-semibold text-slate-300">
-                    {t('settings.label_cloud_model', '使用するモデル')}
-                  </label>
-                  <TooltipHelp text={t('settings.cloud_model_help', 'モデル一覧の取得には対応していないため、プロバイダーが公開しているモデルIDをそのまま入力してください。')} />
-                </div>
-                <input
-                  type="text"
-                  value={cloudModel}
-                  onChange={(e) => setCloudModel(e.target.value)}
-                  placeholder={CLOUD_MODEL_PLACEHOLDER[provider]}
-                  className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                />
-              </div>
-
-              {/* API キー */}
-              <div>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
-                  <label className="text-xs font-semibold text-slate-300">
-                    {t('settings.label_api_key', 'APIキー')}
-                  </label>
-                  <TooltipHelp text={t('settings.api_key_help', 'OSの資格情報ストアに保存します。設定ファイルやデータベースには書き込みません。')} />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={t('settings.label_api_key_placeholder', '未設定')}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    title={
-                      showApiKey
-                        ? t('settings.label_api_key_hide', '隠す')
-                        : t('settings.label_api_key_show', '表示する')
-                    }
-                    className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer shrink-0"
-                  >
-                    {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-
-                {/* 空欄の意味を取り違えさせない。読めなかっただけなら、保存しても消えない */}
-                {apiKeyReadFailed[provider] && (
-                  <div className="mt-2 p-2 rounded-lg bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-400" />
-                    <span>{t('settings.api_key_read_failed', '保存済みのキーを読み出せませんでした。空欄のまま保存しても消えません。入力すると上書きします。')}</span>
-                  </div>
-                )}
-              </div>
-            </div>
+            <CloudProviderSection
+              provider={provider}
+              cloudModel={cloudModel}
+              setCloudModel={setCloudModel}
+              modelPlaceholder={CLOUD_MODEL_PLACEHOLDER}
+              openaiBaseUrl={openaiBaseUrl}
+              setOpenaiBaseUrl={setOpenaiBaseUrl}
+              apiKey={apiKey}
+              setApiKey={setApiKey}
+              apiKeyReadFailed={apiKeyReadFailed}
+              showApiKey={showApiKey}
+              setShowApiKey={setShowApiKey}
+            />
           )}
 
-          {/* Advanced Settings Accordion
-              基本設定（言語・モデル選択・タグ粒度）以外はすべてここへ格納する */}
-          <div className="bg-slate-900/50 rounded-xl border border-white/5 overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((v) => !v)}
-              aria-expanded={advancedOpen}
-              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition cursor-pointer"
-            >
-              <span className="flex items-center gap-1.5 text-xs font-bold text-indigo-300 uppercase tracking-wider">
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-                {t('settings.label_advanced_section', '詳細設定')}
-              </span>
-              <ChevronDown
-                className={`w-4 h-4 text-slate-400 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
-
-            {advancedOpen && (
-              <div className="px-4 pb-4 space-y-4 border-t border-white/5 pt-4">
-                {/* LLM Provider Selection */}
-                <div>
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Server className="w-3.5 h-3.5 text-indigo-400" />
-                    <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.label_provider_label', 'LLMプロバイダー選択')}
-                    </label>
-                    <TooltipHelp text={t('settings.provider_help', 'メディアの解析やタグ生成に使用するAIエンジンを選択します。Ollamaがローカル動作の標準プロバイダーです。')} />
-                  </div>
-                  <select
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value)}
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
-                  >
-                    <option value="ollama">Ollama</option>
-                    <option value="gemini">Google Gemini API [Unsupported]</option>
-                    <option value="openai">OpenAI API [Unsupported]</option>
-                    <option value="claude">Anthropic Claude API [Unsupported]</option>
-                  </select>
-                </div>
-
-                {/* Ollama Endpoint URL */}
-                {provider === 'ollama' && (
-                  <div className="pt-3 border-t border-white/5">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <Server className="w-3.5 h-3.5 text-indigo-400" />
-                      <label className="text-xs font-semibold text-slate-300">
-                        {t('settings.label_ollama_url', 'Ollama API エンドポイント URL')}
-                      </label>
-                      <TooltipHelp text={t('settings.ollama_url_help', 'ローカルまたはリモートで稼働中のOllamaサーバーの接続URLです（デフォルト: http://localhost:11434）。')} />
-                    </div>
-                    <input
-                      type="text"
-                      value={ollamaUrl}
-                      onChange={(e) => setOllamaUrl(e.target.value)}
-                      placeholder="http://localhost:11434"
-                      className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                    />
-                  </div>
-                )}
-
-                {/* Force Detailed Prompt Mode (applies to cloud providers too) */}
-                <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                  <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={forceDetailedPrompt}
-                      onChange={(e) => setForceDetailedPrompt(e.target.checked)}
-                      className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                    />
-                    <span>{t('settings.label_force_detailed_mode', '高精度プロンプトモード (DETAILED) を強制適用する')}</span>
-                  </label>
-                  <TooltipHelp align="right" text={t('settings.force_detailed_help', '軽量モデル（8B未満など）で高精度モードを強制すると、モデルが高度な文脈指示や構造化JSONを解釈できず解析エラーの原因となる場合があります。OFF推奨（判定失敗時に自動で軽量モードへフォールバックします）。')} />
-                </div>
-
-                {/* FFmpeg Notice Toggle */}
-                <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                  <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={ffmpegNoticeEnabled}
-                      onChange={(e) => setFfmpegNoticeEnabled(e.target.checked)}
-                      className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                    />
-                    <span>{t('settings.label_ffmpeg_notice', 'FFmpeg未インストール時のアナウンス通知を表示')}</span>
-                  </label>
-                  <TooltipHelp align="right" text={t('settings.ffmpeg_notice_help', '動画解析に必要なFFmpegが見つからない場合のアナウンス通知アイコンの表示を切り替えます。')} />
-                </div>
-
-                {/* Ollama Diagnostics & Tuning */}
-                {provider === 'ollama' && (
-                  <div className="pt-3 border-t border-white/5 space-y-3">
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wide">
-                      {t('settings.label_ollama_advanced', 'Ollama 詳細・診断')}
-                    </h4>
-
-                    {/* 縦並び: コンテキスト長 → 最大長辺 */}
-                    <div className="flex flex-col gap-3">
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <label className="text-xs font-semibold text-slate-300">
-                            {t('settings.label_ollama_num_ctx', 'コンテキスト長 (num_ctx)')}
-                          </label>
-                          <TooltipHelp text={t('settings.ollama_num_ctx_help', '0で自動（タグ粒度に応じて8192〜16384を選択）。qwen3-vl等の思考モデルは応答本文の前に大量の推論トークンを消費するため、コンテキストが不足すると生成が途中で打ち切られ空応答となりリトライが多発します。不足時は自動的に2倍へ拡張されます。')} />
-                        </div>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1024}
-                          value={ollamaNumCtx}
-                          onChange={(e) => setOllamaNumCtx(e.target.value)}
-                          placeholder={t('settings.label_placeholder_auto', '0 (auto)')}
-                          className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <label className="text-xs font-semibold text-slate-300">
-                            {t('settings.label_ollama_max_image_edge', '送信画像の最大長辺 (px)')}
-                          </label>
-                          <TooltipHelp text={t('settings.ollama_max_image_edge_help', '解析前に画像をこのサイズまで縮小して送信します（0で無効）。縦横比は保たれます。12MPの写真は画像だけで約4000トークンを消費するため、縮小するとコンテキストに余裕が生まれ解析も高速化します。文字認識精度を優先する場合は大きめの値に設定してください。')} />
-                        </div>
-                        <input
-                          type="number"
-                          min={0}
-                          step={256}
-                          value={ollamaMaxImageEdge}
-                          onChange={(e) => setOllamaMaxImageEdge(e.target.value)}
-                          placeholder="1536"
-                          className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={llmDebugLogging}
-                          onChange={(e) => setLlmDebugLogging(e.target.checked)}
-                          className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                        />
-                        <span>{t('settings.label_llm_debug_logging', 'LLM診断ログを出力する（開発用）')}</span>
-                      </label>
-                      <TooltipHelp align="right" text={t('settings.llm_debug_logging_help', 'リクエストごとにプロンプト種別・num_ctx・トークン消費量・終了理由(done_reason)を、解析失敗時には生レスポンスをログへ記録します。リトライの原因調査に使用します。ログ量が増えるため通常はOFFにしてください。')} />
-                    </div>
-                  </div>
-                )}
-
-                {/* Manual VRAM Unload for Ollama */}
-                {provider === 'ollama' && onUnloadModel && (
-                  <div className="pt-3 border-t border-white/5 flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-slate-300 font-medium">{t('settings.label_manual_unload', 'Free VRAM manually')}</span>
-                      <TooltipHelp text={t('settings.unload_vram_help', 'Ollamaでロード中のモデルをVRAMから即座にメモリ解放（アンロード）します。WebUIや他のアプリケーション等で同一モデルを使用中の場合でも、VRAMからアンロードされます。')} />
-                    </div>
-                    <button
-                      onClick={handleManualUnload}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-semibold transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      {unloadedStatus ? t('settings.label_unloaded', 'Freed') : t('settings.label_unload', 'Free VRAM')}
-                    </button>
-                  </div>
-                )}
-                <SpectrumSettingsSection
-                  emb={emb}
-                  availableModels={availableModels}
-                  onSelectPreset={handleSelectPreset}
-                />
-              </div>
-            )}
-          </div>
+          <AdvancedSettingsSection
+            open={advancedOpen}
+            setOpen={setAdvancedOpen}
+            provider={provider}
+            setProvider={setProvider}
+            ollamaUrl={ollamaUrl}
+            setOllamaUrl={setOllamaUrl}
+            forceDetailedPrompt={forceDetailedPrompt}
+            setForceDetailedPrompt={setForceDetailedPrompt}
+            ffmpegNoticeEnabled={ffmpegNoticeEnabled}
+            setFfmpegNoticeEnabled={setFfmpegNoticeEnabled}
+            llmDebugLogging={llmDebugLogging}
+            setLlmDebugLogging={setLlmDebugLogging}
+            ollamaNumCtx={ollamaNumCtx}
+            setOllamaNumCtx={setOllamaNumCtx}
+            ollamaMaxImageEdge={ollamaMaxImageEdge}
+            setOllamaMaxImageEdge={setOllamaMaxImageEdge}
+            onUnloadModel={onUnloadModel}
+            onManualUnload={handleManualUnload}
+            unloadedStatus={unloadedStatus}
+            emb={emb}
+            availableModels={availableModels}
+            onSelectPreset={handleSelectPreset}
+          />
         </div>
 
         {/* Tag Granularity Change Notice */}
