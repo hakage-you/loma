@@ -1,5 +1,4 @@
 import React, { useState, useEffect, useTransition, useDeferredValue } from 'react';
-import { createPortal } from 'react-dom';
 import { invoke } from '@tauri-apps/api/core';
 import { runExclusive } from '../hooks/useBusy';
 import { useLoadMoreOnScroll } from '../hooks/useLoadMoreOnScroll';
@@ -9,63 +8,13 @@ import { listen } from '@tauri-apps/api/event';
 // **`window.confirm` / `window.alert` は使わない。** Tauri の webview では表示されず、
 // confirm は false 相当になるため、確認を出したつもりで何も起きない状態になる。
 import { ask, message as showMessage } from '@tauri-apps/plugin-dialog';
-import { convertFileSrc } from '@tauri-apps/api/core';
-import { X, Edit2, Check, GitMerge, Search, Sparkles, ThumbsUp, ThumbsDown, RefreshCw, Eye, Image as ImageIcon, PlusCircle, CheckCircle2, Filter, Film, AlertCircle, Info } from 'lucide-react';
+import { X, Edit2, Check, GitMerge, Search, Sparkles, ThumbsUp, ThumbsDown, RefreshCw, Eye, PlusCircle, CheckCircle2, Filter, Info } from 'lucide-react';
 import { TagItem, MergeSuggestion, MediaItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { TooltipHelp } from './TooltipHelp';
-import { placeFloating, FloatingPlacement } from '../utils/floatingPosition';
-
-/**
- * 提案の生成方式。**混ぜない。** リストには選んだ方式の結果だけを出す。
- * ルール検出の誤爆が LLM の結果に混ざると質を下げるため（計画 §1）。
- */
-type SuggestMethod = 'rules' | 'hypernym' | 'related';
-
-/**
- * 表示文字列はここに持たず、キーと既定値の組で持つ。
- * モジュール定数なので `t()` を呼べない —— 描画時に解決する。
- */
-const METHODS: {
-  id: SuggestMethod;
-  command: string;
-  labelKey: string;
-  labelDefault: string;
-  hintKey: string;
-  hintDefault: string;
-}[] = [
-  {
-    id: 'rules',
-    command: 'suggest_tag_merges',
-    labelKey: 'tag_modal.label_method_rules',
-    labelDefault: 'Spelling variants',
-    hintKey: 'tag_modal.label_method_rules_hint',
-    hintDefault: 'Detected from spelling, singular/plural and Japanese notation rules',
-  },
-  {
-    id: 'hypernym',
-    command: 'suggest_hypernyms',
-    labelKey: 'tag_modal.label_method_hypernym',
-    labelDefault: 'Hypernyms',
-    hintKey: 'tag_modal.label_method_hypernym_hint',
-    hintDefault: 'AI decides "is a kind of" and groups them',
-  },
-  {
-    id: 'related',
-    command: 'suggest_related_tags',
-    labelKey: 'tag_modal.label_method_related',
-    labelDefault: 'Close in meaning',
-    hintKey: 'tag_modal.label_method_related_hint',
-    hintDefault: 'Pairs by vector similarity. Includes words an LLM merely judged to be close',
-  },
-];
-
-/**
- * 規則の識別子 → 表示名のキー。
- * バックエンドは識別子で返す（表示文字列に依存した判定をしないため）。
- * 未知の識別子はそのまま出せるよう、呼ぶ側が既定値に識別子を渡す。
- */
-const ruleLabelKey = (rule: string) => `tag_modal.label_rule_${rule}`;
+import { SuggestMethod, METHODS, ruleLabelKey } from '../constants/suggestMethods';
+import { SampleThumbStack } from './tagManagement/TagThumbs';
+import { TagMediaListModal, MediaPreviewOverlay } from './tagManagement/TagMediaPreview';
 
 /**
  * 一度に DOM へ出す件数。**上限ではない** —— 末尾まで来たら足していくので全件に到達できる
@@ -83,88 +32,6 @@ const TAG_PAGE = 200;
 const SUGGESTION_FIRST = 20;
 const SUGGESTION_PAGE = 50;
 
-/**
- * 提案カードのサンプルサムネと、ホバー時の拡大表示。
- *
- * **ホバーの状態をここに閉じ込めるためだけに切り出してある。**
- * モーダル直下に持つと、サムネの上をマウスが通るたびにモーダル全体が再描画される。
- *
- * 拡大表示は `document.body` へ portal する。モーダルの内側は
- * `backdrop-blur` と `zoom-in-95` が position:fixed の基準を作るため、
- * その場に置くとスクロール領域で切られる。
- */
-/** 拡大表示の一辺。位置決めに実寸が要るので定数で持つ */
-const THUMB_PREVIEW_SIZE = 128;
-
-const SampleThumbStack: React.FC<{
-  thumbnails: string[];
-  totalImagesCount?: number;
-}> = ({ thumbnails, totalImagesCount }) => {
-  const { t } = useTranslation();
-  const [hovered, setHovered] = useState<{ src: string; pos: FloatingPlacement } | null>(null);
-
-  return (
-    <div className="flex items-center gap-1 shrink-0 ml-1">
-      <div
-        className="flex items-center -space-x-2 p-0.5"
-        title={t('tag_modal.label_title_sample_media', 'Group sample media')}
-      >
-        {thumbnails.slice(0, 5).map((thumbPath, idx) => (
-          <img
-            key={idx}
-            src={convertFileSrc(thumbPath)}
-            alt="sample"
-            width={28}
-            height={28}
-            loading="lazy"
-            decoding="async"
-            className="w-7 h-7 rounded-md object-cover border-2 border-slate-900 shadow-md cursor-pointer transition-transform hover:scale-110 relative"
-            onMouseEnter={(e) => {
-              setHovered({
-                src: convertFileSrc(thumbPath),
-                // 端のサムネでも切れないよう、位置はツールチップと同じ関数で出す
-                pos: placeFloating(
-                  e.currentTarget.getBoundingClientRect(),
-                  { width: THUMB_PREVIEW_SIZE, height: THUMB_PREVIEW_SIZE },
-                  'center'
-                ),
-              });
-            }}
-            onMouseLeave={() => setHovered(null)}
-            onError={(e) => {
-              (e.target as HTMLElement).style.display = 'none';
-            }}
-          />
-        ))}
-      </div>
-
-      {/* 最大枚数以上の画像がある場合の「続きあり (+N / ...)」インジケーター */}
-      {totalImagesCount !== undefined && totalImagesCount > thumbnails.length && (
-        <span
-          className="px-1.5 py-0.5 bg-slate-800/90 text-slate-300 border border-white/10 rounded-md text-[10px] font-mono font-bold tracking-tight shrink-0 shadow-sm"
-          title={`${t('tag_modal.label_title_total_media', 'Media with this tag')}: ${totalImagesCount}${t(
-            'tag_modal.label_tag_count_unit',
-            ''
-          )}`}
-        >
-          +{totalImagesCount - thumbnails.length}…
-        </span>
-      )}
-
-      {hovered &&
-        createPortal(
-          <div
-            style={{ left: `${hovered.pos.left}px`, top: `${hovered.pos.top}px` }}
-            className="fixed w-32 h-32 rounded-2xl overflow-hidden border-2 border-indigo-500 bg-slate-950 shadow-2xl z-[120] pointer-events-none animate-in fade-in zoom-in-95 duration-100 flex items-center justify-center select-none"
-          >
-            <img src={hovered.src} alt="floating preview" className="w-full h-full object-cover" />
-          </div>,
-          document.body
-        )}
-    </div>
-  );
-};
-
 interface TagManagementModalProps {
   open: boolean;
   tags: TagItem[];
@@ -176,75 +43,6 @@ interface TagManagementModalProps {
   onDataChanged?: () => Promise<void>;
   onSelectTagFilter?: (tagName: string) => void;
 }
-
-const TagPreviewCard: React.FC<{
-  media: MediaItem;
-  onClick: () => void;
-}> = ({ media, onClick }) => {
-  const { t } = useTranslation();
-  const isVideo = /\.(mp4|webm|mov|avi|mkv|flv|wmv)$/i.test(media.file_path);
-  const primarySrc = media.thumbnail_path
-    ? convertFileSrc(media.thumbnail_path)
-    : isVideo
-    ? ''
-    : convertFileSrc(media.file_path);
-  const fallbackSrc = isVideo ? '' : convertFileSrc(media.file_path);
-
-  const [imgSrc, setImgSrc] = useState<string>(primarySrc);
-  const [hasError, setHasError] = useState<boolean>(!primarySrc);
-
-  const handleImgError = () => {
-    if (imgSrc === primarySrc && fallbackSrc && fallbackSrc !== primarySrc) {
-      setImgSrc(fallbackSrc);
-    } else {
-      setHasError(true);
-    }
-  };
-
-  const fileName = media.file_path.split(/[/\\]/).pop() || '';
-
-  return (
-    <div
-      onClick={onClick}
-      className="group relative bg-slate-950 border border-white/10 rounded-xl overflow-hidden shadow aspect-square flex flex-col items-center justify-center cursor-pointer transition hover:border-indigo-500/50 select-none"
-      title={fileName}
-    >
-      {!hasError && imgSrc ? (
-        <img
-          src={imgSrc}
-          alt={fileName}
-          onError={handleImgError}
-          className="w-full h-full object-cover group-hover:scale-105 transition duration-200"
-          loading="lazy"
-        />
-      ) : (
-        <div className="flex flex-col items-center justify-center p-2 text-center gap-1.5 w-full h-full bg-slate-900/90 text-slate-400">
-          {isVideo ? (
-            <Film className="w-7 h-7 text-indigo-400 opacity-80" />
-          ) : (
-            <AlertCircle className="w-6 h-6 text-amber-400/80" />
-          )}
-          <span className="text-[10px] font-mono text-slate-300 truncate max-w-full px-1">{fileName}</span>
-          <span className="text-[9px] text-indigo-300 font-semibold">{isVideo ? t('tag_modal.label_video_file', 'Video') : t('tag_modal.label_image_file', 'Image')}</span>
-        </div>
-      )}
-
-      {/* Video Badge */}
-      {isVideo && !hasError && (
-        <div className="absolute top-2 left-2 z-10 px-1.5 py-0.5 bg-slate-950/80 backdrop-blur-md border border-white/20 text-indigo-300 rounded-md text-[9px] font-bold flex items-center gap-1">
-          <Film className="w-3 h-3 text-indigo-400" />
-          <span>VIDEO</span>
-        </div>
-      )}
-
-      {/* Hover Overlay */}
-      <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent opacity-0 group-hover:opacity-100 transition p-2 flex flex-col justify-end pointer-events-none">
-        <p className="text-[10px] text-white font-medium truncate">{fileName}</p>
-        <p className="text-[9px] text-indigo-300 font-semibold">{isVideo ? t('tag_modal.label_click_play', 'Click to play') : t('tag_modal.label_click_zoom', 'Click to enlarge')}</p>
-      </div>
-    </div>
-  );
-};
 
 export const TagManagementModal: React.FC<TagManagementModalProps> = ({
   open,
@@ -1600,114 +1398,15 @@ export const TagManagementModal: React.FC<TagManagementModalProps> = ({
         )}
       </div>
 
-      {/* Image Preview Modal */}
-      {previewTag && (
-        <div className="fixed inset-0 z-60 bg-black/80 backdrop-blur-md flex items-center justify-center p-4">
-          <div className="bg-slate-900 border border-indigo-500/30 rounded-2xl w-full max-w-2xl max-h-[80vh] flex flex-col shadow-2xl overflow-hidden animate-in fade-in zoom-in-95 duration-150">
-            {/* Modal Header */}
-            <div className="p-4 bg-slate-950 border-b border-white/10 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <ImageIcon className="w-4 h-4 text-indigo-400" />
-                <h3 className="text-xs font-bold text-white">
-                  {t('tag_modal.label_preview_title', 'Media with this tag')}{' '}
-                  <span className="text-indigo-300 font-mono">#{previewTag.name}</span>
-                  {previewTag.name_ja && <span className="text-slate-400 ml-1">({previewTag.name_ja})</span>}
-                  <span className="text-indigo-400 ml-1">
-                    ({previewTag.count ?? 0}
-                    {t('tag_modal.label_tag_count_unit', '')})
-                  </span>
-                </h3>
-              </div>
-              <button
-                onClick={() => setPreviewTag(null)}
-                className="p-1 text-slate-400 hover:text-white rounded-lg transition cursor-pointer"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
+      <TagMediaListModal
+        tag={previewTag}
+        media={previewMediaList}
+        loading={loadingPreview}
+        onClose={() => setPreviewTag(null)}
+        onSelect={setPreviewMediaItem}
+      />
 
-            {/* Modal Body: Image Grid */}
-            <div className="flex-1 overflow-y-auto p-4 min-h-0">
-              {loadingPreview ? (
-                <div className="flex items-center justify-center py-12 text-slate-400 text-xs">
-                  <RefreshCw className="w-4 h-4 animate-spin mr-2 text-indigo-400" />
-                  {t('tag_modal.label_preview_loading', 'Loading...')}
-                </div>
-              ) : previewMediaList.length === 0 ? (
-                <div className="text-center py-12 text-slate-500 text-xs">
-                  {t('tag_modal.preview_empty', 'No media currently carries this tag.')}
-                </div>
-              ) : (
-                <div className="grid grid-cols-3 sm:grid-cols-4 gap-3">
-                  {previewMediaList.map((media) => (
-                    <TagPreviewCard
-                      key={media.id}
-                      media={media}
-                      onClick={() => setPreviewMediaItem(media)}
-                    />
-                  ))}
-                </div>
-              )}
-            </div>
-
-            {/* Modal Footer */}
-            <div className="p-3 bg-slate-950 border-t border-white/10 flex justify-end">
-              <button
-                onClick={() => setPreviewTag(null)}
-                className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-white rounded-xl text-xs font-semibold transition cursor-pointer"
-              >
-                {t('tag_modal.label_btn_close_preview', 'Close')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* High-Res Media Preview / Video Player Overlay */}
-      {previewMediaItem && (
-        <div
-          onClick={() => setPreviewMediaItem(null)}
-          className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer animate-in fade-in duration-150 select-none"
-        >
-          <div
-            onClick={(e) => e.stopPropagation()}
-            className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center"
-          >
-            {/\.(mp4|webm|mov|avi|mkv|flv|wmv)$/i.test(previewMediaItem.file_path) ? (
-              <video
-                src={convertFileSrc(previewMediaItem.file_path)}
-                controls
-                autoPlay
-                className="max-w-full max-h-[80vh] rounded-2xl shadow-2xl border border-white/10"
-              />
-            ) : (
-              <img
-                src={
-                  previewMediaItem.thumbnail_path
-                    ? convertFileSrc(previewMediaItem.thumbnail_path)
-                    : convertFileSrc(previewMediaItem.file_path)
-                }
-                alt={previewMediaItem.file_path.split(/[/\\]/).pop()}
-                className="max-w-full max-h-[85vh] object-contain rounded-2xl shadow-2xl border border-white/10"
-                onError={(e) => {
-                  (e.target as HTMLImageElement).src = convertFileSrc(previewMediaItem.file_path);
-                }}
-              />
-            )}
-            <div className="mt-3 flex items-center gap-3">
-              <span className="text-xs text-slate-300 font-mono bg-slate-900/80 px-3 py-1 rounded-lg border border-white/10 truncate max-w-md">
-                {previewMediaItem.file_path.split(/[/\\]/).pop()}
-              </span>
-              <button
-                onClick={() => setPreviewMediaItem(null)}
-                className="text-xs text-slate-300 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-white/10 transition cursor-pointer"
-              >
-                {t('tag_modal.label_btn_close', 'Close')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <MediaPreviewOverlay media={previewMediaItem} onClose={() => setPreviewMediaItem(null)} />
 
       {/* ホバー時の拡大表示は SampleThumbStack が body へ portal する。
           ここに置くと、サムネの上をマウスが通るたびにモーダル全体が再描画される */}
