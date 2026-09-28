@@ -1,8 +1,13 @@
-// モック版 @tauri-apps/plugin-dialog。OSネイティブダイアログはブラウザで開けないため、
-// 常にキャンセル相当(null)を返す。「フォルダ追加」ボタン自体の見た目確認が目的。
+// モック版 @tauri-apps/plugin-dialog。OSネイティブダイアログはブラウザで開けない。
+//
+// 既定はキャンセル相当(null)。**e2e は「選んだ後」も確かめたい。**
+// `window.__mockDialogOpenResult` を置くとその値を返す
+// （タグ粒度の比較は、画像を選ばないと1行も動かない）。
 export async function open(_options?: unknown): Promise<string | string[] | null> {
   console.info('[mock dialog] open() called — native dialog is unavailable in mock mode');
-  return null;
+  const forced = (window as unknown as { __mockDialogOpenResult?: string | string[] | null })
+    .__mockDialogOpenResult;
+  return forced === undefined ? null : forced;
 }
 
 /**

@@ -74,6 +74,31 @@ const mockTagInsufficient = (m: MockMediaItem): boolean =>
 let tagState: TagItem[] = MOCK_TAGS.map((t) => ({ ...t }));
 
 /**
+ * `?debugModels=a,b` で「Ollama に入っているモデル」を差し替える。
+ *
+ * **既定の2つはどちらも10B未満で、タグ粒度が常に無効になる。**
+ * 粒度の選択と「粒度を試す」は `get_effective_prompt_type` が DETAILED を
+ * 返すときしか押せないので、大きいモデルを入れた状態を作る手段が要る。
+ */
+const availableModelsState: string[] = (() => {
+  const raw = new URLSearchParams(window.location.search).get('debugModels');
+  if (!raw) return [...MOCK_AVAILABLE_MODELS];
+  return raw.split(',').map((s) => s.trim()).filter(Boolean);
+})();
+
+/**
+ * `?debugMissingEmbeddings=<件数>` で未ベクトル化タグの件数を作る。
+ *
+ * **既定は0件で、「未生成のタグをベクトル化」が常に押せない。**
+ * 押せない状態しか再現できないと、実行経路を一度も通せない。
+ */
+const missingEmbeddingsState: number = (() => {
+  const raw = new URLSearchParams(window.location.search).get('debugMissingEmbeddings');
+  const n = raw ? Number(raw) : 0;
+  return Number.isFinite(n) && n > 0 ? n : 0;
+})();
+
+/**
  * `?debugTagCount=<件数>` を付けると、その件数になるまでタグを水増しする。
  *
  * 既定は26件で、**タグ管理の段階描画や、件数が多いときだけ効く上限を**
@@ -771,8 +796,14 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_parent_folders: () => MOCK_PARENT_FOLDERS,
   get_scan_folders: () => scanFoldersState,
   get_settings: () => settingsState,
-  get_available_models: () => MOCK_AVAILABLE_MODELS,
-  get_vision_capable_models: () => MOCK_VISION_MODELS,
+  get_available_models: () => availableModelsState,
+  // 差し替えたモデルのうち、既定の vision 宣言に載っているものだけを返す。
+  // 差し替えた名前がどれも載っていないときは、絞り込みで VLM の選択肢が
+  // 空になってしまうので全部を vision 扱いにする
+  get_vision_capable_models: () => {
+    const known = availableModelsState.filter((m) => MOCK_VISION_MODELS.includes(m));
+    return known.length > 0 ? known : availableModelsState;
+  },
   // `?debugScan=mid` では「起動時点で既にスキャン実行中」を再現する
   get_scan_status: () => scanning || isMockScanRunning(),
   /**
@@ -889,10 +920,10 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
   get_embedding_status: () => ({
     model: 'bge-m3',
     model_available: true,
-    available_models: MOCK_AVAILABLE_MODELS,
-    total_tags: tagState.length,
+    available_models: availableModelsState,
+    total_tags: tagState.length + missingEmbeddingsState,
     embedded_tags: tagState.length,
-    missing_tags: 0,
+    missing_tags: missingEmbeddingsState,
     // 母数は解析済みのみ。未解析・失敗は候補集合の話に入らない
     eligible_media: mediaState.filter((m) => m.analysis_status === 'completed' && !mockTagInsufficient(m)).length,
     excluded_media: mediaState.filter(mockTagInsufficient).length,
@@ -903,7 +934,12 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     include_descriptive: false,
     centering: true,
   }),
-  generate_tag_embeddings: () => ({ model: 'bge-m3', generated: 0, dim: 1024, elapsed_ms: 0 }),
+  generate_tag_embeddings: () => ({
+    model: 'bge-m3',
+    generated: missingEmbeddingsState,
+    dim: 1024,
+    elapsed_ms: 12,
+  }),
   get_embedding_storage_info: () => ({
     current_model: 'bge-m3',
     total_tags: tagState.length,
