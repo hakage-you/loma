@@ -110,8 +110,10 @@ export const GalleryGrid: React.FC<GalleryGridProps> = ({
         // **高さを持たせない。** sticky は流れの中で場所を取るので、そのままだと
         // 出入りのたびに一覧が押し下げられて画面が跳ねる。解析中は1秒ごとに
         // 取り直すため、跳ね続けることになる
-        <div className="sticky top-0 z-20 h-0 flex justify-center pointer-events-none">
-          <div className="mt-1 flex items-center gap-2 px-3 py-1.5 rounded-full bg-slate-900/95 border border-indigo-500/30 shadow-lg text-[11px] text-slate-200">
+        // **items-start が要る。** 高さ0の flex は既定で子を stretch するため、
+        // これが無いと帯の中身が縦に潰れる（実測で高さ 18px になっていた）
+        <div className="sticky top-0 z-20 h-0 flex items-start justify-center pointer-events-none">
+          <div className="mt-1 flex items-center gap-2 px-4 py-2 rounded-full bg-slate-900/95 border border-indigo-500/30 shadow-lg text-[11px] text-slate-200">
             <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />
             {t('gallery.label_loading', '読み込み中')}
           </div>

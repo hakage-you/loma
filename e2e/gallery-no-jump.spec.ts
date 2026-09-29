@@ -39,6 +39,20 @@ test.describe('一覧が跳ねないこと', () => {
     expect(await firstCardTop(page)).toBe(before);
   });
 
+  test('読み込み中の帯が縦に潰れていない', async ({ page }) => {
+    await page.goto('/?debugSlowCommand=get_media:900');
+    await expect(page.locator(cards).first()).toBeVisible();
+    await page.getByRole('button', { name: '同期', exact: true }).click();
+    await expect(loadingPill(page)).toBeVisible();
+
+    // **枠は高さ0だが、中身まで潰してはいけない。**
+    // 高さ0の flex は既定で子を stretch するので、items-start が無いと
+    // 文字が padding に挟まれて潰れる（実測で 35px が 18px になっていた）
+    const box = await loadingPill(page).boundingBox();
+    if (!box) throw new Error('帯が見つからない');
+    expect(box.height).toBeGreaterThan(28);
+  });
+
   test('読み込み中でも一覧は消えない', async ({ page }) => {
     await page.goto('/?debugSlowCommand=get_media:900');
     await expect(page.locator(cards).first()).toBeVisible();
