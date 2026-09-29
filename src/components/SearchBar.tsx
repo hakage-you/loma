@@ -159,6 +159,15 @@ export const SearchBar: React.FC<SearchBarProps> = ({
       ? Math.round((progress.current / progress.total) * 100)
       : 0;
 
+  /**
+   * 総数が分かっていない段階か。
+   *
+   * **同期の探索中は総数が出ない。** 何件あるかはフォルダを歩き終わるまで
+   * 分からないので、Rust は `total: 0` で件数だけを流してくる。
+   * このとき「0 / 0 (0%)」と出すと、進んでいないように見える。
+   */
+  const isDiscovering = !!progress && progress.total === 0;
+
   return (
     <div className="flex flex-col gap-3 shrink-0 select-none w-full">
       {/* Mid Area Bar: Left Search Bar + Right S/M/L/XL Switcher */}
@@ -344,20 +353,27 @@ export const SearchBar: React.FC<SearchBarProps> = ({
                 </span>
               )}
               <span className="font-bold text-white font-mono bg-slate-800 px-2 py-0.5 rounded border border-white/10">
-                {progress.current} / {progress.total} ({progressPercent}%)
+                {isDiscovering
+                  ? t('progress.label_found', '{n}件', { n: progress.current.toLocaleString() })
+                  : `${progress.current} / ${progress.total} (${progressPercent}%)`}
               </span>
             </div>
           </div>
 
           <div className="w-full bg-slate-950 h-2 rounded-full overflow-hidden border border-white/10">
-            <div
-              className={`h-full transition-all duration-300 rounded-full ${
-                progress.is_paused
-                  ? 'bg-amber-500'
-                  : 'bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-400'
-              }`}
-              style={{ width: `${progressPercent}%` }}
-            />
+            {isDiscovering ? (
+              // 総数が分からないので割合を出せない。動いていることだけを見せる
+              <div className="h-full w-1/3 rounded-full bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-400 animate-indeterminate" />
+            ) : (
+              <div
+                className={`h-full transition-all duration-300 rounded-full ${
+                  progress.is_paused
+                    ? 'bg-amber-500'
+                    : 'bg-gradient-to-r from-indigo-500 via-violet-500 to-emerald-400'
+                }`}
+                style={{ width: `${progressPercent}%` }}
+              />
+            )}
           </div>
         </div>
       )}

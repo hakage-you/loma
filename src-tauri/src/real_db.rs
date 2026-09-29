@@ -324,4 +324,80 @@ mod tests {
         assert_eq!(before, after, "元のDBの更新時刻が変わった");
         assert_eq!(size_before, size_after, "元のDBのサイズが変わった");
     }
+
+    /// 同期を押してから進捗が出るまでの時間の内訳。**合否は問わない。**
+    ///
+    /// `run_sync_folders` は次の順で動き、段階1と2の間は画面に何も出ない:
+    ///   1. cleanup_and_detect_moves —— media 全行のファイル存在確認
+    ///   2. WalkDir —— 登録フォルダを全部歩く
+    ///   3. サムネ生成（ここで初めて batch_progress が飛ぶ）
+    ///
+    /// どこを直せば効くのかを推定で決めないために測る。
+    /// **数字は「あるユーザーのライブラリ」のもので、標準でも理想でもない。**
+    #[tokio::test]
+    async fn sync_phase_timings_are_printed() {
+        let Some(copy) = copy_real_db("sync-timing") else {
+            skip_note("sync_phase_timings_are_printed");
+            return;
+        };
+        let pool = open(&copy).await;
+
+        // --- 段階1: 全行のファイル存在確認 ---
+        let t0 = std::time::Instant::now();
+        let rows: Vec<(i64, String, String)> =
+            sqlx::query_as("SELECT id, file_path, thumbnail_path FROM media;")
+                .fetch_all(&pool)
+                .await
+                .unwrap_or_default();
+        let query_ms = t0.elapsed().as_millis();
+
+        let t1 = std::time::Instant::now();
+        let mut missing = 0usize;
+        let mut stale_thumb = 0usize;
+        let mut checks = 0usize;
+        for (_, file_path, thumb) in &rows {
+            checks += 1;
+            if !std::path::Path::new(file_path).exists() {
+                missing += 1;
+            } else if !thumb.is_empty() {
+                checks += 1;
+                if !std::path::Path::new(thumb).exists() {
+                    stale_thumb += 1;
+                }
+            }
+        }
+        let exists_ms = t1.elapsed().as_millis();
+
+        // --- 段階2: 登録フォルダを歩く ---
+        let folders: Vec<String> = sqlx::query_scalar("SELECT path FROM scan_folders;")
+            .fetch_all(&pool)
+            .await
+            .unwrap_or_default();
+
+        let t2 = std::time::Instant::now();
+        let mut walked = 0usize;
+        for folder in &folders {
+            for entry in walkdir::WalkDir::new(folder).into_iter().filter_map(|e| e.ok()) {
+                if entry.path().is_file() {
+                    walked += 1;
+                }
+            }
+        }
+        let walk_ms = t2.elapsed().as_millis();
+
+        eprintln!("[sync-timing] media の行数            : {}", rows.len());
+        eprintln!("[sync-timing] 段階1 SELECT            : {query_ms} ms");
+        eprintln!("[sync-timing] 段階1 存在確認 {checks}回 : {exists_ms} ms");
+        eprintln!("[sync-timing]   見つからない          : {missing}");
+        eprintln!("[sync-timing]   サムネ切れ            : {stale_thumb}");
+        eprintln!("[sync-timing] 登録フォルダ            : {}", folders.len());
+        eprintln!("[sync-timing] 段階2 WalkDir {walked}件 : {walk_ms} ms");
+        eprintln!(
+            "[sync-timing] 段階1+2 合計            : {} ms",
+            query_ms + exists_ms + walk_ms
+        );
+
+        close(pool).await;
+    }
+
 }

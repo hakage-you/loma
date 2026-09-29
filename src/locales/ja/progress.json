@@ -8,5 +8,6 @@
   "label_eta_dhm": "{d}日 {h}時間 {m}分",
   "label_eta_hm": "{h}時間 {m}分",
   "label_eta_ms": "{m}分 {s}秒",
-  "label_eta_s": "{s}秒"
+  "label_eta_s": "{s}秒",
+  "label_found": "{n}件"
 }

@@ -3068,6 +3068,9 @@ pub async fn sync_folders(
     tokio::spawn(async move {
         if let Err(e) = crate::batch::run_sync_folders(&app_handle, &pool, cancel_flag, pause_flag).await {
             crate::logger::log_error(&format!("[Sync Aborted] Folder sync terminated with an error: {}", e));
+            // **これを出さないと画面が「解析処理中」のまま固まる。**
+            // 探索の段階から進捗を出すようにしたので、失敗で抜ける経路にも要る
+            crate::batch::emit_terminal_progress(&app_handle, "Stopped due to an error during sync");
         }
     });
 

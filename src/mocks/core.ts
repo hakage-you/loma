@@ -292,6 +292,33 @@ function emitScanCompleted(total: number): void {
   }, 0);
 }
 
+/**
+ * 同期の「探している」段階を再現する。
+ *
+ * **実バックエンドの `sync_folders` は tokio::spawn して即 Ok を返す。**
+ * 進捗イベントが飛び始めるまで画面には何も出ないので、モックも同じ順序で流す
+ * （即 return して、そのあとイベントが届く）。
+ *
+ * `total: 0` は「総数未定」。受け取る側は割合ではなく件数だけを出す。
+ */
+function emitDiscoveryProgress(found: number, status: string): void {
+  emitMock('batch_progress', {
+    total: 0,
+    current: found,
+    current_file: '',
+    status,
+    error_count: 0,
+    is_paused: false,
+  });
+}
+
+/** `?debugSyncSteps=N` で探索段階の刻み数を変える。既定は3 */
+const syncDiscoverySteps = (() => {
+  const raw = new URLSearchParams(window.location.search).get('debugSyncSteps');
+  const n = raw ? Number(raw) : 3;
+  return Number.isFinite(n) && n > 0 ? n : 3;
+})();
+
 const recordSideEffect = (command: string, args: Record<string, any>) => {
   sideEffectLog.push({ command, args });
 };
@@ -884,7 +911,28 @@ const handlers: Record<string, (args: Record<string, any>) => any> = {
     scanning = false;
     emitScanCompleted(mediaState.length);
   },
-  sync_folders: () => {},
+  /**
+   * **実物と同じで、すぐ返る。** 進捗は解決したあとに届く。
+   * 探索（フォルダを歩く）→ 完了、の順。実物ではここが実測11秒あり、
+   * 以前は1つもイベントが出ないので画面が無反応に見えていた。
+   */
+  sync_folders: () => {
+    recordSideEffect('sync_folders', {});
+    let step = 0;
+    const tick = () => {
+      step += 1;
+      if (step <= syncDiscoverySteps) {
+        emitDiscoveryProgress(
+          step * 1200,
+          step === 1 ? 'Checking for moved or deleted files' : 'Scanning folders'
+        );
+        setTimeout(tick, 60);
+        return;
+      }
+      emitScanCompleted(mediaState.length);
+    };
+    setTimeout(tick, 0);
+  },
   cancel_scan: () => {
     scanning = false;
   },
