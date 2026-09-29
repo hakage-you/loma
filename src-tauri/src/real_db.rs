@@ -114,6 +114,22 @@ pub fn copy_real_db(label: &str) -> Option<DbCopy> {
     Some(DbCopy { dir, path })
 }
 
+/// 元のDBを、いま別のものが書き換えているか。
+///
+/// **アプリを起動していると実DBは数秒ごとに書き換わる**（WAL のチェックポイント）。
+/// 「元のDBを触っていないこと」の検証は、外から書き換えられている間は成立しない。
+/// 短い間隔で2回見て、変わっていたら「判定できない」とみなす。
+fn is_being_written(source: &Path) -> bool {
+    let sample = || {
+        std::fs::metadata(source)
+            .ok()
+            .map(|m| (m.len(), m.modified().ok()))
+    };
+    let first = sample();
+    std::thread::sleep(std::time::Duration::from_millis(400));
+    first != sample()
+}
+
 /// 実DBが無いときに出す1行。**黙って通すと「通った」と読めてしまう**
 pub fn skip_note(test: &str) {
     eprintln!(
@@ -301,6 +317,16 @@ mod tests {
             skip_note("the_original_database_is_never_touched");
             return;
         };
+        // **アプリが動いていると、こちらが触らなくても元のDBは変わる。**
+        // その状態で比べると「触った」と区別が付かないので、判定を降りる
+        if is_being_written(&source) {
+            eprintln!(
+                "[skip] the_original_database_is_never_touched: \
+                 元のDBが外から書き換えられている（アプリ起動中とみられる）ので判定できない"
+            );
+            return;
+        }
+
         let before = std::fs::metadata(&source).and_then(|m| m.modified()).ok();
         let size_before = std::fs::metadata(&source).map(|m| m.len()).ok();
 
@@ -321,6 +347,16 @@ mod tests {
 
         let after = std::fs::metadata(&source).and_then(|m| m.modified()).ok();
         let size_after = std::fs::metadata(&source).map(|m| m.len()).ok();
+
+        // 途中でアプリが書き始めた場合も区別が付かない。**落とさずに降りる**
+        if (before, size_before) != (after, size_after) && is_being_written(&source) {
+            eprintln!(
+                "[skip] the_original_database_is_never_touched: \
+                 検証の最中に元のDBが外から書き換えられたので判定できない"
+            );
+            return;
+        }
+
         assert_eq!(before, after, "元のDBの更新時刻が変わった");
         assert_eq!(size_before, size_after, "元のDBのサイズが変わった");
     }
@@ -334,7 +370,15 @@ mod tests {
     ///
     /// どこを直せば効くのかを推定で決めないために測る。
     /// **数字は「あるユーザーのライブラリ」のもので、標準でも理想でもない。**
+    ///
+    /// **普段の \`cargo test\` からは外してある。** 実データで 186,899ファイルを
+    /// 歩くので11秒かかり、合否も問わない。必要なときだけ走らせる:
+    ///
+    /// \`\`\`text
+    /// cargo test --lib sync_phase_timings -- --ignored --nocapture
+    /// \`\`\`
     #[tokio::test]
+    #[ignore = "計測用。合否を問わない"]
     async fn sync_phase_timings_are_printed() {
         let Some(copy) = copy_real_db("sync-timing") else {
             skip_note("sync_phase_timings_are_printed");
