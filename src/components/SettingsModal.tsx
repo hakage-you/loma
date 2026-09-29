@@ -1,33 +1,37 @@
-import React, { useState, useEffect, useMemo } from 'react';
-import { Settings, RefreshCw, Check, X, Server, Cpu, FileText, Trash2, AlertTriangle, ShieldAlert, Download, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info, SlidersHorizontal, ChevronDown, Radar, Eye, EyeOff } from 'lucide-react';
-import { invoke, convertFileSrc } from '@tauri-apps/api/core';
+import React, { useState, useRef, useEffect, useMemo } from 'react';
+import { Settings, RefreshCw, Check, X, Cpu, FileText, AlertTriangle, ShieldAlert, Sparkles, Loader2, HardDrive, Layers, FlaskConical, Info } from 'lucide-react';
+import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { open as openDialog } from '@tauri-apps/plugin-dialog';
 import {
   RECOMMENDED_VLM_MODELS,
   RECOMMENDED_TEXT_MODELS,
-  RECOMMENDED_EMBEDDING_MODELS,
   RecommendedModel,
-  badgeLabelKey,
 } from '../constants/recommendedModels';
-import { resolveInstalledModel, isModelInstalled } from '../utils/modelMatch';
+import { resolveInstalledModel } from '../utils/modelMatch';
 import {
   OllamaPullProgressPayload,
   TagGranularity,
   GranularityComparisonItem,
-  EmbeddingStatus,
-  EmbeddingProgressPayload,
-  EmbeddingDiagnostics,
-  EmbeddingStorageInfo,
-  EmbeddingCleanupResult,
   SettingEntry,
   ApiKeyEntry,
   SaveSettingsResult,
 } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
-import { EmbeddingDiagnosticsPanel } from './EmbeddingDiagnosticsPanel';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { TooltipHelp } from './TooltipHelp';
-import { runBackground, runExclusive } from '../hooks/useBusy';
+import { GRANULARITY_LEVELS } from '../constants/granularityLevels';
+import { GranularityCompareModal } from './settings/GranularityCompareModal';
+import {
+  ConfirmDownloadDialog,
+  DiscardEmbeddingsDialog,
+  SwitchEmbeddingModelDialog,
+} from './settings/SettingsConfirmDialogs';
+import { ModelPresetCards } from './settings/ModelPresetCards';
+import { useEmbeddingSettings } from '../hooks/useEmbeddingSettings';
+import { AdvancedSettingsSection } from './settings/AdvancedSettingsSection';
+import { CloudProviderSection } from './settings/CloudProviderSection';
 
 interface SettingsModalProps {
   open: boolean;
@@ -44,36 +48,7 @@ interface SettingsModalProps {
 }
 
 
-// Precise selected model matching helper (strictly checks size tag e.g. 30b vs 8b vs 4b)
-const isModelSelected = (recommendedName: string, selectedModel: string): boolean => {
-  if (!selectedModel) return false;
-  const rec = recommendedName.toLowerCase().trim();
-  const sel = selectedModel.toLowerCase().trim();
-  if (rec === sel) return true;
 
-  const recParts = rec.split(':');
-  const selParts = sel.split(':');
-
-  const recBase = recParts[0];
-  const selBase = selParts[0];
-  const recTag = recParts[1] || '';
-  const selTag = selParts[1] || '';
-
-  if (recBase === selBase) {
-    if (recTag && selTag) {
-      return recTag === selTag || selTag.startsWith(recTag) || recTag.startsWith(selTag);
-    }
-    return !recTag && !selTag;
-  }
-  return false;
-};
-
-// タグ付与粒度レベルの定義（基本語タグは常に5〜10個で固定、記述的タグのみレベルで変動する）
-const GRANULARITY_LEVELS: { value: TagGranularity; labelKey: string; labelDefault: string; descriptiveRange: string }[] = [
-  { value: 'atomic', labelKey: 'settings.label_granularity_atomic', labelDefault: 'Lv1: 分解重視（現行）', descriptiveRange: '基本語タグ 5〜10個 / 記述的タグなし' },
-  { value: 'balanced', labelKey: 'settings.label_granularity_balanced', labelDefault: 'Lv2: バランス', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 1〜3個' },
-  { value: 'descriptive', labelKey: 'settings.label_granularity_descriptive', labelDefault: 'Lv3: 記述重視', descriptiveRange: '基本語タグ 5〜10個 + 記述的タグ 3〜6個' },
-];
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
   open,
@@ -112,41 +87,26 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   });
   const [compareError, setCompareError] = useState<string | null>(null);
   const [compareImagePath, setCompareImagePath] = useState<string | null>(null);
-  const [compareImageEnlarged, setCompareImageEnlarged] = useState(false);
 
-  // 概念スペクトラム検索（タグ埋め込み）
-  const [embeddingModel, setEmbeddingModel] = useState(settings.spectrum_embedding_model || 'bge-m3');
-  const [spectrumIncludeDescriptive, setSpectrumIncludeDescriptive] = useState<boolean>(
-    settings.spectrum_include_descriptive === 'true',
-  );
-  const [spectrumCentering, setSpectrumCentering] = useState<boolean>(settings.spectrum_centering !== 'false');
-  const [embeddingStatus, setEmbeddingStatus] = useState<EmbeddingStatus | null>(null);
-  const [embeddingProgress, setEmbeddingProgress] = useState<EmbeddingProgressPayload | null>(null);
-  const [isGeneratingEmbeddings, setIsGeneratingEmbeddings] = useState(false);
-  const [embeddingError, setEmbeddingError] = useState<string | null>(null);
-  const [diagnostics, setDiagnostics] = useState<EmbeddingDiagnostics | null>(null);
-  const [diagnosticsLoading, setDiagnosticsLoading] = useState(false);
-  const [storageInfo, setStorageInfo] = useState<EmbeddingStorageInfo | null>(null);
-  const [isCleaningUp, setIsCleaningUp] = useState(false);
-  /** 削除・破棄の実行結果。件数と解放量を出さないと、押しても何が起きたか分からない */
-  const [cleanupResult, setCleanupResult] = useState<EmbeddingCleanupResult | null>(null);
-  const [confirmDiscard, setConfirmDiscard] = useState(false);
+  // 概念スペクトラム検索（タグ埋め込み）。
+  // 生成・計測・削除・破棄という実行を伴い、それぞれ進捗と結果を持つので別のフックにしてある。
+  // **画面側の名前は変えていない**（useEmbeddingSettings 側の名前に読み替えるだけ）
+  const emb = useEmbeddingSettings(settings);
+  // 区画の外（保存する値の組み立て・確認ダイアログ・開いたときの取得）で使うものだけ取り出す。
+  // 区画の中で使うものは `emb` ごと SpectrumSettingsSection に渡す
+  const {
+    embeddingModel,
+    setEmbeddingModel,
+    includeDescriptive: spectrumIncludeDescriptive,
+    centering: spectrumCentering,
+    storageInfo,
+    confirmDiscard,
+    refreshStatus: refreshEmbeddingStatus,
+    syncFromSettings: syncEmbeddingFromSettings,
+    discard: handleDiscardEmbeddings,
+  } = emb;
   /** 埋め込みモデルを切り替えて保存しようとしたときの確認 */
   const [confirmModelSwitch, setConfirmModelSwitch] = useState<{ from: string; to: string } | null>(null);
-
-  const refreshEmbeddingStatus = async () => {
-    try {
-      setEmbeddingStatus(await invoke<EmbeddingStatus>('get_embedding_status'));
-    } catch (e) {
-      setEmbeddingError(String(e));
-    }
-    try {
-      setStorageInfo(await invoke<EmbeddingStorageInfo>('get_embedding_storage_info'));
-    } catch {
-      // 保存領域の情報は補助的なので、取れなくても他の表示は続ける
-      setStorageInfo(null);
-    }
-  };
 
   // System VRAM
   const [vramGb, setVramGb] = useState<number | null>(null);
@@ -231,10 +191,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     if (settings.force_detailed_prompt !== undefined) setForceDetailedPrompt(settings.force_detailed_prompt === 'true');
     if (settings.tag_granularity) setTagGranularity(settings.tag_granularity as TagGranularity);
 
-    if (settings.spectrum_embedding_model) setEmbeddingModel(settings.spectrum_embedding_model);
-    if (settings.spectrum_include_descriptive !== undefined)
-      setSpectrumIncludeDescriptive(settings.spectrum_include_descriptive === 'true');
-    if (settings.spectrum_centering !== undefined) setSpectrumCentering(settings.spectrum_centering !== 'false');
+    syncEmbeddingFromSettings(settings);
 
     if (settings.gemini_model) setGeminiModel(settings.gemini_model);
     if (settings.gemini_text_model) setGeminiTextModel(settings.gemini_text_model);
@@ -319,6 +276,89 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     () => (visionModelSet ? availableModels.filter((m) => !visionModelSet.has(m)).length : 0),
     [availableModels, visionModelSet]
   );
+
+  /**
+   * 保存する値の一覧。**保存と「変更途中か」の判定で同じものを見る。**
+   * 別々に書くと、片方に項目を足したときにもう片方がずれる。
+   */
+  const settingEntries: SettingEntry[] = [
+    { key: 'llm_provider', value: provider },
+    { key: 'ollama_url', value: ollamaUrl },
+    { key: 'ollama_model', value: selectedVlmModel },
+    { key: 'ollama_text_model', value: selectedTextModel },
+    // 空欄・不正値は自動(0) / 既定値(1536) にフォールバックさせる
+    { key: 'ollama_num_ctx', value: String(Math.max(0, parseInt(ollamaNumCtx, 10) || 0)) },
+    {
+      key: 'ollama_max_image_edge',
+      value: String(
+        Math.max(
+          0,
+          Number.isFinite(parseInt(ollamaMaxImageEdge, 10)) ? parseInt(ollamaMaxImageEdge, 10) : 1536
+        )
+      ),
+    },
+    { key: 'llm_debug_logging', value: llmDebugLogging ? 'true' : 'false' },
+    { key: 'force_detailed_prompt', value: forceDetailedPrompt ? 'true' : 'false' },
+    { key: 'tag_granularity', value: tagGranularity },
+
+    { key: 'gemini_model', value: geminiModel },
+    // *_text_model はクラウド側では **Rust のどこからも読まれていない**
+    // （読まれるのは ollama_text_model だけ / tag_organize.rs）。
+    // 動かない入力欄を作らないため UI は用意していない。既定値を書き戻すだけ
+    { key: 'gemini_text_model', value: geminiTextModel },
+
+    { key: 'openai_base_url', value: openaiBaseUrl },
+    { key: 'openai_model', value: openaiModel },
+
+    { key: 'claude_model', value: claudeModel },
+    { key: 'claude_text_model', value: claudeTextModel },
+
+    { key: 'ext_llm_max_batch_items', value: extMaxBatchItems },
+    { key: 'ext_llm_retry_enabled', value: extRetryEnabled ? 'true' : 'false' },
+    { key: 'ext_llm_retry_max_attempts', value: extRetryAttempts },
+    { key: 'ui_language', value: uiLanguage },
+    { key: 'ffmpeg_notice_enabled', value: ffmpegNoticeEnabled ? 'true' : 'false' },
+
+    { key: 'spectrum_embedding_model', value: embeddingModel },
+    { key: 'spectrum_include_descriptive', value: spectrumIncludeDescriptive ? 'true' : 'false' },
+    { key: 'spectrum_centering', value: spectrumCentering ? 'true' : 'false' },
+  ];
+
+  /**
+   * 開いた時点の値。**保存済みの設定との差ではなく、開いてから触ったかで見る。**
+   * 保存されたことのない項目は設定に無く、差で見ると常に「変更あり」になる。
+   */
+  const openedWith = useRef<string>('');
+  useEffect(() => {
+    if (open) openedWith.current = JSON.stringify(settingEntries);
+    // 開いた瞬間の値だけを控える。開いている間の変化は追わない
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Esc で閉じる。**確認のパネルが開いていたら、そちらだけ閉じる**
+  useEscapeToClose({
+    open,
+    onClose,
+    onEscapeFirst: () => {
+      if (confirmModelSwitch) {
+        setConfirmModelSwitch(null);
+        return true;
+      }
+      if (confirmDownloadModal) {
+        setConfirmDownloadModal(null);
+        return true;
+      }
+      return false;
+    },
+    isDirty: () =>
+      JSON.stringify(settingEntries) !== openedWith.current ||
+      Object.values(apiKeyDirty).some(Boolean),
+    confirm: () =>
+      ask(t('app.discard_confirm', ''), {
+        title: t('app.label_discard_title', 'Discard changes'),
+        kind: 'warning',
+      }),
+  });
 
   // フックは早期 return より前にすべて並べる（`if (!open) return null` の後ろに置くと
   // 閉じている間だけ呼ばれず、React が「フックの順序が変わった」で描画ごと落とす）
@@ -437,45 +477,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       // 保存が終わるまでの間に別の値を触られても、DB に入るのは押した時点の値だけで、
       // 画面には触った後の値が出たままモーダルが閉じていた
       const result = await onSaveSettings(
-        [
-          { key: 'llm_provider', value: provider },
-          { key: 'ollama_url', value: ollamaUrl },
-          { key: 'ollama_model', value: selectedVlmModel },
-          { key: 'ollama_text_model', value: selectedTextModel },
-          // 空欄・不正値は自動(0) / 既定値(1536) にフォールバックさせる
-          { key: 'ollama_num_ctx', value: String(Math.max(0, parseInt(ollamaNumCtx, 10) || 0)) },
-          {
-            key: 'ollama_max_image_edge',
-            value: String(
-              Math.max(0, Number.isFinite(parseInt(ollamaMaxImageEdge, 10)) ? parseInt(ollamaMaxImageEdge, 10) : 1536)
-            ),
-          },
-          { key: 'llm_debug_logging', value: llmDebugLogging ? 'true' : 'false' },
-          { key: 'force_detailed_prompt', value: forceDetailedPrompt ? 'true' : 'false' },
-          { key: 'tag_granularity', value: tagGranularity },
-
-          { key: 'gemini_model', value: geminiModel },
-          // *_text_model はクラウド側では **Rust のどこからも読まれていない**
-          // （読まれるのは ollama_text_model だけ / tag_organize.rs）。
-          // 動かない入力欄を作らないため UI は用意していない。既定値を書き戻すだけ
-          { key: 'gemini_text_model', value: geminiTextModel },
-
-          { key: 'openai_base_url', value: openaiBaseUrl },
-          { key: 'openai_model', value: openaiModel },
-
-          { key: 'claude_model', value: claudeModel },
-          { key: 'claude_text_model', value: claudeTextModel },
-
-          { key: 'ext_llm_max_batch_items', value: extMaxBatchItems },
-          { key: 'ext_llm_retry_enabled', value: extRetryEnabled ? 'true' : 'false' },
-          { key: 'ext_llm_retry_max_attempts', value: extRetryAttempts },
-          { key: 'ui_language', value: uiLanguage },
-          { key: 'ffmpeg_notice_enabled', value: ffmpegNoticeEnabled ? 'true' : 'false' },
-
-          { key: 'spectrum_embedding_model', value: embeddingModel },
-          { key: 'spectrum_include_descriptive', value: spectrumIncludeDescriptive ? 'true' : 'false' },
-          { key: 'spectrum_centering', value: spectrumCentering ? 'true' : 'false' },
-        ],
+        // **組み立ては settingEntries に1本化してある。**
+        // ここに直接書くと、Esc の「変更途中か」の判定とずれる
+        settingEntries,
         // API キーの保存先は OS の資格情報ストア。設定本体とは別に扱われる。
         // **触っていないキーは送らない。** 読み出しに失敗していると state は空のままで、
         // 送ると保存済みのキーを空文字で消してしまう
@@ -528,89 +532,6 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       }
     } else {
       setConfirmDownloadModal({ model: item, targetType });
-    }
-  };
-
-  /**
-   * 未ベクトル化タグを一括生成する。
-   * スキャン・タグマージと同じグローバルロックを共有するため、実行中は他の処理が弾かれる。
-   */
-  const handleGenerateEmbeddings = async () => {
-    setEmbeddingError(null);
-    setCleanupResult(null);
-    setIsGeneratingEmbeddings(true);
-    setEmbeddingProgress({ total: 0, current: 0, status: 'running' });
-    const unlistenPromise = listen<EmbeddingProgressPayload>('embedding_progress', (event) => {
-      setEmbeddingProgress(event.payload);
-    });
-    try {
-      await runBackground(() => invoke('generate_tag_embeddings'));
-      await refreshEmbeddingStatus();
-    } catch (e) {
-      setEmbeddingError(String(e));
-    } finally {
-      setIsGeneratingEmbeddings(false);
-      unlistenPromise.then((unlisten) => unlisten());
-    }
-  };
-
-  /** 使用中でないモデルのベクトルを削除する。自動では走らない（明示操作のみ） */
-  const handleCleanupEmbeddings = async () => {
-    setIsCleaningUp(true);
-    setEmbeddingError(null);
-    setCleanupResult(null);
-    try {
-      setCleanupResult(
-        await runExclusive('processing_embeddings', () =>
-          invoke<EmbeddingCleanupResult>('cleanup_unused_embeddings')
-        )
-      );
-      await refreshEmbeddingStatus();
-    } catch (e) {
-      setEmbeddingError(String(e));
-    } finally {
-      setIsCleaningUp(false);
-    }
-  };
-
-  const handleRunDiagnostics = async () => {
-    setDiagnosticsLoading(true);
-    setEmbeddingError(null);
-    try {
-      // 画面上のトグルをそのまま渡す。保存済みの値で測ると、切り替えても
-      // 結果が変わらず「効いていない」ように見える。
-      // この2つはタグのベクトルに影響しないので、その場で測り直せる。
-      setDiagnostics(
-        await invoke<EmbeddingDiagnostics>('get_embedding_diagnostics', {
-          centering: spectrumCentering,
-          includeDescriptive: spectrumIncludeDescriptive,
-        }),
-      );
-    } catch (e) {
-      setEmbeddingError(String(e));
-      setDiagnostics(null);
-    } finally {
-      setDiagnosticsLoading(false);
-    }
-  };
-
-  /** 使用中のモデルのベクトルを破棄する（作り直したいとき用）。取り返しがつかないので確認を取る */
-  const handleDiscardEmbeddings = async () => {
-    setIsCleaningUp(true);
-    setEmbeddingError(null);
-    setCleanupResult(null);
-    setConfirmDiscard(false);
-    try {
-      setCleanupResult(
-        await runExclusive('processing_embeddings', () => invoke<EmbeddingCleanupResult>('discard_embeddings'))
-      );
-      await refreshEmbeddingStatus();
-      // 破棄後の分布を出したままにすると、消えたデータの結果を見せ続けることになる
-      setDiagnostics(null);
-    } catch (e) {
-      setEmbeddingError(String(e));
-    } finally {
-      setIsCleaningUp(false);
     }
   };
 
@@ -709,7 +630,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
             </div>
             <div>
               <h3 className="text-lg font-bold text-white">{t('settings.label_title', '設定')}</h3>
-              <p className="text-xs text-slate-400">Configure LLM Provider & Analysis Parameters</p>
+              <p className="text-xs text-slate-400">{t('settings.label_subtitle', '')}</p>
             </div>
           </div>
           <button
@@ -740,7 +661,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full bg-slate-950 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                 >
                   <option value="ja">{t('settings.label_language_ja', '日本語 (Japanese)')}</option>
-                  <option value="en">English (US)</option>
+                  <option value="en">{t('settings.label_language_en', 'English (US)')}</option>
                 </select>
               </div>
             </div>
@@ -906,7 +827,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
                 >
                   {vlmModelOptions.length === 0 ? (
-                    <option value={selectedVlmModel}>{selectedVlmModel} (Current)</option>
+                    <option value={selectedVlmModel}>{selectedVlmModel} ({t('settings.label_current', 'Current')})</option>
                   ) : (
                     vlmModelOptions.map((m) => (
                       <option key={m} value={m}>
@@ -960,79 +881,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       </span>
                     )}
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {RECOMMENDED_VLM_MODELS.map((item) => {
-                      const isInstalled = isModelInstalled(item.name, availableModels);
-                      const isSelected = isModelSelected(item.name, selectedVlmModel);
-                      const isBestMatch = bestVlmName !== null && item.name === bestVlmName;
-
-                      const badgeColor =
-                        item.badge === 'Lightweight'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                          : item.badge === 'Standard'
-                            ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
-                            : 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-
-                      return (
-                        <div
-                          key={item.name}
-                          onClick={() => handleSelectPreset(item, 'vlm')}
-                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition flex flex-col justify-between relative overflow-hidden ${
-                            isBestMatch
-                              ? 'bg-indigo-950/80 border-indigo-500 shadow-xl shadow-indigo-500/20 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : isSelected
-                              ? 'bg-indigo-950/60 border-indigo-500/60 shadow-lg shadow-indigo-500/10 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center justify-between gap-1 mb-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badgeColor}`}>
-                                  {t(badgeLabelKey(item.badge), item.badge)}
-                                </span>
-                                {isBestMatch && (
-                                  <span className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                    {t('settings.label_recommended_vram_best', '★ VRAM適合のおすすめ')}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono shrink-0">{item.size}</span>
-                            </div>
-                            <div className="text-xs font-bold text-white font-mono mt-0.5">{item.name}</div>
-                            <p className="text-[10px] text-slate-400 mt-1 line-clamp-2 leading-tight">
-                              {t(item.descriptionKey, item.descriptionDefault)}
-                            </p>
-                          </div>
-
-                          <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between">
-                            {loadingModels ? (
-                              <span className="text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> {t('settings.label_loading', 'Loading...')}
-                              </span>
-                            ) : isDownloading && downloadProgress?.model === item.name ? (
-                              <span className="text-[10px] font-medium text-amber-400 flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> {t('settings.label_installing', 'Installing...')}
-                              </span>
-                            ) : isInstalled ? (
-                              <span className="text-[10px] font-medium text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> {t('settings.label_installed', 'Installed')}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
-                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
-                              </span>
-                            )}
-                            {isSelected && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-indigo-600 text-white rounded font-bold">
-                                {t('settings.label_selected', 'Selected')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ModelPresetCards
+                    models={RECOMMENDED_VLM_MODELS}
+                    availableModels={availableModels}
+                    selectedModel={selectedVlmModel}
+                    bestMatchName={bestVlmName}
+                    loadingModels={loadingModels}
+                    downloadingModel={isDownloading ? (downloadProgress?.model ?? null) : null}
+                    onSelect={(item) => handleSelectPreset(item, 'vlm')}
+                  />
                 </div>
               </div>
 
@@ -1069,618 +926,60 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {t('settings.label_preset_text', 'Recommended text LLM presets (click to select / auto-download)')}
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {RECOMMENDED_TEXT_MODELS.map((item) => {
-                      const isInstalled = isModelInstalled(item.name, availableModels);
-                      const isSelected = isModelSelected(item.name, selectedTextModel);
-                      const isBestMatch = bestTextName !== null && item.name === bestTextName;
-
-                      const badgeColor =
-                        item.badge === 'Lightweight'
-                          ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
-                          : item.badge === 'Standard'
-                            ? 'bg-indigo-500/10 text-indigo-400 border-indigo-500/20'
-                            : 'bg-purple-500/10 text-purple-400 border-purple-500/20';
-
-                      return (
-                        <div
-                          key={item.name}
-                          onClick={() => handleSelectPreset(item, 'text')}
-                          className={`p-2.5 rounded-xl border text-left cursor-pointer transition flex flex-col justify-between relative overflow-hidden ${
-                            isBestMatch
-                              ? 'bg-indigo-950/80 border-indigo-500 shadow-xl shadow-indigo-500/20 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : isSelected
-                              ? 'bg-indigo-950/60 border-indigo-500/60 shadow-lg shadow-indigo-500/10 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30 hover:bg-slate-800/50'
-                          }`}
-                        >
-                          <div>
-                            <div className="flex items-center justify-between gap-1 mb-1">
-                              <div className="flex items-center gap-1.5 flex-wrap">
-                                <span className={`px-1.5 py-0.5 rounded text-[9px] font-bold border ${badgeColor}`}>
-                                  {t(badgeLabelKey(item.badge), item.badge)}
-                                </span>
-                                {isBestMatch && (
-                                  <span className="bg-gradient-to-r from-indigo-600 to-violet-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
-                                    {t('settings.label_recommended_vram_best', '★ VRAM適合のおすすめ')}
-                                  </span>
-                                )}
-                              </div>
-                              <span className="text-[10px] text-slate-400 font-mono shrink-0">{item.size}</span>
-                            </div>
-                            <div className="text-xs font-bold text-white font-mono mt-0.5">{item.name}</div>
-                            <p className="text-[10px] text-slate-400 mt-1 line-clamp-2 leading-tight">
-                              {t(item.descriptionKey, item.descriptionDefault)}
-                            </p>
-                          </div>
-
-                          <div className="mt-2 pt-2 border-t border-white/5 flex items-center justify-between">
-                            {loadingModels ? (
-                              <span className="text-[10px] font-medium text-slate-400 flex items-center gap-1">
-                                <RefreshCw className="w-3 h-3 animate-spin text-indigo-400" /> {t('settings.label_loading', 'Loading...')}
-                              </span>
-                            ) : isDownloading && downloadProgress?.model === item.name ? (
-                              <span className="text-[10px] font-medium text-amber-400 flex items-center gap-1">
-                                <Loader2 className="w-3 h-3 animate-spin text-amber-400" /> {t('settings.label_installing', 'Installing...')}
-                              </span>
-                            ) : isInstalled ? (
-                              <span className="text-[10px] font-medium text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> {t('settings.label_installed', 'Installed')}
-                              </span>
-                            ) : (
-                              <span className="text-[10px] font-medium text-indigo-400 flex items-center gap-1 hover:text-indigo-300">
-                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
-                              </span>
-                            )}
-                            {isSelected && (
-                              <span className="text-[9px] px-1.5 py-0.5 bg-indigo-600 text-white rounded font-bold">
-                                {t('settings.label_selected', 'Selected')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
+                  <ModelPresetCards
+                    models={RECOMMENDED_TEXT_MODELS}
+                    availableModels={availableModels}
+                    selectedModel={selectedTextModel}
+                    bestMatchName={bestTextName}
+                    loadingModels={loadingModels}
+                    downloadingModel={isDownloading ? (downloadProgress?.model ?? null) : null}
+                    onSelect={(item) => handleSelectPreset(item, 'text')}
+                  />
                 </div>
               </div>
             </div>
           )}
 
-          {/* Provider Specific Settings (外部LLM)
-              Ollama のモデル選択と同じ位置に置く。プロバイダーを切り替えたときに
-              「モデルを選ぶ欄が消えた」ようには見せない */}
           {provider !== 'ollama' && (
-            <div className="space-y-4 p-4 bg-slate-900/50 rounded-xl border border-white/5">
-              <h4 className="text-xs font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
-                <Cpu className="w-3.5 h-3.5" />
-                {t('settings.label_cloud_section', 'モデルとAPIキー')}
-              </h4>
-
-              {/* OpenAI 互換エンドポイント。互換サーバーを指すために要る */}
-              {provider === 'openai' && (
-                <div>
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Server className="w-3.5 h-3.5 text-indigo-400" />
-                    <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.label_openai_base_url', 'OpenAI 互換エンドポイント URL')}
-                    </label>
-                    <TooltipHelp text={t('settings.openai_base_url_help', 'OpenAI 互換のAPIを提供するサーバーのURLです。')} />
-                  </div>
-                  <input
-                    type="text"
-                    value={openaiBaseUrl}
-                    onChange={(e) => setOpenaiBaseUrl(e.target.value)}
-                    placeholder="https://api.openai.com/v1"
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                  />
-                </div>
-              )}
-
-              {/* モデル名。一覧の取得には対応していないので直接入力させる */}
-              <div>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <Cpu className="w-3.5 h-3.5 text-indigo-400" />
-                  <label className="text-xs font-semibold text-slate-300">
-                    {t('settings.label_cloud_model', '使用するモデル')}
-                  </label>
-                  <TooltipHelp text={t('settings.cloud_model_help', 'モデル一覧の取得には対応していないため、プロバイダーが公開しているモデルIDをそのまま入力してください。')} />
-                </div>
-                <input
-                  type="text"
-                  value={cloudModel}
-                  onChange={(e) => setCloudModel(e.target.value)}
-                  placeholder={CLOUD_MODEL_PLACEHOLDER[provider]}
-                  className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                />
-              </div>
-
-              {/* API キー */}
-              <div>
-                <div className="flex items-center gap-1.5 mb-1.5">
-                  <ShieldAlert className="w-3.5 h-3.5 text-indigo-400" />
-                  <label className="text-xs font-semibold text-slate-300">
-                    {t('settings.label_api_key', 'APIキー')}
-                  </label>
-                  <TooltipHelp text={t('settings.api_key_help', 'OSの資格情報ストアに保存します。設定ファイルやデータベースには書き込みません。')} />
-                </div>
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type={showApiKey ? 'text' : 'password'}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    placeholder={t('settings.label_api_key_placeholder', '未設定')}
-                    autoComplete="off"
-                    spellCheck={false}
-                    className="flex-1 bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowApiKey((v) => !v)}
-                    title={
-                      showApiKey
-                        ? t('settings.label_api_key_hide', '隠す')
-                        : t('settings.label_api_key_show', '表示する')
-                    }
-                    className="p-2 text-slate-400 hover:text-white rounded-xl hover:bg-slate-800 transition cursor-pointer shrink-0"
-                  >
-                    {showApiKey ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
-                  </button>
-                </div>
-
-                {/* 空欄の意味を取り違えさせない。読めなかっただけなら、保存しても消えない */}
-                {apiKeyReadFailed[provider] && (
-                  <div className="mt-2 p-2 rounded-lg bg-amber-950/40 border border-amber-500/30 text-[11px] text-amber-200 flex items-start gap-1.5">
-                    <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px text-amber-400" />
-                    <span>{t('settings.api_key_read_failed', '保存済みのキーを読み出せませんでした。空欄のまま保存しても消えません。入力すると上書きします。')}</span>
-                  </div>
-                )}
-              </div>
-            </div>
+            <CloudProviderSection
+              provider={provider}
+              cloudModel={cloudModel}
+              setCloudModel={setCloudModel}
+              modelPlaceholder={CLOUD_MODEL_PLACEHOLDER}
+              openaiBaseUrl={openaiBaseUrl}
+              setOpenaiBaseUrl={setOpenaiBaseUrl}
+              apiKey={apiKey}
+              setApiKey={setApiKey}
+              apiKeyReadFailed={apiKeyReadFailed}
+              showApiKey={showApiKey}
+              setShowApiKey={setShowApiKey}
+            />
           )}
 
-          {/* Advanced Settings Accordion
-              基本設定（言語・モデル選択・タグ粒度）以外はすべてここへ格納する */}
-          <div className="bg-slate-900/50 rounded-xl border border-white/5 overflow-hidden">
-            <button
-              type="button"
-              onClick={() => setAdvancedOpen((v) => !v)}
-              aria-expanded={advancedOpen}
-              className="w-full flex items-center justify-between px-4 py-3 text-left hover:bg-white/5 transition cursor-pointer"
-            >
-              <span className="flex items-center gap-1.5 text-xs font-bold text-indigo-300 uppercase tracking-wider">
-                <SlidersHorizontal className="w-3.5 h-3.5" />
-                {t('settings.label_advanced_section', '詳細設定')}
-              </span>
-              <ChevronDown
-                className={`w-4 h-4 text-slate-400 transition-transform ${advancedOpen ? 'rotate-180' : ''}`}
-              />
-            </button>
-
-            {advancedOpen && (
-              <div className="px-4 pb-4 space-y-4 border-t border-white/5 pt-4">
-                {/* LLM Provider Selection */}
-                <div>
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Server className="w-3.5 h-3.5 text-indigo-400" />
-                    <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.label_provider_label', 'LLMプロバイダー選択')}
-                    </label>
-                    <TooltipHelp text={t('settings.provider_help', 'メディアの解析やタグ生成に使用するAIエンジンを選択します。Ollamaがローカル動作の標準プロバイダーです。')} />
-                  </div>
-                  <select
-                    value={provider}
-                    onChange={(e) => setProvider(e.target.value)}
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
-                  >
-                    <option value="ollama">Ollama</option>
-                    <option value="gemini">Google Gemini API [Unsupported]</option>
-                    <option value="openai">OpenAI API [Unsupported]</option>
-                    <option value="claude">Anthropic Claude API [Unsupported]</option>
-                  </select>
-                </div>
-
-                {/* Ollama Endpoint URL */}
-                {provider === 'ollama' && (
-                  <div className="pt-3 border-t border-white/5">
-                    <div className="flex items-center gap-1.5 mb-1.5">
-                      <Server className="w-3.5 h-3.5 text-indigo-400" />
-                      <label className="text-xs font-semibold text-slate-300">
-                        {t('settings.label_ollama_url', 'Ollama API エンドポイント URL')}
-                      </label>
-                      <TooltipHelp text={t('settings.ollama_url_help', 'ローカルまたはリモートで稼働中のOllamaサーバーの接続URLです（デフォルト: http://localhost:11434）。')} />
-                    </div>
-                    <input
-                      type="text"
-                      value={ollamaUrl}
-                      onChange={(e) => setOllamaUrl(e.target.value)}
-                      placeholder="http://localhost:11434"
-                      className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                    />
-                  </div>
-                )}
-
-                {/* Force Detailed Prompt Mode (applies to cloud providers too) */}
-                <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                  <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={forceDetailedPrompt}
-                      onChange={(e) => setForceDetailedPrompt(e.target.checked)}
-                      className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                    />
-                    <span>{t('settings.label_force_detailed_mode', '高精度プロンプトモード (DETAILED) を強制適用する')}</span>
-                  </label>
-                  <TooltipHelp align="right" text={t('settings.force_detailed_help', '軽量モデル（8B未満など）で高精度モードを強制すると、モデルが高度な文脈指示や構造化JSONを解釈できず解析エラーの原因となる場合があります。OFF推奨（判定失敗時に自動で軽量モードへフォールバックします）。')} />
-                </div>
-
-                {/* FFmpeg Notice Toggle */}
-                <div className="flex items-center justify-between pt-3 border-t border-white/5">
-                  <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                    <input
-                      type="checkbox"
-                      checked={ffmpegNoticeEnabled}
-                      onChange={(e) => setFfmpegNoticeEnabled(e.target.checked)}
-                      className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                    />
-                    <span>{t('settings.label_ffmpeg_notice', 'FFmpeg未インストール時のアナウンス通知を表示')}</span>
-                  </label>
-                  <TooltipHelp align="right" text={t('settings.ffmpeg_notice_help', '動画解析に必要なFFmpegが見つからない場合のアナウンス通知アイコンの表示を切り替えます。')} />
-                </div>
-
-                {/* Ollama Diagnostics & Tuning */}
-                {provider === 'ollama' && (
-                  <div className="pt-3 border-t border-white/5 space-y-3">
-                    <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wide">
-                      {t('settings.label_ollama_advanced', 'Ollama 詳細・診断')}
-                    </h4>
-
-                    {/* 縦並び: コンテキスト長 → 最大長辺 */}
-                    <div className="flex flex-col gap-3">
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <label className="text-xs font-semibold text-slate-300">
-                            {t('settings.label_ollama_num_ctx', 'コンテキスト長 (num_ctx)')}
-                          </label>
-                          <TooltipHelp text={t('settings.ollama_num_ctx_help', '0で自動（タグ粒度に応じて8192〜16384を選択）。qwen3-vl等の思考モデルは応答本文の前に大量の推論トークンを消費するため、コンテキストが不足すると生成が途中で打ち切られ空応答となりリトライが多発します。不足時は自動的に2倍へ拡張されます。')} />
-                        </div>
-                        <input
-                          type="number"
-                          min={0}
-                          step={1024}
-                          value={ollamaNumCtx}
-                          onChange={(e) => setOllamaNumCtx(e.target.value)}
-                          placeholder={t('settings.label_placeholder_auto', '0 (auto)')}
-                          className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                        />
-                      </div>
-
-                      <div>
-                        <div className="flex items-center gap-1.5 mb-1.5">
-                          <label className="text-xs font-semibold text-slate-300">
-                            {t('settings.label_ollama_max_image_edge', '送信画像の最大長辺 (px)')}
-                          </label>
-                          <TooltipHelp text={t('settings.ollama_max_image_edge_help', '解析前に画像をこのサイズまで縮小して送信します（0で無効）。縦横比は保たれます。12MPの写真は画像だけで約4000トークンを消費するため、縮小するとコンテキストに余裕が生まれ解析も高速化します。文字認識精度を優先する場合は大きめの値に設定してください。')} />
-                        </div>
-                        <input
-                          type="number"
-                          min={0}
-                          step={256}
-                          value={ollamaMaxImageEdge}
-                          onChange={(e) => setOllamaMaxImageEdge(e.target.value)}
-                          placeholder="1536"
-                          className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50 font-mono"
-                        />
-                      </div>
-                    </div>
-
-                    <div className="flex items-center justify-between">
-                      <label className="text-xs font-semibold text-slate-300 cursor-pointer select-none flex items-center gap-2">
-                        <input
-                          type="checkbox"
-                          checked={llmDebugLogging}
-                          onChange={(e) => setLlmDebugLogging(e.target.checked)}
-                          className="rounded border-white/10 bg-slate-950 text-indigo-600 focus:ring-0 cursor-pointer"
-                        />
-                        <span>{t('settings.label_llm_debug_logging', 'LLM診断ログを出力する（開発用）')}</span>
-                      </label>
-                      <TooltipHelp align="right" text={t('settings.llm_debug_logging_help', 'リクエストごとにプロンプト種別・num_ctx・トークン消費量・終了理由(done_reason)を、解析失敗時には生レスポンスをログへ記録します。リトライの原因調査に使用します。ログ量が増えるため通常はOFFにしてください。')} />
-                    </div>
-                  </div>
-                )}
-
-                {/* Manual VRAM Unload for Ollama */}
-                {provider === 'ollama' && onUnloadModel && (
-                  <div className="pt-3 border-t border-white/5 flex items-center justify-between">
-                    <div className="flex items-center gap-1.5">
-                      <span className="text-xs text-slate-300 font-medium">{t('settings.label_manual_unload', 'Free VRAM manually')}</span>
-                      <TooltipHelp text={t('settings.unload_vram_help', 'Ollamaでロード中のモデルをVRAMから即座にメモリ解放（アンロード）します。WebUIや他のアプリケーション等で同一モデルを使用中の場合でも、VRAMからアンロードされます。')} />
-                    </div>
-                    <button
-                      onClick={handleManualUnload}
-                      className="flex items-center gap-1.5 px-3 py-1 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/30 rounded-lg text-xs font-semibold transition cursor-pointer"
-                    >
-                      <Trash2 className="w-3 h-3" />
-                      {unloadedStatus ? t('settings.label_unloaded', 'Freed') : t('settings.label_unload', 'Free VRAM')}
-                    </button>
-                  </div>
-                )}
-                {/* 概念スペクトラム検索（タグ埋め込み） */}
-                <div className="pt-3 border-t border-white/5">
-                  <div className="flex items-center gap-1.5 mb-1.5">
-                    <Radar className="w-3.5 h-3.5 text-indigo-400" />
-                    <label className="text-xs font-semibold text-slate-300">
-                      {t('settings.label_spectrum_section', '似ているメディアの検索（タグのベクトル化）')}
-                    </label>
-                    <TooltipHelp
-                      text={t(
-                        'settings.spectrum_help',
-                        'タグの意味をベクトル化し、タグが完全一致しなくても意味的に近いメディアを探せるようにします。ベクトル化は手動で実行する必要があり、スキャン処理には影響しません。',
-                      )}
-                    />
-                  </div>
-
-                  <select
-                    value={embeddingModel}
-                    onChange={(e) => setEmbeddingModel(e.target.value)}
-                    className="w-full bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500/50"
-                  >
-                    {availableModels.length === 0 ? (
-                      <option value={embeddingModel}>{embeddingModel} (Current)</option>
-                    ) : (
-                      [...new Set([embeddingModel, ...availableModels])].map((m) => (
-                        <option key={m} value={m}>
-                          {m}
-                        </option>
-                      ))
-                    )}
-                  </select>
-
-                  {/* 推奨埋め込みモデル */}
-                  <div className="grid grid-cols-3 gap-2 mt-2">
-                    {RECOMMENDED_EMBEDDING_MODELS.map((item) => {
-                      const isInstalled = isModelInstalled(item.name, availableModels);
-                      const isSelected = isModelSelected(item.name, embeddingModel);
-                      return (
-                        <div
-                          key={item.name}
-                          onClick={() => handleSelectPreset(item, 'embedding')}
-                          className={`p-2 rounded-xl border cursor-pointer transition ${
-                            isSelected
-                              ? 'bg-indigo-950/60 border-indigo-500/60'
-                              : 'bg-slate-900/80 border-white/5 hover:border-indigo-500/30'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between gap-1">
-                            <span className="text-[9px] font-bold text-slate-400">{t(badgeLabelKey(item.badge), item.badge)}</span>
-                            <span className="text-[10px] text-slate-500 font-mono">{item.size}</span>
-                          </div>
-                          <div className="text-[11px] font-bold text-white font-mono truncate mt-0.5">{item.name}</div>
-                          <div className="mt-1 text-[10px]">
-                            {isInstalled ? (
-                              <span className="text-emerald-400 flex items-center gap-1">
-                                <Check className="w-3 h-3" /> {t('settings.label_present', 'Present')}
-                              </span>
-                            ) : (
-                              <span className="text-indigo-400 flex items-center gap-1">
-                                <Download className="w-3 h-3" /> {t('settings.label_needs_download', 'Download')}
-                              </span>
-                            )}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-
-                  {/* 現在の状態 */}
-                  {embeddingStatus && (
-                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] text-slate-300 space-y-1">
-                      <div className="flex flex-wrap gap-x-4 gap-y-1">
-                        <span>
-                          {t('settings.label_spectrum_embedded', 'ベクトル化済みタグ')}: {embeddingStatus.embedded_tags} /{' '}
-                          {embeddingStatus.total_tags}
-                        </span>
-                        <span className={embeddingStatus.missing_tags > 0 ? 'text-amber-300' : ''}>
-                          {t('settings.label_spectrum_missing', '未生成')}: {embeddingStatus.missing_tags}
-                        </span>
-                      </div>
-                      <div className="flex flex-wrap gap-x-4 gap-y-1 text-slate-400">
-                        <span>
-                          {t('settings.label_spectrum_eligible', '検索対象メディア')}: {embeddingStatus.eligible_media}
-                        </span>
-                        {/* タグ不足で対象外になるメディアを黙って隠さない */}
-                        <span>
-                          {t('settings.label_spectrum_excluded', 'タグ')}
-                          {embeddingStatus.min_basic_tags}
-                          {t('settings.label_spectrum_excluded_suffix', '個未満で対象外')}: {embeddingStatus.excluded_media}
-                        </span>
-                      </div>
-                      {!embeddingStatus.model_available && (
-                        <div className="text-amber-300 flex items-start gap-1.5 pt-1">
-                          <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-px" />
-                          <span>
-                            {t(
-                              'settings.spectrum_model_missing',
-                              'このモデルは Ollama に導入されていません。上のカードから取得してください。',
-                            )}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  )}
-
-                  {/* 生成 */}
-                  <div className="mt-2 flex items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={handleGenerateEmbeddings}
-                      disabled={isGeneratingEmbeddings || !embeddingStatus || embeddingStatus.missing_tags === 0}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl text-[11px] font-semibold transition cursor-pointer"
-                    >
-                      {isGeneratingEmbeddings ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <Sparkles className="w-3.5 h-3.5" />
-                      )}
-                      {t('settings.label_spectrum_generate', '未生成のタグをベクトル化')}
-                    </button>
-                    <button
-                      type="button"
-                      onClick={handleRunDiagnostics}
-                      disabled={diagnosticsLoading || isGeneratingEmbeddings}
-                      className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                    >
-                      {diagnosticsLoading ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <FlaskConical className="w-3.5 h-3.5 text-indigo-400" />
-                      )}
-                      {t('settings.label_spectrum_diagnostics', '類似度分布を計測')}
-                    </button>
-                    {isGeneratingEmbeddings && embeddingProgress && embeddingProgress.total > 0 && (
-                      <span className="text-[11px] text-slate-400 tabular-nums">
-                        {embeddingProgress.current} / {embeddingProgress.total}
-                      </span>
-                    )}
-                  </div>
-
-                  {embeddingError && (
-                    <div className="mt-2 p-2 rounded-lg bg-red-950/40 border border-red-500/30 text-[11px] text-red-200">
-                      {embeddingError}
-                    </div>
-                  )}
-
-                  {/* 削除・破棄の結果。件数と解放量を出さないと、消えたのかどうかが分からない */}
-                  {cleanupResult && (
-                    <div className="mt-2 p-2 rounded-lg bg-emerald-950/40 border border-emerald-500/30 text-[11px] text-emerald-200 flex items-start gap-1.5">
-                      <Check className="w-3.5 h-3.5 shrink-0 mt-px text-emerald-400" />
-                      <span>
-                        {cleanupResult.deleted_rows > 0 ? (
-                          <>
-                            {t('settings.spectrum_cleanup_done', '{rows}件のベクトルを削除しました（{size} MB）。', {
-                              rows: cleanupResult.deleted_rows,
-                              size: (cleanupResult.freed_bytes / 1e6).toFixed(1),
-                            })}{' '}
-                            {/* VACUUM が走らないとファイルは縮まない。DB のサイズを見て「削除が失敗した」と
-                                読まれるのを防ぐため、縮んだかどうかを必ず添える */}
-                            {cleanupResult.vacuumed
-                              ? t('settings.spectrum_cleanup_vacuumed', 'DBファイルも縮んでいます。')
-                              : t(
-                                  'settings.spectrum_cleanup_not_vacuumed',
-                                  'DBファイルはまだ縮んでいません。空いた領域は次にベクトルを作り直すときに再利用されます。',
-                                )}
-                          </>
-                        ) : (
-                          t('settings.spectrum_cleanup_none', '削除するベクトルはありませんでした。')
-                        )}
-                      </span>
-                    </div>
-                  )}
-
-                  {/* 実験用トグル。ベクトルには影響しないので、切り替えたら
-                      そのまま「類似度分布を計測」で比較できる（保存も再生成も不要） */}
-                  <div className="mt-3 space-y-2">
-                    <p className="text-[10px] text-slate-500 leading-relaxed">
-                      {t(
-                        'settings.spectrum_toggle_note',
-                        '下の2つはタグのベクトルに影響しません。切り替えてから「類似度分布を計測」を押すと、保存せずにその場で比較できます。',
-                      )}
-                    </p>
-                    <label className="flex items-start gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={spectrumCentering}
-                        onChange={(e) => setSpectrumCentering(e.target.checked)}
-                        className="mt-0.5 accent-indigo-500"
-                      />
-                      <span className="text-[11px] text-slate-300">
-                        {t('settings.label_spectrum_centering', 'ハブ化対策 (centering) を有効にする')}
-                        <span className="block text-[10px] text-slate-500">
-                          {t(
-                            'settings.spectrum_centering_help',
-                            'OFFにすると、タグ本数の多いメディアが何とでも似ていると判定されやすくなります。',
-                          )}
-                        </span>
-                      </span>
-                    </label>
-                    <label className="flex items-start gap-2 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={spectrumIncludeDescriptive}
-                        onChange={(e) => setSpectrumIncludeDescriptive(e.target.checked)}
-                        className="mt-0.5 accent-indigo-500"
-                      />
-                      <span className="text-[11px] text-slate-300">
-                        {t('settings.label_spectrum_descriptive', '記述的タグも類似度計算に含める')}
-                        <span className="block text-[10px] text-slate-500">
-                          {t(
-                            'settings.spectrum_descriptive_help',
-                            'ONにすると、高精度モデルで解析したメディア同士が優先的に似ていると判定される場合があります。',
-                          )}
-                        </span>
-                      </span>
-                    </label>
-                  </div>
-
-                  {/* 保存領域とGC */}
-                  {storageInfo && storageInfo.models.length > 0 && (
-                    <div className="mt-2.5 p-2.5 rounded-xl bg-slate-950/60 border border-white/5 text-[11px] space-y-1.5">
-                      <div className="text-slate-400">{t('settings.label_spectrum_storage', 'ベクトルの保存量')}</div>
-                      {storageInfo.models.map((m) => (
-                        <div key={m.model} className="flex items-center gap-2 text-slate-300">
-                          <span className="font-mono truncate flex-1">{m.model}</span>
-                          {m.in_use && (
-                            <span className="px-1.5 py-0.5 rounded bg-indigo-600/40 text-indigo-200 text-[9px] font-bold shrink-0">
-                              {t('settings.label_spectrum_in_use', '使用中')}
-                            </span>
-                          )}
-                          <span className="tabular-nums text-slate-400 shrink-0">
-                            {m.tag_count} / {storageInfo.total_tags}
-                          </span>
-                          <span className="tabular-nums text-slate-400 shrink-0 w-16 text-right">
-                            {(m.bytes / 1e6).toFixed(1)} MB
-                          </span>
-                        </div>
-                      ))}
-                      <div className="flex flex-wrap gap-2 pt-1">
-                        {storageInfo.reclaimable_bytes > 0 && (
-                          <button
-                            type="button"
-                            onClick={handleCleanupEmbeddings}
-                            disabled={isCleaningUp || isGeneratingEmbeddings}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                          >
-                            {isCleaningUp ? (
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            ) : (
-                              <Trash2 className="w-3.5 h-3.5 text-slate-400" />
-                            )}
-                            {t('settings.label_spectrum_gc', '使用中以外のモデルのベクトルを削除')} (
-                            {(storageInfo.reclaimable_bytes / 1e6).toFixed(1)} MB)
-                          </button>
-                        )}
-                        {/* 使用中のモデルを作り直したいとき用。GC では消えない */}
-                        {storageInfo.models.some((m) => m.in_use) && (
-                          <button
-                            type="button"
-                            onClick={() => setConfirmDiscard(true)}
-                            disabled={isCleaningUp || isGeneratingEmbeddings}
-                            className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 disabled:opacity-40 text-slate-200 rounded-xl text-[11px] font-semibold transition cursor-pointer border border-white/10"
-                          >
-                            <RefreshCw className="w-3.5 h-3.5 text-slate-400" />
-                            {t('settings.label_spectrum_discard', '使用中のモデルのベクトルを破棄して作り直す')}
-                          </button>
-                        )}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* 計測結果。生の数値だけでは評価できないため、判定と次の一手を添える */}
-                  {diagnostics && <EmbeddingDiagnosticsPanel d={diagnostics} />}
-                </div>
-              </div>
-            )}
-          </div>
+          <AdvancedSettingsSection
+            open={advancedOpen}
+            setOpen={setAdvancedOpen}
+            provider={provider}
+            setProvider={setProvider}
+            ollamaUrl={ollamaUrl}
+            setOllamaUrl={setOllamaUrl}
+            forceDetailedPrompt={forceDetailedPrompt}
+            setForceDetailedPrompt={setForceDetailedPrompt}
+            ffmpegNoticeEnabled={ffmpegNoticeEnabled}
+            setFfmpegNoticeEnabled={setFfmpegNoticeEnabled}
+            llmDebugLogging={llmDebugLogging}
+            setLlmDebugLogging={setLlmDebugLogging}
+            ollamaNumCtx={ollamaNumCtx}
+            setOllamaNumCtx={setOllamaNumCtx}
+            ollamaMaxImageEdge={ollamaMaxImageEdge}
+            setOllamaMaxImageEdge={setOllamaMaxImageEdge}
+            onUnloadModel={onUnloadModel}
+            onManualUnload={handleManualUnload}
+            unloadedStatus={unloadedStatus}
+            emb={emb}
+            availableModels={availableModels}
+            onSelectPreset={handleSelectPreset}
+          />
         </div>
 
         {/* Tag Granularity Change Notice */}
@@ -1730,293 +1029,34 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         </div>
       </div>
 
-      {/* ベクトル破棄の確認。取り返しがつかない操作なので必ず通す */}
-      {confirmDiscard && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="bg-slate-900 border border-amber-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-amber-500/20 text-amber-300 rounded-xl border border-amber-500/30">
-                <AlertTriangle className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h4 className="text-base font-bold text-white">
-                  {t('settings.label_spectrum_discard_title', 'ベクトルを破棄しますか')}
-                </h4>
-                <p className="text-xs text-slate-300 font-mono truncate">{storageInfo?.current_model}</p>
-              </div>
-            </div>
-            <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
-              <li>
-                {t('settings.item_spectrum_discard_regen', '破棄後は「未生成のタグをベクトル化」で作り直す必要があります')}
-              </li>
-              <li>
-                {t('settings.item_spectrum_discard_note', 'centering と記述的タグの設定を変えるだけなら破棄は不要です。設定を変えて「類似度分布を計測」を押せばその場で反映されます')}
-              </li>
-            </ul>
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                onClick={() => setConfirmDiscard(false)}
-                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_switch_cancel', 'やめる')}
-              </button>
-              <button
-                onClick={handleDiscardEmbeddings}
-                className="px-4 py-1.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-xs font-bold text-white transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_discard_ok', '破棄する')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <DiscardEmbeddingsDialog
+        open={confirmDiscard}
+        onCancel={() => emb.setConfirmDiscard(false)}
+        onConfirm={handleDiscardEmbeddings}
+        currentModel={storageInfo?.current_model}
+      />
 
-      {/* 埋め込みモデル切り替えの確認 */}
-      {confirmModelSwitch && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4">
-          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-500/20 text-indigo-300 rounded-xl border border-indigo-500/30">
-                <Radar className="w-5 h-5" />
-              </div>
-              <div className="min-w-0">
-                <h4 className="text-base font-bold text-white">
-                  {t('settings.label_spectrum_switch_title', '埋め込みモデルの切り替え')}
-                </h4>
-                <p className="text-xs text-slate-300 font-mono truncate">
-                  {confirmModelSwitch.from} → {confirmModelSwitch.to}
-                </p>
-              </div>
-            </div>
+      <SwitchEmbeddingModelDialog
+        target={confirmModelSwitch}
+        onCancel={() => setConfirmModelSwitch(null)}
+        onConfirm={doSave}
+        storageInfo={storageInfo}
+      />
 
-            <ul className="text-[11px] text-slate-300 space-y-1.5 list-disc pl-4 leading-relaxed">
-              <li>
-                {t('settings.item_spectrum_switch_regen', '再ベクトル化が必要です')}:{' '}
-                {Math.max(
-                  0,
-                  (storageInfo?.total_tags ?? 0) -
-                    (storageInfo?.models.find((m) => m.model === confirmModelSwitch.to)?.tag_count ?? 0),
-                )}{' '}
-                {t('settings.label_spectrum_switch_tags', '件')}
-              </li>
-              <li>{t('settings.item_spectrum_switch_scores', '表示される類似度の数値が変わります')}</li>
-              {/* 「戻せば復元される」と伝えるので、GC は自動で走らせない */}
-              <li>
-                {t(
-                  'settings.item_spectrum_switch_kept',
-                  '以前のモデルのベクトルは保持され、モデルを戻せば即座に復元されます',
-                )}
-              </li>
-            </ul>
+      <ConfirmDownloadDialog
+        model={confirmDownloadModal?.model ?? null}
+        onCancel={() => setConfirmDownloadModal(null)}
+        onConfirm={handleStartDownload}
+      />
 
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                onClick={() => setConfirmModelSwitch(null)}
-                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-200 transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_switch_cancel', 'やめる')}
-              </button>
-              <button
-                onClick={doSave}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition cursor-pointer"
-              >
-                {t('settings.label_spectrum_switch_ok', '切り替えて保存')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Confirmation Modal for Downloading Ollama Model */}
-      {confirmDownloadModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-md w-full p-5 shadow-2xl space-y-4">
-            <div className="flex items-center gap-3">
-              <div className="p-2.5 bg-indigo-500/20 text-indigo-400 rounded-xl border border-indigo-500/30">
-                <Download className="w-5 h-5" />
-              </div>
-              <div>
-                <h4 className="text-base font-bold text-white">{t('settings.label_confirm_download', 'Confirm model download')}</h4>
-                <p className="text-xs text-slate-400">{t('settings.confirm_download_body', '')}</p>
-              </div>
-            </div>
-
-            <div className="p-3 bg-slate-950/60 rounded-xl border border-white/5 space-y-2">
-              <div className="flex items-center justify-between">
-                <span className="text-sm font-bold text-indigo-300 font-mono">{confirmDownloadModal.model.name}</span>
-                <span className="text-xs font-mono px-2 py-0.5 bg-indigo-500/20 text-indigo-300 rounded-md">
-                  {confirmDownloadModal.model.size}
-                </span>
-              </div>
-              <p className="text-xs text-slate-300">{t(confirmDownloadModal.model.descriptionKey, confirmDownloadModal.model.descriptionDefault)}</p>
-            </div>
-
-            <p className="text-[11px] text-slate-400 leading-relaxed">
-              {t('settings.download_note_1', '')}<br />
-              {t('settings.download_note_2', '')}
-            </p>
-
-            <div className="flex items-center justify-end gap-2 pt-2 border-t border-white/10">
-              <button
-                onClick={() => setConfirmDownloadModal(null)}
-                className="px-3.5 py-1.5 rounded-xl border border-white/10 hover:bg-slate-800 text-xs font-medium text-slate-300 transition cursor-pointer"
-              >
-                {t('settings.label_btn_cancel', 'Cancel')}
-              </button>
-              <button
-                onClick={handleStartDownload}
-                className="px-4 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-xs font-bold text-white transition flex items-center gap-1.5 shadow-lg shadow-indigo-600/30 cursor-pointer"
-              >
-                <Download className="w-3.5 h-3.5" />
-                {t('settings.label_btn_start_download', 'Start download')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Granularity Comparison Modal (verification tool) */}
-      {compareModalOpen && (
-        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 backdrop-blur-md p-4 animate-in fade-in duration-150">
-          <div className="bg-slate-900 border border-indigo-500/40 rounded-2xl max-w-3xl w-full p-5 shadow-2xl space-y-4 max-h-[85vh] overflow-y-auto">
-            <div className="flex items-center justify-between">
-              <div className="flex items-center gap-3 min-w-0">
-                {compareImagePath ? (
-                  <button
-                    onClick={() => setCompareImageEnlarged(true)}
-                    className="shrink-0 w-14 h-14 rounded-xl overflow-hidden border border-indigo-500/30 hover:border-indigo-400 transition cursor-pointer group relative"
-                    title={t('settings.label_title_zoom', 'Click to enlarge')}
-                  >
-                    <img
-                      src={convertFileSrc(compareImagePath)}
-                      alt={t('settings.label_alt_preview', 'Preview of the target')}
-                      className="w-full h-full object-cover group-hover:scale-105 transition"
-                    />
-                  </button>
-                ) : (
-                  <div className="p-2.5 bg-indigo-500/20 text-indigo-400 rounded-xl border border-indigo-500/30 shrink-0">
-                    <FlaskConical className="w-5 h-5" />
-                  </div>
-                )}
-                <div className="min-w-0">
-                  <h4 className="text-base font-bold text-white">{t('settings.label_granularity_try', '粒度を試す（画像を選択）')}</h4>
-                  <p className="text-xs text-slate-400 truncate" title={compareImagePath || undefined}>
-                    {compareImagePath ? compareImagePath.split(/[/\\]/).pop() : t('settings.compare_hint', '')}
-                  </p>
-                </div>
-              </div>
-              <button
-                onClick={() => setCompareModalOpen(false)}
-                className="p-1 text-slate-400 hover:text-white rounded-lg hover:bg-slate-800 transition cursor-pointer shrink-0"
-              >
-                <X className="w-5 h-5" />
-              </button>
-            </div>
-
-            {compareError && (
-              <div className="p-3 bg-rose-500/10 border border-rose-500/30 rounded-xl text-rose-300 text-xs">
-                ⚠️ {compareError}
-              </div>
-            )}
-
-            {!compareError && (
-              <>
-                <div className="flex items-center gap-2 text-[11px] text-slate-400">
-                  <RefreshCw className={`w-3.5 h-3.5 text-indigo-400 ${Object.values(compareProgress).some((s) => s === 'running') ? 'animate-spin' : ''}`} />
-                  <span>
-                    {Object.values(compareProgress).filter((s) => s === 'done').length} /{' '}
-                    {GRANULARITY_LEVELS.length} {t('settings.label_done', 'done')}
-                  </span>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-                  {GRANULARITY_LEVELS.map((level) => {
-                    const status = compareProgress[level.value];
-                    const item = compareResults.find((r) => r.granularity === level.value);
-                    return (
-                      <div key={level.value} className="p-3 bg-slate-950/60 rounded-xl border border-white/5 space-y-2 min-h-[110px]">
-                        <div className="flex items-center justify-between">
-                          <span className="text-xs font-bold text-indigo-300">
-                            {t(level.labelKey, level.labelDefault)}
-                          </span>
-                          {status === 'running' && <Loader2 className="w-3.5 h-3.5 animate-spin text-indigo-400" />}
-                          {status === 'done' && <Check className="w-3.5 h-3.5 text-emerald-400" />}
-                          {status === 'pending' && <span className="text-[10px] text-slate-500">{t('settings.label_waiting', 'Waiting')}</span>}
-                        </div>
-
-                        {status !== 'done' && (
-                          <div className="flex items-center justify-center py-6 text-[11px] text-slate-500">
-                            {status === 'running' ? t('settings.label_analyzing', 'Analyzing...') : t('settings.label_waiting_dots', 'Waiting...')}
-                          </div>
-                        )}
-
-                        {status === 'done' && item?.error && (
-                          <p className="text-[11px] text-rose-300">⚠️ {item.error}</p>
-                        )}
-
-                        {status === 'done' && item && !item.error && (
-                          <>
-                            <div className="flex flex-wrap gap-1">
-                              {item.categories.map((c) => (
-                                <span key={c} className="text-[10px] px-1.5 py-0.5 bg-slate-800 text-slate-300 rounded">
-                                  {c}
-                                </span>
-                              ))}
-                            </div>
-                            <div className="flex flex-wrap gap-1">
-                              {item.tags.map((tag) => (
-                                <span key={tag.en} className="text-[10px] px-1.5 py-0.5 bg-indigo-500/15 text-indigo-300 rounded-full">
-                                  #{tag.ja || tag.en}
-                                </span>
-                              ))}
-                            </div>
-                            {item.descriptive_tags.length > 0 && (
-                              <div className="flex flex-wrap gap-1 pt-1 border-t border-white/5">
-                                {item.descriptive_tags.map((tag) => (
-                                  <span key={tag.en} className="text-[10px] px-1.5 py-0.5 bg-slate-800/80 text-slate-400 rounded-full border border-white/5">
-                                    {tag.ja || tag.en}
-                                  </span>
-                                ))}
-                              </div>
-                            )}
-                          </>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* Enlarged preview of the image being compared */}
-      {compareImageEnlarged && compareImagePath && (
-        <div
-          onClick={() => setCompareImageEnlarged(false)}
-          className="fixed inset-0 z-[100] bg-black/90 backdrop-blur-md flex items-center justify-center p-4 cursor-pointer animate-in fade-in duration-150 select-none"
-        >
-          <div onClick={(e) => e.stopPropagation()} className="relative max-w-[90vw] max-h-[90vh] flex flex-col items-center justify-center">
-            <img
-              src={convertFileSrc(compareImagePath)}
-              alt={t('settings.label_alt_preview_zoom', 'Enlarged preview of the target')}
-              className="max-w-full max-h-[80vh] object-contain rounded-2xl shadow-2xl border border-white/10"
-            />
-            <div className="mt-3 flex items-center gap-3">
-              <span className="text-xs text-slate-300 font-mono bg-slate-900/80 px-3 py-1 rounded-lg border border-white/10 truncate max-w-md">
-                {compareImagePath.split(/[/\\]/).pop()}
-              </span>
-              <button
-                onClick={() => setCompareImageEnlarged(false)}
-                className="text-xs text-slate-300 hover:text-white bg-slate-800 px-3 py-1 rounded-lg border border-white/10 transition cursor-pointer"
-              >
-                {t('settings.label_btn_close', 'Close')}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <GranularityCompareModal
+        open={compareModalOpen}
+        onClose={() => setCompareModalOpen(false)}
+        imagePath={compareImagePath}
+        results={compareResults}
+        progress={compareProgress}
+        error={compareError}
+      />
     </div>
   );
 };

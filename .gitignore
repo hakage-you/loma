@@ -35,3 +35,6 @@ task.md
 .claude/
 .claudignore
 _plan
+
+# 性能計測の出力
+/perf-results/

@@ -26,6 +26,17 @@ const TOTAL_ITEMS = 838;
 
 let running = false;
 
+/**
+ * 一時停止中か。**進捗を止めるだけで購読は切らない。**
+ * 実バックエンドも pause 中は is_paused を立てた進捗を送り続けるので、
+ * 画面は「止まっているが生きている」を出せる。
+ */
+let paused = false;
+
+export function setMockScanPaused(next: boolean): void {
+  paused = next;
+}
+
 export function isMockScanRunning(): boolean {
   return running;
 }
@@ -56,7 +67,9 @@ export function startScanSimulatorIfRequested(emit: Emit): void {
         current_file: fileName(current),
         status: 'Analyzing with Ollama (qwen3-vl:8b-instruct)',
         error_count: 0,
+        is_paused: paused,
       });
+      if (paused) return;
       current += 1;
       if (current > TOTAL_ITEMS) clearInterval(timer);
     }, intervalMs);
@@ -84,7 +97,9 @@ export function startScanSimulatorIfRequested(emit: Emit): void {
           current_file: fileName(analyzed),
           status: 'Analyzing with Ollama (qwen3-vl:8b-instruct)',
           error_count: 0,
+          is_paused: paused,
         });
+        if (paused) return;
         analyzed += 1;
         if (analyzed > TOTAL_ITEMS) clearInterval(anaTimer);
       }, intervalMs);

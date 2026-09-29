@@ -26,7 +26,15 @@ export interface MediaItem {
   /** 解析対象から外されているか */
   excluded: boolean;
   categories: string[];
-  tags: TagPairItem[];
+  /**
+   * 付いているタグの id。**名前は入っていない。**
+   *
+   * 名前は `get_all_tags` が返す一覧から引く（`utils/mediaTags.ts`）。
+   * 名前を全件ぶん載せると、実データで応答の半分以上がタグ名になるため。
+   */
+  tag_ids: number[];
+  /** basic 種別のタグの本数。類似検索の対象かどうかの判定に使う */
+  basic_tag_count: number;
 }
 
 /** 解析対象から外されたパス（`excluded_paths`） */

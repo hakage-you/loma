@@ -842,8 +842,8 @@ async fn load_media_items(
     .await
     .map_err(|e| e.to_string())?;
 
-    let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(&format!(
-        "SELECT mt.media_id, t.name, t.name_ja, t.is_category, t.tag_kind
+    let tag_rows = sqlx::query_as::<_, (i64, i64, String, Option<String>, i64, String)>(&format!(
+        "SELECT mt.media_id, t.id, t.name, t.name_ja, t.is_category, t.tag_kind
          FROM media_tags mt JOIN tags t ON t.id = mt.tag_id
          WHERE mt.media_id IN ({})",
         ids_str
@@ -852,13 +852,17 @@ async fn load_media_items(
     .await
     .map_err(|e| e.to_string())?;
 
-    let mut tags_map: HashMap<i64, (Vec<String>, Vec<crate::commands::TagPairItem>)> = HashMap::new();
-    for (m_id, name, name_ja, is_cat, kind) in tag_rows {
-        let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new()));
+    // **名前は返さない。** タグ名はフロントが get_all_tags で持っている（commands::MediaItem を参照）
+    let mut tags_map: HashMap<i64, (Vec<String>, Vec<i64>, usize)> = HashMap::new();
+    for (m_id, tag_id, name, _name_ja, is_cat, kind) in tag_rows {
+        let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new(), 0));
         if is_cat == 1 {
             entry.0.push(name);
         } else {
-            entry.1.push(crate::commands::TagPairItem { name, name_ja, kind });
+            entry.1.push(tag_id);
+            if kind == "basic" {
+                entry.2 += 1;
+            }
         }
     }
 
@@ -877,7 +881,8 @@ async fn load_media_items(
                 consecutive_failures,
                 excluded_flag,
             )| {
-                let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
+                let (categories, tag_ids, basic_tag_count) =
+                    tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new(), 0));
                 let needs_attention = analysis_status == "failed"
                     && crate::llm::needs_attention(
                         analysis_error_kind
@@ -900,7 +905,8 @@ async fn load_media_items(
                         needs_attention,
                         excluded: excluded_flag != 0,
                         categories,
-                        tags,
+                        basic_tag_count,
+                        tag_ids,
                     },
                 )
             },

@@ -15,5 +15,6 @@
   "label_status_completed": "解析完了",
   "label_status_failed": "解析失敗",
   "video_no_ffmpeg": "FFmpegがインストールされていません。動画のフレーム抽出・解析にはFFmpegが必要です。",
-  "label_status_tag_insufficient": "タグ不足（類似検索の対象外）"
+  "label_status_tag_insufficient": "タグ不足（類似検索の対象外）",
+  "label_selected_count": "{n}件選択中"
 }

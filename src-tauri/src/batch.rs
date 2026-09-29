@@ -13,6 +13,12 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, Manager};
 use walkdir::WalkDir;
 
+/// フォルダを歩いている間、何件ごとに進捗を出すか。
+///
+/// **1件ごとに出すと描画が追いつかない。** 実測で歩く対象は 186,899件あり、
+/// 2,000件ごとなら約90回。10秒の間に出るので「進んでいる」ことは伝わる。
+const WALK_PROGRESS_EVERY: usize = 2_000;
+
 struct FileScanMeta {
     file_path_str: String,
     parent_folder: String,
@@ -45,6 +51,42 @@ pub struct ProgressPayload {
     pub status: String,
     pub error_count: usize,
     pub is_paused: bool,
+}
+
+/// 解析前の「探している」段階を出すときの進捗。
+///
+/// **件数の総数が分からない段階なので `total` は 0 のまま。** 受け取る側は
+/// `total == 0` を「総数未定」として扱い、割合ではなく件数だけを出す。
+pub fn emit_discovery_progress(app_handle: &AppHandle, status: &str, found: usize, current_file: &str) {
+    let _ = app_handle.emit(
+        "batch_progress",
+        ProgressPayload {
+            total: 0,
+            current: found,
+            current_file: current_file.to_string(),
+            status: status.to_string(),
+            error_count: 0,
+            is_paused: false,
+        },
+    );
+}
+
+/// 処理が終わったこと（または止まったこと）を伝える。
+///
+/// **これを出さないと画面は「解析処理中」のまま固まる。** 探索の段階から
+/// 進捗を出すようにしたので、途中で抜けるすべての経路で出す必要がある。
+pub fn emit_terminal_progress(app_handle: &AppHandle, status: &str) {
+    let _ = app_handle.emit(
+        "batch_progress",
+        ProgressPayload {
+            total: 0,
+            current: 0,
+            current_file: String::new(),
+            status: status.to_string(),
+            error_count: 0,
+            is_paused: false,
+        },
+    );
 }
 
 #[derive(Deserialize)]
@@ -209,8 +251,16 @@ pub fn thumbnail_name_hash(file_path_str: &str) -> String {
 
 /// 既存のサムネイルを捨てて作り直す。
 ///
+/// **通常ビルドからは呼ばれない。** 呼び出し元は `image_io.rs` の `#[cfg(test)]`
+/// の中にある透過画像の調査用テストだけなので、そちらが消える通常ビルドでは
+/// 「使われていない」警告が出る。消すとそのテストが壊れるので残す。
+#[allow(dead_code)]
+///
 /// `generate_thumbnail` は `thumb_path.exists()` で早期 return するので、
 /// 合成の仕様を変えても既存分は古いまま残る。作り直しにはファイルの削除が要る。
+/// **テストだけが呼ぶ。** 呼び出し元は `image_io.rs` の `#[cfg(test)]` の中にある
+/// 透過画像の調査用テストだけ。
+#[cfg(test)]
 pub fn regenerate_thumbnail(file_path: &Path, thumb_dir: &Path) -> Result<PathBuf> {
     let name_hash = thumbnail_name_hash(&file_path.to_string_lossy());
     let existing = thumb_dir.join(format!("{}.jpg", name_hash));
@@ -707,9 +757,23 @@ pub async fn run_scan_and_batch(
             .execute(&pool)
             .await?;
 
+        // **ここが一番長い。** 実測で登録4フォルダ・186,899ファイルを
+        // 歩くのに 10.8秒かかる。総数は歩き終わるまで分からないので、
+        // 見つけた件数だけを流す
+        let mut walked = 0usize;
         for entry in WalkDir::new(folder).into_iter().filter_map(|e| e.ok()) {
             if cancel_flag.load(Ordering::Relaxed) {
+                emit_terminal_progress(&app_handle, "Cancelled by user");
                 return Ok(());
+            }
+            walked += 1;
+            if walked.is_multiple_of(WALK_PROGRESS_EVERY) {
+                emit_discovery_progress(
+                    &app_handle,
+                    "Scanning folders",
+                    files_to_process.len(),
+                    &folder_str,
+                );
             }
             let path = entry.path();
             if path.is_file()
@@ -1988,7 +2052,17 @@ pub async fn run_sync_folders(
         return Ok(());
     }
 
-    let _ = cleanup_and_detect_moves(pool, &scan_folders).await;
+    // **押した瞬間に画面へ出す。**
+    // sync_folders コマンドは tokio::spawn して即 Ok を返すので、
+    // ここで出さないと最初のファイルが処理されるまで画面に何も出ない
+    // （実測でその沈黙が 11秒あり、キャンセルも押せなかった）。
+    emit_discovery_progress(app_handle, "Checking for moved or deleted files", 0, "");
+
+    let _ = cleanup_and_detect_moves(pool, &scan_folders, &cancel_flag).await;
+    if cancel_flag.load(Ordering::Relaxed) {
+        emit_terminal_progress(app_handle, "Cancelled by user");
+        return Ok(());
+    }
     let target_paths: Vec<PathBuf> = scan_folders.iter().map(PathBuf::from).collect();
     run_scan_and_batch(target_paths, pool.clone(), app_handle.clone(), cancel_flag, pause_flag).await?;
 
@@ -1999,6 +2073,7 @@ pub async fn run_sync_folders(
 async fn cleanup_and_detect_moves(
     pool: &Pool<Sqlite>,
     scan_folders: &[String],
+    cancel_flag: &Arc<AtomicBool>,
 ) -> Result<()> {
     let db_rows: Vec<(i64, String, i64, Option<String>, String)> =
         sqlx::query_as("SELECT id, file_path, file_size, file_hash, thumbnail_path FROM media;")
@@ -2009,6 +2084,11 @@ async fn cleanup_and_detect_moves(
     // ファイルは在るのにサムネイルだけ消えている行。パスを空にして作り直させる
     let mut stale_thumb_ids = Vec::new();
     for row in db_rows {
+        // **実測 4,948件で 0.35秒**。速いが、押したキャンセルが
+        // ここを抜けるまで効かないのは避ける
+        if cancel_flag.load(Ordering::Relaxed) {
+            return Ok(());
+        }
         let (id, file_path, size, hash, thumb) = row;
         if !Path::new(&file_path).exists() {
             missing_records.push((id, file_path, size, hash, thumb));

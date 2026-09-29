@@ -1,5 +1,16 @@
 import { MediaItem, TagItem, TagPairItem, ScanFolderItem } from '../types';
 
+/**
+ * モックが内部で持つメディア。**タグを名前のまま持つ。**
+ *
+ * 実バックエンドも、絞り込みの判定には名前を使い、返すときに id へ変換している。
+ * モックも同じ形にしておかないと、タグの追加・削除・統合の処理が書けない。
+ * `get_media` などで返すときは `toWire` で `MediaItem` に変換する。
+ */
+export type MockMediaItem = Omit<MediaItem, 'tag_ids' | 'basic_tag_count'> & {
+  tags: TagPairItem[];
+};
+
 interface CategoryDef {
   category: string;
   parentFolder: string;
@@ -31,8 +42,8 @@ const CATEGORY_DEFS: CategoryDef[] = [
 // **ここを下回るとモックが縮退モードに落ちて3ゾーンのテストが壊れる**。
 // カテゴリの件数を減らすときはこの数を確認すること。
 
-function buildMedia(): MediaItem[] {
-  const items: MediaItem[] = [];
+function buildMedia(): MockMediaItem[] {
+  const items: MockMediaItem[] = [];
   let id = 1;
   let fileIndex = 1;
 
@@ -124,7 +135,7 @@ function buildMedia(): MediaItem[] {
   return items;
 }
 
-export const MOCK_MEDIA: MediaItem[] = buildMedia();
+export const MOCK_MEDIA: MockMediaItem[] = buildMedia();
 
 export const MOCK_MEDIA_FILE_COUNT = MOCK_MEDIA.length;
 

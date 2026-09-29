@@ -1,6 +1,6 @@
 {
-  "label_title": "About App",
   "label_author": "Author",
   "label_copyright": "Copyright",
-  "label_links": "Links"
+  "label_links": "Links",
+  "label_close": "Close"
 }

@@ -25,8 +25,22 @@ pub async fn init_db(app_handle: &AppHandle) -> Result<Pool<Sqlite>, Box<dyn std
         .filename(&db_path)
         .create_if_missing(true);
 
+    // 同時に開ける接続の数。
+    //
+    // **5 のときに実際に足りなくなったことがある。** 解析の進捗イベントごとに
+    // get_media + タグ一覧 + 親フォルダ + スキャンフォルダ + 設定 の5本が同時に飛び、
+    // 上限ちょうどを使い切って get_media が
+    // "pool timed out while waiting for an open connection" で失敗していた。
+    // データベースが遅かったのではなく、上限が同時に投げる本数と同じだったのが原因。
+    //
+    // SQLite は WAL モードなので読み取りは同時に何本でも走れる。書き込みは
+    // どのみち1本ずつになるが、待たされても busy_timeout の中で順番が回る。
+    // 画面からの取得（最大5本）＋ 解析のバックグラウンド処理が重なっても
+    // 足りるだけの余裕を取る。
+    const MAX_CONNECTIONS: u32 = 16;
+
     let pool = SqlitePoolOptions::new()
-        .max_connections(5)
+        .max_connections(MAX_CONNECTIONS)
         .connect_with(options)
         .await?;
 

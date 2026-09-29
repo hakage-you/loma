@@ -88,7 +88,17 @@ pub struct MediaItem {
     /// 解析対象から外されているか（`excluded_paths` に載っている）
     pub excluded: bool,
     pub categories: Vec<String>,
-    pub tags: Vec<TagPairItem>,
+    /// このメディアに付いているタグの id。**名前は送らない。**
+    ///
+    /// 名前を全件ぶん載せると、実データ（メディア 4,941件・タグ 31,849本）で
+    /// 応答の 53% がタグ名になる。名前はフロントが `get_all_tags` で
+    /// 既に持っているので、ここでは id だけ返して引いてもらう。
+    pub tag_ids: Vec<i64>,
+    /// basic 種別のタグの本数。
+    ///
+    /// 類似検索の対象かどうか（`MIN_BASIC_TAGS` 未満は対象外）の判定に使う。
+    /// **id から数えるにはタグの一覧が要る**ので、ここで数えて渡す。
+    pub basic_tag_count: usize,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -251,7 +261,7 @@ pub async fn get_media(
 
     // メディア全件に対するタグ情報のバッチ取得
     let media_ids: Vec<i64> = rows.iter().map(|r| r.0).collect();
-    let mut tags_map: HashMap<i64, (Vec<String>, Vec<TagPairItem>)> = HashMap::new();
+    let mut tags_map: HashMap<i64, (Vec<String>, Vec<TagPairItem>, Vec<i64>)> = HashMap::new();
 
     if !media_ids.is_empty() {
         let ids_str = media_ids
@@ -262,7 +272,7 @@ pub async fn get_media(
 
         let tag_query = format!(
             r#"
-            SELECT mt.media_id, t.name, t.name_ja, t.is_category, t.tag_kind
+            SELECT mt.media_id, t.id, t.name, t.name_ja, t.is_category, t.tag_kind
             FROM media_tags mt
             JOIN tags t ON mt.tag_id = t.id
             WHERE mt.media_id IN ({})
@@ -270,13 +280,18 @@ pub async fn get_media(
             ids_str
         );
 
-        let tag_rows = sqlx::query_as::<_, (i64, String, Option<String>, i64, String)>(&tag_query)
-            .fetch_all(pool)
-            .await
-            .map_err(|e| e.to_string())?;
+        let tag_rows =
+            sqlx::query_as::<_, (i64, i64, String, Option<String>, i64, String)>(&tag_query)
+                .fetch_all(pool)
+                .await
+                .map_err(|e| cmd_err("get_media(tags)", e))?;
 
-        for (m_id, tag_name, tag_name_ja, is_cat, tag_kind) in tag_rows {
-            let entry = tags_map.entry(m_id).or_insert_with(|| (Vec::new(), Vec::new()));
+        // **名前はここでしか使わない。** 絞り込みの判定に要るので組み立てるが、
+        // 返すのは id と basic の本数だけ
+        for (m_id, tag_id, tag_name, tag_name_ja, is_cat, tag_kind) in tag_rows {
+            let entry = tags_map
+                .entry(m_id)
+                .or_insert_with(|| (Vec::new(), Vec::new(), Vec::new()));
             if is_cat == 1 {
                 entry.0.push(tag_name);
             } else {
@@ -285,6 +300,7 @@ pub async fn get_media(
                     name_ja: tag_name_ja,
                     kind: tag_kind,
                 });
+                entry.2.push(tag_id);
             }
         }
     }
@@ -303,7 +319,9 @@ pub async fn get_media(
         excluded_flag,
     ) in rows
     {
-        let (categories, tags) = tags_map.remove(&id).unwrap_or((Vec::new(), Vec::new()));
+        let (categories, tags, tag_ids) = tags_map
+            .remove(&id)
+            .unwrap_or((Vec::new(), Vec::new(), Vec::new()));
 
         // フィルタリング適用 (ステータスフィルタのメモリ上ダブルチェック)
         if let Some(ref st) = status_filter {
@@ -384,7 +402,8 @@ pub async fn get_media(
             needs_attention,
             excluded: excluded_flag != 0,
             categories,
-            tags,
+            basic_tag_count: tags.iter().filter(|t| t.kind == "basic").count(),
+            tag_ids,
         });
     }
 
@@ -770,7 +789,7 @@ pub async fn get_all_tags(db_state: State<'_, DbState>) -> Result<Vec<TagItem>, 
     )
     .fetch_all(&db_state.pool)
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| cmd_err("get_all_tags", e))?;
 
     Ok(rows
         .into_iter()
@@ -1660,6 +1679,21 @@ pub async fn unload_model(db_state: State<'_, DbState>) -> Result<(), String> {
 }
 
 #[tauri::command]
+/// フロントで起きた失敗を `loma.log` に残す。
+///
+/// **画面に出さない取得（タグ一覧・モデル一覧・ログの読み出し）専用。**
+/// これらは解析中に毎秒走るので、失敗のたびにエラー画面を開くと画面が埋まる。
+/// かといって黙って捨てると、サイドバーが空になった理由がどこにも残らない。
+/// ログにだけ残す。
+///
+/// `context` は何をしようとしたか（`get_all_tags` など）、
+/// `message` はフロントが受け取ったエラーの文字列。
+pub async fn log_frontend_error(context: String, message: String) -> Result<(), String> {
+    crate::logger::log_error(&format!("[Frontend] {context} — {message}"));
+    Ok(())
+}
+
+#[tauri::command]
 /// ログの末尾を返す。`max_bytes` を省略すると `DEFAULT_LOG_READ_BYTES`。
 ///
 /// **定期的に呼ぶ側は必ず小さい `max_bytes` を渡すこと。** 返した文字列は
@@ -1742,11 +1776,6 @@ pub async fn open_folder(file_path: String) -> Result<(), String> {
     }
 
     Ok(())
-}
-
-#[tauri::command]
-pub async fn check_and_open_file(file_path: String) -> Result<(), String> {
-    open_file(file_path).await
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -2134,6 +2163,12 @@ pub fn rule_matches(p1: &TagMeta, p2: &TagMeta) -> Vec<RuleHit> {
 ///
 /// 計測ツール（`classify_rule_pairs`）が「ルールで拾えるか否か」の判定に使う。
 /// **提案の生成には使わない** —— そちらは複数一致を優先度に使うため `rule_matches` を直接呼ぶ。
+/// 当たった規則のうち先頭1件のラベル。**テストだけが呼ぶ。**
+///
+/// 本番の検出は `rule_matches` を直接使い、当たった規則を全部受け取る
+/// （`build_suggestions_from_store` が規則の識別子を一覧で必要とするため）。
+/// こちらは規則の当たり外れを1組ずつ確かめるテスト用。
+#[cfg(test)]
 pub fn rule_based_match_reason(p1: &TagMeta, p2: &TagMeta) -> Option<String> {
     rule_matches(p1, p2).into_iter().next().map(|h| h.label)
 }
@@ -2417,7 +2452,15 @@ pub fn connected_components(
     let mut visited: std::collections::HashSet<i64> = std::collections::HashSet::new();
     let mut groups = Vec::new();
 
-    for &node in adj.keys() {
+    // **HashMap / HashSet の走査順に依存しない。**
+    // Rust の既定ハッシャはプロセスごとに種が変わるので、そのまま走査すると
+    // BFS の開始点と訪問順が実行ごとに変わり、同じ DB・同じバイナリでも
+    // グループの並びとメンバーの並びが入れ替わる。
+    // 並びが変わると、使用数が同点のタグで代表が入れ替わる（実測 742件中14件）。
+    let mut nodes: Vec<i64> = adj.keys().copied().collect();
+    nodes.sort_unstable();
+
+    for node in nodes {
         if !visited.insert(node) {
             continue;
         }
@@ -2428,7 +2471,9 @@ pub fn connected_components(
         while let Some(curr) = queue.pop_front() {
             members.push(curr);
             if let Some(neighbors) = adj.get(&curr) {
-                for &n in neighbors {
+                let mut sorted: Vec<i64> = neighbors.iter().copied().collect();
+                sorted.sort_unstable();
+                for n in sorted {
                     if visited.insert(n) {
                         queue.push_back(n);
                     }
@@ -2439,7 +2484,89 @@ pub fn connected_components(
             groups.push(members);
         }
     }
+    // 大きいグループから。同数なら最小のIDが先
+    groups.sort_by(|a, b| {
+        b.len()
+            .cmp(&a.len())
+            .then_with(|| a.iter().min().cmp(&b.iter().min()))
+    });
     groups
+}
+
+
+/// 連結成分の決定性。
+///
+/// **`HashMap` の走査順に依存していると、ここで落ちる。**
+/// Rust の `RandomState` は `HashMap` を作るたびに鍵が変わるので、
+/// 同じ中身でも作り直した `HashMap` は走査順が違う。
+/// 実データ（提案 742件）では、この順の違いが「代表とメンバーの並びが
+/// 実行ごとに入れ替わる」として表に出ていた。
+#[cfg(test)]
+mod connected_components_tests {
+    use super::connected_components;
+    use std::collections::{HashMap, HashSet};
+
+    /// 同じ辺集合を、挿入順だけ変えて隣接リストにする
+    fn adj_from(edges: &[(i64, i64)]) -> HashMap<i64, HashSet<i64>> {
+        let mut adj: HashMap<i64, HashSet<i64>> = HashMap::new();
+        for (a, b) in edges {
+            adj.entry(*a).or_default().insert(*b);
+            adj.entry(*b).or_default().insert(*a);
+        }
+        adj
+    }
+
+    #[test]
+    fn the_same_edges_give_the_same_groups_whatever_the_insertion_order() {
+        let edges: Vec<(i64, i64)> = vec![
+            (10, 20),
+            (20, 30),
+            (30, 40),
+            (100, 200),
+            (200, 300),
+            (7, 8),
+            (50, 60),
+            (60, 70),
+            (70, 80),
+            (80, 90),
+        ];
+        let forward = connected_components(&adj_from(&edges));
+
+        let mut reversed = edges.clone();
+        reversed.reverse();
+        let backward = connected_components(&adj_from(&reversed));
+
+        assert_eq!(forward, backward, "挿入順で結果が変わる");
+    }
+
+    /// 同じ入力で何度作り直しても同じ並びになること。
+    /// `HashMap` を作り直すたびにハッシュの鍵が変わるので、
+    /// **1回の比較では通ってしまうことがある**
+    #[test]
+    fn rebuilding_the_map_does_not_change_the_order() {
+        let edges: Vec<(i64, i64)> = (1..40).map(|i| (i, i + 1)).chain([(500, 600)]).collect();
+        let first = connected_components(&adj_from(&edges));
+        for _ in 0..20 {
+            assert_eq!(first, connected_components(&adj_from(&edges)));
+        }
+    }
+
+    #[test]
+    fn groups_come_out_largest_first() {
+        // 2件の組と4件の組。大きい方が先
+        let groups = connected_components(&adj_from(&[(1, 2), (10, 11), (11, 12), (12, 13)]));
+        assert_eq!(groups.len(), 2);
+        assert_eq!(groups[0].len(), 4);
+        assert_eq!(groups[1].len(), 2);
+    }
+
+    #[test]
+    fn a_node_without_a_partner_is_not_a_group() {
+        // 2件未満の成分は提案にならないので落とす
+        let mut adj: HashMap<i64, HashSet<i64>> = HashMap::new();
+        adj.insert(1, HashSet::new());
+        assert!(connected_components(&adj).is_empty());
+    }
 }
 
 /// 代表タグ（target）の決め方。**方式によって正解が違う。**
@@ -2556,6 +2683,10 @@ where
             t_b.count
                 .cmp(&t_a.count)
                 .then_with(|| t_a.name.len().cmp(&t_b.name.len()))
+                // **同点のときに入力順へ落とさない。** sort_by は安定なので、
+                // ここで決めないと「先に並んでいた方」が代表になる。
+                // タグ名は UNIQUE なので、これで並びが一意に決まる
+                .then_with(|| t_a.name.cmp(&t_b.name))
         });
         if let Some(p) = pinned {
             member_ids.insert(0, p);
@@ -2889,15 +3020,6 @@ pub async fn custom_analyze_video(
 }
 
 #[tauri::command]
-pub async fn save_provider_api_key(
-    provider: String,
-    api_key: String,
-) -> Result<(), String> {
-    crate::credentials::set_api_key(&provider, &api_key)
-        .map_err(|e| cmd_err("save_provider_api_key", e))
-}
-
-#[tauri::command]
 pub async fn get_provider_api_key(
     provider: String,
 ) -> Result<String, String> {
@@ -2946,6 +3068,9 @@ pub async fn sync_folders(
     tokio::spawn(async move {
         if let Err(e) = crate::batch::run_sync_folders(&app_handle, &pool, cancel_flag, pause_flag).await {
             crate::logger::log_error(&format!("[Sync Aborted] Folder sync terminated with an error: {}", e));
+            // **これを出さないと画面が「解析処理中」のまま固まる。**
+            // 探索の段階から進捗を出すようにしたので、失敗で抜ける経路にも要る
+            crate::batch::emit_terminal_progress(&app_handle, "Stopped due to an error during sync");
         }
     });
 

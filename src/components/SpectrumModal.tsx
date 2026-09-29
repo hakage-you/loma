@@ -1,13 +1,20 @@
-import React, { useCallback, useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
-import { MediaItem, SimilarItem, SpectrumResult, TagPairItem, Zone, ZoneKey } from '../types';
+import { MediaItem, SimilarItem, SpectrumResult, TagItem, TagPairItem, Zone, ZoneKey } from '../types';
 import { X, Loader2, Info, ChevronRight, Dices, Radar, Tag } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { TagIndex, buildTagIndex, resolveMediaTags } from '../utils/mediaTags';
 import { TooltipHelp } from './TooltipHelp';
 
 interface SpectrumModalProps {
   /** 探索の起点。null で閉じる */
   base: MediaItem | null;
+  /**
+   * タグの一覧（`get_all_tags` の結果）。
+   * **メディアはタグの id しか持っていない**ので、名前はここから引く。
+   */
+  allTags: TagItem[];
   onClose: () => void;
   onOpenSettings: () => void;
   /** タグ不足で対象外のメディアを一覧したいときに呼ぶ */
@@ -30,7 +37,18 @@ const basicTagNames = (tags: TagPairItem[]) =>
   tags.filter((t) => t.kind === 'basic').map((t) => t.name_ja || t.name);
 
 /** タグのチップ列。「タグの類似度」と表示するなら、そのタグが見えなければ検証できない */
-const TagChips: React.FC<{ tags: TagPairItem[]; max?: number }> = ({ tags, max = 4 }) => {
+const TagChips: React.FC<{ tags: TagPairItem[] | null; max?: number }> = ({ tags, max = 4 }) => {
+  // **null は「タグ一覧がまだ届いていない」。** 0件として消すと、
+  // タグが付いているのに「無い」と見せることになる
+  if (tags === null) {
+    return (
+      <div className="flex flex-wrap gap-1" aria-busy="true">
+        {[0, 1, 2].map((i) => (
+          <span key={i} className="inline-block h-[18px] w-12 rounded bg-slate-800 animate-pulse-subtle" />
+        ))}
+      </div>
+    );
+  }
   const names = basicTagNames(tags);
   if (names.length === 0) return null;
   return (
@@ -171,9 +189,10 @@ const RangeLegend: React.FC<{ min: number; mean: number; max: number; zones: Zon
 
 const SimilarCard: React.FC<{
   item: SimilarItem;
+  tagIndex: TagIndex;
   onOpenDetail: () => void;
   onExplore: () => void;
-}> = ({ item, onOpenDetail, onExplore }) => {
+}> = ({ item, tagIndex, onOpenDetail, onExplore }) => {
   const { t } = useTranslation();
   const name = fileNameOf(item.media.file_path);
   return (
@@ -222,15 +241,20 @@ const SimilarCard: React.FC<{
           {name}
         </div>
         <div className="text-[11px] text-slate-400 tabular-nums">{item.similarity.toFixed(3)}</div>
-        <TagChips tags={item.media.tags} />
+        <TagChips tags={resolveMediaTags(item.media, tagIndex)} />
       </div>
     </div>
   );
 };
 
 /** 基準メディアのプレビュー。何と比べているのかが見えないと似ているか判断できない */
-const BaseMediaPreview: React.FC<{ media: MediaItem; onOpenDetail?: () => void }> = ({
+const BaseMediaPreview: React.FC<{
+  media: MediaItem;
+  tagIndex: TagIndex;
+  onOpenDetail?: () => void;
+}> = ({
   media,
+  tagIndex,
   onOpenDetail,
 }) => {
   const { t } = useTranslation();
@@ -264,7 +288,7 @@ const BaseMediaPreview: React.FC<{ media: MediaItem; onOpenDetail?: () => void }
           <div className="text-[10px] text-slate-400 truncate">{media.categories.join(' / ')}</div>
         )}
         {/* このタグ集合が類似度の根拠そのもの。並べて初めて結果を検証できる */}
-        <TagChips tags={media.tags} max={8} />
+        <TagChips tags={resolveMediaTags(media, tagIndex)} max={8} />
       </div>
     </div>
   );
@@ -282,12 +306,15 @@ const ZONE_LABEL: Record<ZoneKey, [string, string]> = {
 
 export const SpectrumModal: React.FC<SpectrumModalProps> = ({
   base,
+  allTags,
   onClose,
   onOpenSettings,
   onShowExcluded,
   onOpenDetail,
 }) => {
   const { t } = useTranslation();
+  useEscapeToClose({ open: base !== null, onClose });
+  const tagIndex = useMemo(() => buildTagIndex(allTags), [allTags]);
   const [result, setResult] = useState<SpectrumResult | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -463,6 +490,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
               「どのメディアの話か」が分からないと意味がない */}
           {!loading && result?.base_media && (
             <BaseMediaPreview
+              tagIndex={tagIndex}
               media={result.base_media}
               onOpenDetail={onOpenDetail ? () => onOpenDetail(result.base_media!) : undefined}
             />
@@ -500,6 +528,7 @@ export const SpectrumModal: React.FC<SpectrumModalProps> = ({
                     <div className="flex gap-3 overflow-x-auto pb-2">
                       {zone.items.map((item) => (
                         <SimilarCard
+                          tagIndex={tagIndex}
                           key={item.media_id}
                           item={item}
                           onOpenDetail={() => onOpenDetail?.(item.media)}

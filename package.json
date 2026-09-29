@@ -13,6 +13,7 @@
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed",
     "test:e2e:ui": "playwright test --ui",
+    "perf": "playwright test --config playwright.perf.config.ts",
     "vlm-check": "node tools/prompt-check/run.mjs",
     "vlm-report": "node tools/prompt-check/report.mjs",
     "vlm-merge": "node tools/prompt-check/merge.mjs",
@@ -22,7 +23,9 @@
     "text-report": "node tools/text-check/report.mjs",
     "text-baseline": "node tools/text-check/baseline.mjs",
     "check:locale": "node tools/check-locale.mjs",
-    "check:exclusive": "node tools/check-exclusive.mjs"
+    "check:exclusive": "node tools/check-exclusive.mjs",
+    "check:mock-commands": "node tools/check-mock-commands.mjs",
+    "check:types": "tsc --noEmit -p tsconfig.e2e.json"
   },
   "dependencies": {
     "@tauri-apps/api": "^2",
@@ -36,6 +39,7 @@
     "@playwright/test": "^1.62.0",
     "@tailwindcss/vite": "^4.3.3",
     "@tauri-apps/cli": "^2",
+    "@types/node": "^26.6.3",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
     "@vitejs/plugin-react": "^4.6.0",

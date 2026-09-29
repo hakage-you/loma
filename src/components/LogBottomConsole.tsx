@@ -168,7 +168,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
 
           {!open && logLines.length > 0 && (
             <span className="text-[11px] text-slate-300 font-mono truncate flex-1 min-w-0 ml-2">
-              Recent: {logLines[logLines.length - 1]}
+              {t('logs.label_recent', 'Recent')}: {logLines[logLines.length - 1]}
             </span>
           )}
         </div>
@@ -221,7 +221,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
           <button
             onClick={onToggle}
             className="p-1 hover:bg-slate-800 text-slate-400 hover:text-white rounded transition cursor-pointer ml-1"
-            title={open ? 'Collapse Console' : 'Expand Console'}
+            title={open ? t('logs.label_collapse', 'Collapse console') : t('logs.label_expand', 'Expand console')}
           >
             {open ? <ChevronDown className="w-4 h-4" /> : <ChevronUp className="w-4 h-4" />}
           </button>
@@ -237,7 +237,7 @@ export const LogBottomConsole: React.FC<LogBottomConsoleProps> = ({
             className="h-full bg-black/95 p-3 font-mono text-[11px] overflow-y-auto space-y-0.5 select-text"
           >
             {logLines.length === 0 ? (
-              <div className="text-slate-600 italic py-4">Console output is clean. No log entries yet.</div>
+              <div className="text-slate-600 italic py-4">{t('logs.empty_file', '')}</div>
             ) : (
               logLines.map((line, idx) => {
                 const isError = line.includes('[ERROR]');

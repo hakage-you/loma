@@ -1,6 +1,4 @@
 {
-  "label_title": "Loma",
-  "label_subtitle": "Local Ollama Media Analyzer",
   "label_title_about": "Loma について",
   "label_title_resume": "処理を再開",
   "label_title_pause": "処理を一時停止",
@@ -11,5 +9,10 @@
   "label_title_folders": "登録フォルダの管理",
   "label_title_settings": "設定",
   "download_in_progress": "モデル「{model}」のダウンロード処理が実行中です。ダウンロード完了後に解析を開始してください。",
-  "label_open_settings": "設定を開く"
+  "label_open_settings": "設定を開く",
+  "label_resume": "再開",
+  "label_pause": "一時停止",
+  "label_cancel_scan": "中止",
+  "label_discard_title": "入力を破棄",
+  "discard_confirm": "入力した内容が保存されていません。破棄して閉じますか。"
 }

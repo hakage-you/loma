@@ -27,5 +27,6 @@
   "transient_hint": "This is a temporary problem on the server side. Retrying later may succeed.",
   "unknown_hint": "These errors are not classified yet. Anything that fails twice in a row with the same error moves to Needs attention.",
   "delete_confirm": "{count} file(s) will be removed from the library. The files themselves stay on disk, but they will not be registered again on future scans.",
-  "label_excluded_badge": "Not analyzed"
+  "label_excluded_badge": "Not analyzed",
+  "label_cancel": "Cancel"
 }

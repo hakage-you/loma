@@ -6,5 +6,20 @@
   "label_title_scan_pending": "Process pending/new items in this folder",
   "label_title_reanalyze": "Force re-analyze ALL items in this folder",
   "label_title_remove": "Remove folder",
-  "label_subtitle": "Manage scan folders and re-analyze in bulk"
+  "label_subtitle": "Manage scan folders and re-analyze in bulk",
+  "label_mode_pending": "1. Process pending & new items",
+  "mode_pending_body": "Scans folders for new or updated files and processes only un-analyzed or failed items. Completed items are skipped.",
+  "label_mode_reanalyze": "2. Force re-analyze all media",
+  "mode_reanalyze_body": "Re-evaluates every item, including completed ones, with the current vision model and the high-resolution prompt.",
+  "confirm_reanalyze_title": "Force re-analyze all media.",
+  "confirm_reanalyze_body": "Existing tags on every media item are cleared before the analysis runs again.",
+  "label_cancel": "Cancel",
+  "label_confirm_reanalyze": "Re-analyze all",
+  "label_registered": "Registered folders",
+  "label_added": "Added",
+  "empty_folders": "No folders are registered yet.",
+  "label_close": "Close",
+  "confirm_remove_title": "Unregister this folder.",
+  "confirm_remove_body": "The media records, tags and thumbnails under this folder are removed. The files themselves are kept. Adding the folder again requires a full re-analysis.",
+  "label_confirm_remove": "Unregister"
 }

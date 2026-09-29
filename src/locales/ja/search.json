@@ -3,12 +3,13 @@
   "label_placeholder_add": "フィルタータグを追加...",
   "label_add_folder": "フォルダ追加",
   "label_sync": "同期",
-  "label_retry": "再試行",
   "label_advanced_search": "詳細検索",
   "label_matching_tags": "一致するタグ",
   "label_tags_btn": "タグ管理",
   "label_folders_btn": "フォルダ管理",
   "label_advanced_active": "詳細検索条件",
   "label_clear_advanced": "解除",
-  "label_edit_advanced": "編集"
+  "label_edit_advanced": "編集",
+  "label_select": "選択",
+  "no_tag_match": "一致するタグがありません。Enter を押すか、詳細検索を使ってください。"
 }

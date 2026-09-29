@@ -26,6 +26,20 @@ export interface FilterState {
   fileExtensions?: string[];
 }
 
+/**
+ * 画面には出さないが、ログファイル（loma.log）には残す。
+ *
+ * **裏で自動的に走る取得の失敗に使う。** タグ一覧・モデル一覧・ログの読み出しは
+ * 解析中に毎秒走るので、失敗のたびにエラー画面を開くと画面が埋まる。
+ * かといって黙って捨てると、サイドバーが空になった理由がどこにも残らない。
+ *
+ * **ログへの書き込み自体が失敗しても何もしない。** 失敗の連鎖を作らない。
+ */
+function logBackgroundFailure(context: string, e: unknown): void {
+  console.error(`[background] ${context}:`, e);
+  void invoke('log_frontend_error', { context, message: String(e) }).catch(() => {});
+}
+
 export function useMedia() {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [tags, setTags] = useState<TagItem[]>([]);
@@ -75,7 +89,10 @@ export function useMedia() {
 
   // batch_progress を受けての DB 再取得を間引く間隔 (ms)。
   // 進捗バーの更新は間引かず、DB を叩く fetchMedia / fetchMasterData だけを対象にする。
-  const PROGRESS_REFRESH_DEBOUNCE_MS = 1000;
+  //
+  // **1秒に最大1回。** 実データでは get_media の応答が 5MB あり、
+  // 解析は数時間続くので、ここの回数がそのまま何時間ぶんも積み上がる。
+  const PROGRESS_REFRESH_INTERVAL_MS = 1000;
 
   const refreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const refreshInFlightRef = useRef(false);
@@ -109,7 +126,9 @@ export function useMedia() {
         extensionFilter: currentFilters.fileExtensions && currentFilters.fileExtensions.length > 0 ? currentFilters.fileExtensions : null,
       });
       if (currentFilters.status === 'unanalyzed') {
-        setMedia(result.filter((item) => item.tags.length === 0 && item.categories.length === 0));
+        setMedia(
+          result.filter((item) => item.tag_ids.length === 0 && item.categories.length === 0)
+        );
       } else if (currentFilters.status === STATUS_TAG_INSUFFICIENT) {
         // 類似検索の候補集合から外れているメディア。黙って除外せず、
         // ユーザーがタグを手で足せるよう一覧できるようにする
@@ -129,21 +148,31 @@ export function useMedia() {
     }
   }, []);
 
+  /**
+   * サイドバーと設定が使うデータをまとめて取り直す。
+   *
+   * **4本を同時に投げる。** 以前は1本ずつ待っていたので、1本あたりの往復時間が
+   * そのまま4倍になっていた。解析中は毎秒ここを通る。
+   *
+   * 同時に投げてよいのは、SQLite の同時接続の上限を 16 に上げたため
+   * （`src-tauri/src/db.rs` の `MAX_CONNECTIONS`）。上限が 5 だったころは、
+   * この4本と `get_media` で使い切って `get_media` が失敗していた。
+   */
   const fetchMasterData = useCallback(async () => {
     try {
-      const fetchedTags = await invoke<TagItem[]>('get_all_tags');
+      const [fetchedTags, fetchedFolders, fetchedScanFolders, fetchedSettings] =
+        await Promise.all([
+          invoke<TagItem[]>('get_all_tags'),
+          invoke<string[]>('get_parent_folders'),
+          invoke<ScanFolderItem[]>('get_scan_folders'),
+          invoke<Record<string, string>>('get_settings'),
+        ]);
       setTags(fetchedTags);
-
-      const fetchedFolders = await invoke<string[]>('get_parent_folders');
       setParentFolders(fetchedFolders);
-
-      const fetchedScanFolders = await invoke<ScanFolderItem[]>('get_scan_folders');
       setScanFolders(fetchedScanFolders);
-
-      const fetchedSettings = await invoke<Record<string, string>>('get_settings');
       setSettings(fetchedSettings);
     } catch (e) {
-      console.error('Failed to fetch master data:', e);
+      logBackgroundFailure('get_all_tags / get_parent_folders / get_scan_folders / get_settings', e);
     }
   }, []);
 
@@ -158,28 +187,40 @@ export function useMedia() {
     try {
       do {
         refreshPendingRef.current = false;
-        await fetchMedia();
-        await fetchMasterData();
+        // **同時に投げる。** どちらも読み取りだけで、順番に依存しない
+        await Promise.all([fetchMedia(), fetchMasterData()]);
       } while (refreshPendingRef.current);
     } finally {
       refreshInFlightRef.current = false;
     }
   }, [fetchMedia, fetchMasterData]);
 
+  /**
+   * 再取得を予約する。**間引きであってデバウンスではない。**
+   *
+   * 以前はイベントが来るたびにタイマーを張り直していた。進捗が間引き間隔より
+   * 速く届くと張り直しが続いてタイマーが一度も発火せず、**解析が終わるまで
+   * ギャラリーが一切更新されない**状態になっていた。
+   * 登録フェーズ（5件ごと）や解析の速いモデルがこれに当たる。
+   *
+   * 予約済みなら何もしない。こうすると「1秒に最大1回、ただし必ず走る」になる。
+   */
   const scheduleRefresh = useCallback(
     (immediate: boolean) => {
-      if (refreshTimerRef.current !== null) {
-        clearTimeout(refreshTimerRef.current);
-        refreshTimerRef.current = null;
-      }
       if (immediate) {
+        if (refreshTimerRef.current !== null) {
+          clearTimeout(refreshTimerRef.current);
+          refreshTimerRef.current = null;
+        }
         void runRefresh();
         return;
       }
+      // 既に予約が入っているなら倒さない。倒すと永久に発火しない
+      if (refreshTimerRef.current !== null) return;
       refreshTimerRef.current = setTimeout(() => {
         refreshTimerRef.current = null;
         void runRefresh();
-      }, PROGRESS_REFRESH_DEBOUNCE_MS);
+      }, PROGRESS_REFRESH_INTERVAL_MS);
     },
     [runRefresh]
   );
@@ -197,13 +238,13 @@ export function useMedia() {
       const models = await invoke<string[]>('get_available_models');
       setAvailableModels(models);
     } catch (e) {
-      console.error('Failed to fetch available models:', e);
+      logBackgroundFailure('get_available_models', e);
     }
     try {
       const vision = await invoke<string[]>('get_vision_capable_models', { refresh });
       setVisionModels(vision);
     } catch (e) {
-      console.error('Failed to fetch vision capabilities:', e);
+      logBackgroundFailure('get_vision_capable_models', e);
       setVisionModels(null);
     }
   }, []);
@@ -221,7 +262,7 @@ export function useMedia() {
       await invoke('start_scan', { folderPath });
     } catch (e: any) {
       console.error('Failed to start scan:', e);
-      setErrorModal({ open: true, message: String(e) });
+      setErrorModal({ open: true, messageKey: 'errors.start_scan', message: String(e) });
       setScanning(false);
     }
   };
@@ -234,6 +275,7 @@ export function useMedia() {
       await invoke('cancel_scan');
     } catch (e) {
       console.error('Failed to cancel scan:', e);
+      setErrorModal({ open: true, messageKey: 'errors.cancel_scan', message: String(e) });
     } finally {
       setScanning(false);
       setProgress(null);
@@ -247,6 +289,7 @@ export function useMedia() {
       await invoke('pause_scan');
     } catch (e) {
       console.error('Failed to pause scan:', e);
+      setErrorModal({ open: true, messageKey: 'errors.pause_scan', message: String(e) });
     }
   };
 
@@ -255,6 +298,7 @@ export function useMedia() {
       await invoke('resume_scan');
     } catch (e) {
       console.error('Failed to resume scan:', e);
+      setErrorModal({ open: true, messageKey: 'errors.resume_scan', message: String(e) });
     }
   };
 
@@ -271,7 +315,7 @@ export function useMedia() {
       await invoke('rescan_all_folders');
     } catch (e: any) {
       console.error('Failed to rescan all folders:', e);
-      setErrorModal({ open: true, message: String(e) });
+      setErrorModal({ open: true, messageKey: 'errors.rescan_all_folders', message: String(e) });
       setScanning(false);
     }
   };
@@ -289,7 +333,12 @@ export function useMedia() {
       await invoke('reanalyze_all_media');
     } catch (e: any) {
       console.error('Failed to reanalyze all media:', e);
-      setErrorModal({ open: true, message: String(e) });
+      setErrorModal({
+        open: true,
+        messageKey: 'errors.reanalyze_all_media',
+        message: String(e),
+        ollamaHint: looksLikeOllamaIssue(e),
+      });
       setScanning(false);
     }
   };
@@ -360,6 +409,7 @@ export function useMedia() {
       await fetchMedia();
     } catch (e: any) {
       console.error('Failed to remove scan folder:', e);
+      setErrorModal({ open: true, messageKey: 'errors.remove_scan_folder', message: String(e) });
     }
   };
 
@@ -377,7 +427,7 @@ export function useMedia() {
     try {
       await invoke('open_file', { filePath });
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not open file: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.open_file', message: String(e) });
     }
   };
 
@@ -385,7 +435,7 @@ export function useMedia() {
     try {
       await invoke('open_folder', { filePath });
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not open folder: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.open_folder', message: String(e) });
     }
   };
 
@@ -397,7 +447,7 @@ export function useMedia() {
       await fetchMedia();
       return n;
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not exclude media: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.exclude_media', message: String(e) });
       return 0;
     }
   };
@@ -411,7 +461,7 @@ export function useMedia() {
       await fetchMasterData();
       return n;
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not delete media: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.delete_media', message: String(e) });
       return 0;
     }
   };
@@ -424,7 +474,7 @@ export function useMedia() {
       await fetchMedia();
       return n;
     } catch (e: any) {
-      setErrorModal({ open: true, message: `Could not clear exclusions: ${e}` });
+      setErrorModal({ open: true, messageKey: 'errors.unexclude_paths', message: String(e) });
       return 0;
     }
   };
@@ -433,7 +483,7 @@ export function useMedia() {
     try {
       return await invoke<ExcludedPathItem[]>('get_excluded_paths');
     } catch (e: any) {
-      console.error('Failed to get excluded paths:', e);
+      logBackgroundFailure('get_excluded_paths', e);
       return [];
     }
   };
@@ -478,6 +528,7 @@ export function useMedia() {
       await invoke('unload_model');
     } catch (e: any) {
       console.error('Failed to unload model:', e);
+      setErrorModal({ open: true, messageKey: 'errors.unload_model', message: String(e) });
     }
   };
 
@@ -491,7 +542,7 @@ export function useMedia() {
     try {
       return await invoke<string>('get_app_logs', { maxBytes });
     } catch (e: any) {
-      console.error('Failed to get logs:', e);
+      logBackgroundFailure('get_app_logs', e);
       return '';
     }
   };
@@ -501,6 +552,7 @@ export function useMedia() {
       await invoke('clear_app_logs');
     } catch (e: any) {
       console.error('Failed to clear logs:', e);
+      setErrorModal({ open: true, messageKey: 'errors.clear_logs', message: String(e) });
     }
   };
 
@@ -581,7 +633,7 @@ export function useMedia() {
       await invoke('update_setting', { key, value });
       setSettings((prev) => ({ ...prev, [key]: value }));
     } catch (e) {
-      console.error('Failed to update setting:', e);
+      logBackgroundFailure(`update_setting(${key})`, e);
     }
   };
 
@@ -592,12 +644,15 @@ export function useMedia() {
         setScanning(true);
       }
     } catch (e) {
-      console.error('Failed to check scan status:', e);
+      logBackgroundFailure('get_scan_status', e);
     }
   }, []);
 
+  // **ここで fetchMedia を呼ばない。**
+  // 絞り込みの条件を持っているのは呼び出し側（App）で、そちらは条件が変わるたびに
+  // fetchMedia を呼ぶ。マウント時にもその effect が走るので、ここでも呼ぶと
+  // 起動のたびに同じ一覧を2回取ることになる（get_media の応答は実データで 5MB）。
   useEffect(() => {
-    fetchMedia();
     fetchMasterData();
     checkScanStatus();
 
@@ -626,7 +681,7 @@ export function useMedia() {
         refreshTimerRef.current = null;
       }
     };
-  }, [fetchMedia, fetchMasterData, checkScanStatus, scheduleRefresh]);
+  }, [fetchMasterData, checkScanStatus, scheduleRefresh]);
 
   return {
     media,
@@ -674,3 +729,5 @@ export function useMedia() {
   };
 }
 
+/** `useMedia` が返すもの。Context で配るために名前を付ける */
+export type UseMediaResult = ReturnType<typeof useMedia>;

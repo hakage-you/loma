@@ -2,6 +2,7 @@ import React from 'react';
 import { X, ExternalLink, Sparkles, Github, Twitter } from 'lucide-react';
 import { openUrl } from '@tauri-apps/plugin-opener';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 interface AboutModalProps {
   open: boolean;
@@ -10,6 +11,7 @@ interface AboutModalProps {
 
 export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
   const { t } = useTranslation();
+  useEscapeToClose({ open, onClose });
 
   if (!open) return null;
 
@@ -94,7 +96,7 @@ export const AboutModal: React.FC<AboutModalProps> = ({ open, onClose }) => {
             onClick={onClose}
             className="w-full py-2 bg-indigo-600 hover:bg-indigo-500 text-white rounded-xl font-semibold text-xs transition cursor-pointer shadow-lg shadow-indigo-900/30"
           >
-            Close
+            {t('about.label_close', 'Close')}
           </button>
         </div>
       </div>

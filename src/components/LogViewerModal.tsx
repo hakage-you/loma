@@ -1,10 +1,31 @@
 import React, { useState, useEffect } from 'react';
 import { Terminal, X, Copy, Trash2, RefreshCw, Check, Search } from 'lucide-react';
+import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+
+/**
+ * 一度に受け取るログの上限。
+ *
+ * **上限なしで呼ぶとバックエンドの既定 8MB が返る。** 返った文字列は
+ * そのまま JS ヒープに載り、JS 文字列は UTF-16 なのでバイト数の2倍を占める。
+ * 開くたびに 16MB が積まれることになるので、この画面でも上限を渡す。
+ * 下のコンソール（256KB）より多いのは、検索と全文コピーができるため。
+ */
+const LOG_READ_BYTES = 2 * 1024 * 1024;
+
+/**
+ * 一度に DOM へ出す行数の上限。
+ *
+ * **上限が無いと、絞り込みに当たった行を全部出す。** 2MB のログは約 15,000行で、
+ * 1行が1要素なのでそのまま DOM 要素数になる。下のコンソールは 1,000行で
+ * 抑えているが、この画面には上限が無かった。
+ */
+const MAX_RENDER_LINES = 2000;
 
 interface LogViewerModalProps {
   open: boolean;
   onClose: () => void;
-  onGetLogs: () => Promise<string>;
+  onGetLogs: (maxBytes?: number) => Promise<string>;
   onClearLogs: () => Promise<void>;
 }
 
@@ -14,6 +35,8 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
   onGetLogs,
   onClearLogs,
 }) => {
+  const { t } = useTranslation();
+  useEscapeToClose({ open, onClose });
   const [logs, setLogs] = useState<string>('');
   const [filter, setFilter] = useState<string>('');
   const [loading, setLoading] = useState<boolean>(false);
@@ -21,7 +44,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
   const fetchLogs = async () => {
     setLoading(true);
-    const text = await onGetLogs();
+    const text = await onGetLogs(LOG_READ_BYTES);
     setLogs(text);
     setLoading(false);
   };
@@ -34,10 +57,16 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
   if (!open) return null;
 
-  const logLines = logs
+  const matchedLines = logs
     .split('\n')
     .filter((line) => line.trim().length > 0)
     .filter((line) => line.toLowerCase().includes(filter.toLowerCase()));
+
+  // **出すのは末尾。** 新しいログほど見たいものなので、切るなら先頭側を捨てる
+  const overflowed = matchedLines.length > MAX_RENDER_LINES;
+  const logLines = overflowed
+    ? matchedLines.slice(matchedLines.length - MAX_RENDER_LINES)
+    : matchedLines;
 
   const handleCopy = () => {
     navigator.clipboard.writeText(logs);
@@ -60,8 +89,8 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
               <Terminal className="w-5 h-5" />
             </div>
             <div>
-              <h3 className="text-base font-bold text-white">Application Diagnostics & Error Logs</h3>
-              <p className="text-xs text-slate-400">View real-time backend and VLM execution logs</p>
+              <h3 className="text-base font-bold text-white">{t('logs.label_title', 'Logs')}</h3>
+              <p className="text-xs text-slate-400">{t('logs.label_subtitle', '')}</p>
             </div>
           </div>
           <button
@@ -80,7 +109,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
               type="text"
               value={filter}
               onChange={(e) => setFilter(e.target.value)}
-              placeholder="Filter log entries (e.g. ERROR, 400, Parse)..."
+              placeholder={t('logs.label_filter_placeholder', 'Filter log entries...')}
               className="w-full pl-9 pr-3 py-1.5 bg-slate-900 border border-white/10 rounded-xl text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500"
             />
           </div>
@@ -92,7 +121,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-medium transition border border-white/10 cursor-pointer"
             >
               <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-              Refresh
+              {t('logs.label_refresh', 'Refresh')}
             </button>
             <button
               onClick={handleCopy}
@@ -100,7 +129,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 bg-indigo-600/30 hover:bg-indigo-600/40 text-indigo-200 border border-indigo-500/40 rounded-xl text-xs font-medium transition cursor-pointer disabled:opacity-50"
             >
               {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-              {copied ? 'Copied!' : 'Copy Logs'}
+              {copied ? t('logs.label_copied', 'Copied') : t('logs.label_copy', 'Copy')}
             </button>
             <button
               onClick={handleClear}
@@ -108,7 +137,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
               className="flex items-center gap-1.5 px-3 py-1.5 bg-red-600/20 hover:bg-red-600/30 text-red-300 border border-red-500/30 rounded-xl text-xs font-medium transition cursor-pointer disabled:opacity-50"
             >
               <Trash2 className="w-3.5 h-3.5" />
-              Clear
+              {t('logs.label_clear', 'Clear')}
             </button>
           </div>
         </div>
@@ -117,7 +146,7 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
         <div className="flex-1 bg-black/95 p-4 font-mono text-xs overflow-y-auto space-y-1 min-h-[300px]">
           {logLines.length === 0 ? (
             <div className="text-slate-500 text-center py-12 italic">
-              {logs ? 'No matching logs found.' : 'Log file is currently empty.'}
+              {logs ? t('logs.empty_no_match', '') : t('logs.empty_file', '')}
             </div>
           ) : (
             logLines.map((line, idx) => {
@@ -143,12 +172,19 @@ export const LogViewerModal: React.FC<LogViewerModalProps> = ({
 
         {/* Footer */}
         <div className="p-3 bg-slate-900/90 border-t border-white/10 flex justify-between items-center text-xs text-slate-400">
-          <span>Showing {logLines.length} log lines</span>
+          <span>
+            {overflowed
+              ? t('logs.label_showing_truncated', '', {
+                  n: logLines.length,
+                  total: matchedLines.length,
+                })
+              : t('logs.label_showing', '', { n: logLines.length })}
+          </span>
           <button
             onClick={onClose}
             className="px-4 py-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 rounded-xl text-xs font-medium transition cursor-pointer"
           >
-            Close
+            {t('logs.label_close', 'Close')}
           </button>
         </div>
       </div>

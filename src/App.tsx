@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
 import { listen } from '@tauri-apps/api/event';
-import { useMedia } from './hooks/useMedia';
+import { MediaProvider, useMediaContext } from './contexts/MediaContext';
 import { SearchBar } from './components/SearchBar';
 import { Sidebar } from './components/Sidebar';
 import { GalleryGrid } from './components/GalleryGrid';
@@ -68,7 +68,7 @@ function AppContent() {
     clearLogs,
     saveSettings,
     reanalyzeSingleMedia,
-  } = useMedia();
+  } = useMediaContext();
 
   const { kind: busyKind } = useBusy();
   // 排他ロックを取る操作は、走っている間 Rust が必ず弾く。押せるままにしない
@@ -261,10 +261,6 @@ function AppContent() {
     selectedExtensions,
   ]);
 
-  useEffect(() => {
-    fetchMasterData();
-  }, []);
-
   const handleToggleCategory = (categoryName: string) => {
     setSelectedCategories((prev) =>
       prev.includes(categoryName)
@@ -382,7 +378,7 @@ function AppContent() {
                     title={t('app.label_title_resume', 'Resume processing')}
                   >
                     <Play className="w-3.5 h-3.5 fill-current" />
-                    Resume
+                    {t('app.label_resume', 'Resume')}
                   </button>
                 ) : (
                   <button
@@ -391,7 +387,7 @@ function AppContent() {
                     title={t('app.label_title_pause', 'Pause processing')}
                   >
                     <Pause className="w-3.5 h-3.5 fill-current" />
-                    Pause
+                    {t('app.label_pause', 'Pause')}
                   </button>
                 )}
                 <button
@@ -400,7 +396,7 @@ function AppContent() {
                   title={t('app.label_title_cancel_scan', 'Cancel scan')}
                 >
                   <StopCircle className="w-3.5 h-3.5" />
-                  Cancel
+                  {t('app.label_cancel_scan', 'Cancel')}
                 </button>
               </>
             ) : (
@@ -541,6 +537,7 @@ function AppContent() {
           <GalleryGrid
             key={galleryKey}
             items={media}
+            allTags={tags}
             loading={loading}
             gridColumns={gridColumns}
             onSelectItem={(item) => setSelectedMedia(item)}
@@ -583,6 +580,7 @@ function AppContent() {
       {/* 概念スペクトラム探索 */}
       <SpectrumModal
         base={spectrumBase}
+        allTags={tags}
         onClose={() => setSpectrumBase(null)}
         onOpenSettings={() => {
           setSpectrumBase(null);
@@ -739,12 +737,29 @@ function AppContent() {
   );
 }
 
-export function App() {
-  const { settings, updateSetting } = useMedia();
+/**
+ * 言語だけを読んで I18nProvider を張る層。
+ *
+ * **ここで useMedia を直接呼ばない。** 呼ぶと AppContent とは別のインスタンスになり、
+ * 起動時の取得も batch_progress の購読も2組になる。Provider の値を見る。
+ */
+function AppShell() {
+  const { settings, updateSetting } = useMediaContext();
   return (
-    <I18nProvider initialLanguage={(settings.ui_language as any) || 'ja'} onLanguageChange={(lang) => updateSetting('ui_language', lang)}>
+    <I18nProvider
+      initialLanguage={(settings.ui_language as any) || 'ja'}
+      onLanguageChange={(lang) => updateSetting('ui_language', lang)}
+    >
       <AppContent />
     </I18nProvider>
+  );
+}
+
+export function App() {
+  return (
+    <MediaProvider>
+      <AppShell />
+    </MediaProvider>
   );
 }
 

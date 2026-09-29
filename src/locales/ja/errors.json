@@ -7,5 +7,19 @@
   "custom_video": "指定場面での動画解析に失敗しました。",
   "retry_media": "解析の再試行に失敗しました。",
   "reanalyze_media": "メディアの再解析に失敗しました。",
-  "ollama_notice": "GPUのVRAM不足またはOllamaプロセスの異常終了が発生した可能性があります。\n設定画面から「軽量なモデル（例: llava:7b や moondream など）」に変更するか、Ollamaの再起動をお試しください。"
+  "ollama_notice": "GPUのVRAM不足またはOllamaプロセスの異常終了が発生した可能性があります。\n設定画面から「軽量なモデル（例: llava:7b や moondream など）」に変更するか、Ollamaの再起動をお試しください。",
+  "start_scan": "スキャンの開始に失敗しました。",
+  "rescan_all_folders": "全フォルダの再スキャンに失敗しました。",
+  "reanalyze_all_media": "全メディアの再解析に失敗しました。",
+  "cancel_scan": "解析の中止に失敗しました。",
+  "pause_scan": "解析の一時停止に失敗しました。",
+  "resume_scan": "解析の再開に失敗しました。",
+  "remove_scan_folder": "フォルダの登録解除に失敗しました。",
+  "clear_logs": "ログのクリアに失敗しました。",
+  "unload_model": "VRAM の解放に失敗しました。",
+  "open_file": "ファイルを開けませんでした。",
+  "open_folder": "フォルダを開けませんでした。",
+  "exclude_media": "解析対象から外せませんでした。",
+  "delete_media": "ライブラリからの削除に失敗しました。",
+  "unexclude_paths": "除外の解除に失敗しました。"
 }

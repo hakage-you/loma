@@ -7,5 +7,19 @@
   "custom_video": "Failed to analyze the video at the given timestamp.",
   "retry_media": "Failed to retry the analysis.",
   "reanalyze_media": "Failed to re-analyze the media.",
-  "ollama_notice": "The GPU may be out of VRAM, or the Ollama process may have terminated abnormally.\nSwitch to a lighter model (e.g. llava:7b or moondream) in Settings, or restart Ollama."
+  "ollama_notice": "The GPU may be out of VRAM, or the Ollama process may have terminated abnormally.\nSwitch to a lighter model (e.g. llava:7b or moondream) in Settings, or restart Ollama.",
+  "start_scan": "Could not start the scan.",
+  "rescan_all_folders": "Could not re-scan the folders.",
+  "reanalyze_all_media": "Could not re-analyze all media.",
+  "cancel_scan": "Could not cancel the analysis.",
+  "pause_scan": "Could not pause the analysis.",
+  "resume_scan": "Could not resume the analysis.",
+  "remove_scan_folder": "Could not unregister the folder.",
+  "clear_logs": "Could not clear the logs.",
+  "unload_model": "Could not free the VRAM.",
+  "open_file": "Could not open the file.",
+  "open_folder": "Could not open the folder.",
+  "exclude_media": "Could not exclude the media.",
+  "delete_media": "Could not delete from the library.",
+  "unexclude_paths": "Could not clear the exclusion."
 }

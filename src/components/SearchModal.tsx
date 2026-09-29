@@ -1,6 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { X, Search, Sliders, Hash, Plus, Trash2 } from 'lucide-react';
 import { useTranslation } from '../contexts/I18nContext';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
+import { ask } from '@tauri-apps/plugin-dialog';
 import { TagItem, SearchGroup, TagFilterNode } from '../types';
 
 interface SearchModalProps {
@@ -68,6 +70,24 @@ export const SearchModal: React.FC<SearchModalProps> = ({
   const [tagInputs, setTagInputs] = useState<Record<string, string>>({});
   const [showSuggestionsForGroupId, setShowSuggestionsForGroupId] = useState<string | null>(null);
 
+  /**
+   * 開いた時点の条件。**「変更途中か」は保存済みの条件との差ではなく、
+   * 開いてから触ったかどうかで決める。**
+   */
+  const openedWith = useRef<string>('');
+
+  // 条件の組み立て途中に Esc を押すと、適用していない条件が消える
+  useEscapeToClose({
+    open,
+    onClose,
+    isDirty: () => JSON.stringify(groups) !== openedWith.current,
+    confirm: () =>
+      ask(t('app.discard_confirm', ''), {
+        title: t('app.label_discard_title', 'Discard changes'),
+        kind: 'warning',
+      }),
+  });
+
   const suggestBoxRef = useRef<HTMLDivElement>(null);
 
   // Initialize modal state when opened
@@ -93,6 +113,8 @@ export const SearchModal: React.FC<SearchModalProps> = ({
       }
 
       setGroups(init);
+      // 開いた時点の条件を控える。Esc で閉じるときに「触ったか」を見る
+      openedWith.current = JSON.stringify(init);
     }
   }, [open, initialGroups, prefillTag]);
 

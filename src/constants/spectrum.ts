@@ -24,7 +24,12 @@ export const STATUS_TAG_INSUFFICIENT = 'tag_insufficient';
 export const STATUS_EXCLUDED = 'excluded';
 
 /** そのメディアが basic タグ不足で類似検索の対象外かどうか */
-export function isTagInsufficient(item: { analysis_status: string; tags: { kind: string }[] }): boolean {
+export function isTagInsufficient(item: {
+  analysis_status: string;
+  basic_tag_count: number;
+}): boolean {
   if (item.analysis_status !== 'completed') return false;
-  return item.tags.filter((t) => t.kind === 'basic').length < MIN_BASIC_TAGS;
+  // **本数はバックエンドが数えて渡す。** 一覧はタグの id しか持っていないので、
+  // ここで数えるにはタグ一覧を引き回すことになる
+  return item.basic_tag_count < MIN_BASIC_TAGS;
 }

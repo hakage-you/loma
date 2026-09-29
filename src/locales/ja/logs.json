@@ -3,5 +3,17 @@
   "label_scroll_to_bottom": "最新ログへ移動",
   "label_full_view": "全画面表示",
   "label_clear": "クリア",
-  "label_copy": "コピー"
+  "label_copy": "コピー",
+  "label_subtitle": "バックエンドと画像モデルの実行ログ",
+  "label_filter_placeholder": "ログを絞り込む (例: ERROR, 400, Parse)...",
+  "label_refresh": "再読み込み",
+  "label_copied": "コピーしました",
+  "label_close": "閉じる",
+  "label_showing": "{n} 行を表示",
+  "label_showing_truncated": "{n} 行を表示（{total} 行のうち新しい順）",
+  "empty_no_match": "絞り込みに一致するログはありません。",
+  "empty_file": "ログはまだありません。",
+  "label_recent": "最新",
+  "label_collapse": "コンソールを畳む",
+  "label_expand": "コンソールを開く"
 }

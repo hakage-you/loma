@@ -106,3 +106,51 @@ test.describe('スキャン進捗パネル', () => {
     await expect.poll(async () => readSecPerItem(page), { timeout: 6_000 }).toBeGreaterThan(first);
   });
 });
+
+test.describe('解析中の再取得', () => {
+  // **間引きであってデバウンスではない。**
+  // 以前はイベントが来るたびにタイマーを張り直していたため、進捗が間引き間隔より
+  // 速く届くと発火せず、解析が終わるまでギャラリーが一切更新されなかった。
+  // 登録フェーズ（5件ごと）や解析の速いモデルがこれに当たる。
+
+  type InvokeEntry = { cmd: string; args: Record<string, any>; at: number };
+
+  const countGetMedia = async (page: Page): Promise<number> => {
+    const log = await page.evaluate(
+      () => (window as unknown as { __mockInvokeLog: InvokeEntry[] }).__mockInvokeLog
+    );
+    return log.filter((e) => e.cmd === 'get_media').length;
+  };
+
+  const resetLog = (page: Page) =>
+    page.evaluate(() =>
+      (window as unknown as { __mockResetInvokeLog: () => void }).__mockResetInvokeLog()
+    );
+
+  test('進捗が間引き間隔より速く来ても、取り直しは止まらない', async ({ page }) => {
+    // 200ms ごと = 間引き間隔 1秒 の5倍の速さ
+    await page.goto('/?debugScan=mid&debugScanIntervalMs=200');
+    await expect(page.getByText('解析処理中')).toBeVisible();
+    await resetLog(page);
+
+    await page.waitForTimeout(4000);
+
+    const n = await countGetMedia(page);
+    // **0 だと、解析が終わるまで画面が更新されない状態**
+    expect(n).toBeGreaterThanOrEqual(2);
+  });
+
+  test('速く来ても1秒あたり1回を超えない', async ({ page }) => {
+    // **毎回取り直すと、実データでは 5MB の応答が1件ごとに飛ぶ。**
+    // 解析は数時間続くので、ここの回数がそのまま積み上がる
+    await page.goto('/?debugScan=mid&debugScanIntervalMs=200');
+    await expect(page.getByText('解析処理中')).toBeVisible();
+    await resetLog(page);
+
+    await page.waitForTimeout(4000);
+
+    const n = await countGetMedia(page);
+    // 4秒ぶん。取りこぼしと端数で前後するので、上限は余裕を見る
+    expect(n).toBeLessThanOrEqual(6);
+  });
+});

@@ -3,6 +3,7 @@ import { AlertTriangle, Clock, FolderOpen, RotateCcw, Trash2, X, EyeOff, Undo2 }
 import { MediaItem, ExcludedPathItem } from '../types';
 import { useTranslation } from '../contexts/I18nContext';
 import { useExclusiveGuard } from '../hooks/useExclusiveGuard';
+import { useEscapeToClose } from '../hooks/useEscapeToClose';
 
 /**
  * 種別コードから表示ラベルのキーを引く。
@@ -111,6 +112,19 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
   const [excluded, setExcluded] = useState<ExcludedPathItem[]>([]);
   const [openGroups, setOpenGroups] = useState<Record<string, boolean>>({});
   const [pendingDelete, setPendingDelete] = useState<number[] | null>(null);
+
+  // **削除の確認が開いていたら、そちらだけ閉じる**（取り消しと同じ扱い）
+  useEscapeToClose({
+    open,
+    onClose,
+    onEscapeFirst: () => {
+      if (pendingDelete) {
+        setPendingDelete(null);
+        return true;
+      }
+      return false;
+    },
+  });
   // 再試行・除外は排他ロックを取る。スキャン中に限らず、走っている間は押させない
   const exclusive = useExclusiveGuard();
   const [busy, setBusy] = useState(false);
@@ -229,7 +243,10 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                         <button
                           disabled={busy || exclusive.blocked}
                           onClick={() => void onRetry(ids)}
-                          title={t('failure_modal.label_retry_group', 'このグループを再試行')}
+                          title={
+                            exclusive.reason ??
+                            t('failure_modal.label_retry_group', 'このグループを再試行')
+                          }
                           className="p-1.5 rounded-lg hover:bg-white/10 text-amber-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <RotateCcw className="w-3.5 h-3.5" />
@@ -239,7 +256,10 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                           onClick={() =>
                             void runOnGroup(() => onExclude(ids, group.translated ? group.key : 'unknown'))
                           }
-                          title={t('failure_modal.label_exclude_group', 'このグループを今後解析しない')}
+                          title={
+                            exclusive.reason ??
+                            t('failure_modal.label_exclude_group', 'このグループを今後解析しない')
+                          }
                           className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <EyeOff className="w-3.5 h-3.5" />
@@ -247,7 +267,10 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                         <button
                           disabled={busy || exclusive.blocked}
                           onClick={() => setPendingDelete(ids)}
-                          title={t('failure_modal.label_delete_group', 'このグループをライブラリから削除')}
+                          title={
+                            exclusive.reason ??
+                            t('failure_modal.label_delete_group', 'このグループをライブラリから削除')
+                          }
                           className="p-1.5 rounded-lg hover:bg-red-500/20 text-red-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Trash2 className="w-3.5 h-3.5" />
@@ -309,7 +332,7 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                               <button
                                 disabled={busy || exclusive.blocked}
                                 onClick={() => void onRetry([item.id])}
-                                title={t('failure_modal.label_retry', '再試行')}
+                                title={exclusive.reason ?? t('failure_modal.label_retry', '再試行')}
                                 className="p-1.5 rounded-lg hover:bg-white/10 text-amber-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <RotateCcw className="w-3.5 h-3.5" />
@@ -317,7 +340,9 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                               <button
                                 disabled={busy || exclusive.blocked}
                                 onClick={() => void runOnGroup(() => onExclude([item.id]))}
-                                title={t('failure_modal.label_exclude', '今後解析しない')}
+                                title={
+                                  exclusive.reason ?? t('failure_modal.label_exclude', '今後解析しない')
+                                }
                                 className="p-1.5 rounded-lg hover:bg-white/10 text-slate-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <EyeOff className="w-3.5 h-3.5" />
@@ -325,7 +350,9 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                               <button
                                 disabled={busy || exclusive.blocked}
                                 onClick={() => setPendingDelete([item.id])}
-                                title={t('failure_modal.label_delete', 'ライブラリから削除')}
+                                title={
+                                  exclusive.reason ?? t('failure_modal.label_delete', 'ライブラリから削除')
+                                }
                                 className="p-1.5 rounded-lg hover:bg-red-500/20 text-red-300 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -386,7 +413,7 @@ export const FailureTriageModal: React.FC<FailureTriageModalProps> = ({
                 onClick={() => setPendingDelete(null)}
                 className="px-2.5 py-1.5 rounded-lg text-xs text-slate-300 hover:bg-white/10 transition cursor-pointer"
               >
-                {t('failure_modal.label_close', '閉じる')}
+                {t('failure_modal.label_cancel', 'Cancel')}
               </button>
               <button
                 disabled={busy}
