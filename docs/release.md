@@ -145,7 +145,7 @@ Get-ChildItem $out
 
 **リリースノートは必ずファイル経由（`--notes-file`）で渡す。** PowerShell から native exe へ
 日本語を含む引数を直接渡すとエンコーディングが壊れることがあるため、UTF-8 で書いたファイルを
-読ませるのが確実。リリースノートの原本は [`docs/release-notes/`](release-notes/) に置く。
+読ませるのが確実。リリースノートの原本は [`docs/release-notes/`](https://github.com/hakage-you/loma/tree/main/docs/release-notes) に置く。
 
 ```powershell
 gh release create vX.Y.Z `

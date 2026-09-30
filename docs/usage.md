@@ -2,7 +2,7 @@
 
 専門的な知識がない方でも迷わず使えるように、Loma の基本操作を手順ごとに説明します。
 
-> このガイドは [README](../README.md) の「3. 使用方法」の詳細版です。Ollama や FFmpeg のインストール(事前準備)については README の「2. 動作環境のセットアップ」を先にご確認ください。
+> このガイドは [README](https://github.com/hakage-you/loma#readme) の「3. 使用方法」の詳細版です。Ollama や FFmpeg のインストール(事前準備)については README の「2. 動作環境のセットアップ」を先にご確認ください。
 
 ---
 
@@ -146,4 +146,4 @@ Loma はメディアの解析に Ollama 上で動く AI モデル(VLM)を使い�
 
 ---
 
-以上が Loma の基本的な使い方です。開発者向けのビルド手順については [README](../README.md) の「4. ビルドおよび開発手順」をご覧ください。
+以上が Loma の基本的な使い方です。開発者向けのビルド手順については [README](https://github.com/hakage-you/loma#readme) の「4. ビルドおよび開発手順」をご覧ください。

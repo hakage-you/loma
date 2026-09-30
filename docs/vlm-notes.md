@@ -6,7 +6,7 @@ Loma の VLM（画像解析）連携で、**コードを読んだだけでは分
 各項目には根拠を明記する。**「実測」は計測した事実、「コード読解」はソースから導いた事実**で、
 後者は未検証であることに注意すること。
 
-検証には [`tools/prompt-check/`](../tools/prompt-check/README.md) を使う。
+検証には [`tools/prompt-check/`](https://github.com/hakage-you/loma/blob/main/tools/prompt-check/README.md) を使う。
 
 ---
 
@@ -200,7 +200,7 @@ CRLF を残したままだと一致しない。
 
 ## 8. プロンプトを改修したときの確認手順
 
-**プロンプトは「良くしたつもり」で壊れる。** 改修のたびに [`tools/prompt-check/`](../tools/prompt-check/README.md) を回す。
+**プロンプトは「良くしたつもり」で壊れる。** 改修のたびに [`tools/prompt-check/`](https://github.com/hakage-you/loma/blob/main/tools/prompt-check/README.md) を回す。
 
 ```bash
 # 改修前後を同じ画像で比較
